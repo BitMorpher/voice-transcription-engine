@@ -18,7 +18,7 @@ The `voice-transcription-engine` is a command-line interface (CLI) tool that lev
 ## Prerequisites
 
 - **Python**: 3.6 or higher (tested with Python 3.12)
-- **OpenAI API Key**: Required for accessing Whisper and GPT models
+- **OpenAI API Key**: Required for accessing Whisper and GPT-4 models
 - **FFmpeg**: Required by pydub for audio processing (must be installed separately)
 
 ### Installing FFmpeg
@@ -117,7 +117,7 @@ For an input file named `meeting.mp3`:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | Your OpenAI API key for accessing Whisper and GPT models |
+| `OPENAI_API_KEY` | Yes | Your OpenAI API key for accessing Whisper and GPT-4 models |
 
 ## How It Works
 
@@ -126,8 +126,8 @@ For an input file named `meeting.mp3`:
 3. **Transcription**: 
    - Small files: Sent directly to Whisper API
    - Large files: Automatically split into chunks, transcribed separately, then combined
-4. **Enhancement** (optional): Uses GPT-4 to improve readability while preserving meaning
-5. **Interview Formatting** (optional): Uses GPT-4 to structure content as an interview dialogue
+4. **Enhancement** (optional): Uses GPT-4.1-mini to improve readability while preserving meaning
+5. **Interview Formatting** (optional): Uses GPT-4.1-mini to structure content as an interview dialogue
 6. **Output**: Saves all requested formats to the output folder with appropriate filenames
 
 ## Project Structure
@@ -203,7 +203,7 @@ Please ensure your code follows the existing style and includes appropriate test
 This project is licensed under the MIT License. See the LICENSE file for more details.
 
 ## Acknowledgments
-- OpenAI for the Whisper and GPT models
+- OpenAI for the Whisper and GPT-4 models
 - The pydub library for audio processing capabilities
 
 ## Support
