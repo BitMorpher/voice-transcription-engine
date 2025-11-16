@@ -176,8 +176,44 @@ If processing many files, you may hit OpenAI API rate limits. The tool will log 
 ## Development
 
 ### Running Tests
+
+The project uses pytest for testing with comprehensive coverage requirements (85% minimum).
+
+**Run all tests:**
 ```bash
-python -m pytest tests/
+pytest tests/
+```
+
+**Run tests with coverage report:**
+```bash
+pytest tests/ --cov=src --cov-report=term-missing --cov-report=html
+```
+
+**Run specific test categories:**
+```bash
+# Unit tests only
+pytest tests/ -m unit
+
+# Integration tests only
+pytest tests/ -m integration
+```
+
+**Test Coverage:**
+- Total: 85.20%
+- Unit tests: 59 tests covering core modules
+- Integration tests: 7 tests covering end-to-end workflows
+
+See `tests/README.md` for detailed testing documentation.
+
+### Test Requirements
+Install test dependencies:
+```bash
+pip install pytest pytest-cov pytest-mock
+```
+
+Or install all dependencies including test tools:
+```bash
+pip install -r requirements.txt
 ```
 
 ### Adding New Features
