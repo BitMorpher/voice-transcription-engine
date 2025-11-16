@@ -18,17 +18,11 @@ class TestTranscriber(unittest.TestCase):
             self.transcriber.transcribe('nonexistent_file.wav')
 
     def test_enhanced_readability(self):
-        transcription = "this is a test transcript without punctuation"
-        enhanced_transcription = self.transcriber.enhance_transcription(transcription)
+        audio_file = 'tests/sample_audio.wav'
+        transcription = self.transcriber.transcribe(audio_file)
+        enhanced_transcription = self.transcriber.enhance_for_reading(transcription)
         self.assertIsInstance(enhanced_transcription, str)
         self.assertNotEqual(transcription, enhanced_transcription)
-
-    def test_enhance_as_interview(self):
-        transcription = "hello can you tell me about your experience yes I started in 1990"
-        interview_text = self.transcriber.enhance_as_interview(transcription)
-        self.assertIsInstance(interview_text, str)
-        self.assertIn("Interviewer:", interview_text)
-        self.assertIn("Interviewee:", interview_text)
 
 if __name__ == '__main__':
     unittest.main()

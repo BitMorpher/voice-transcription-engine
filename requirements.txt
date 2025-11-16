@@ -1,3 +1,10 @@
-openai
-whisper
+OpenAI-whisper
+argparse
+pydub
+numpy
+scipy
+torch
+librosa
+soundfile
+requests
 tqdm

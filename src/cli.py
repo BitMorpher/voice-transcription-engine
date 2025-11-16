@@ -2,6 +2,9 @@ import argparse
 import os
 import traceback
 from transcriber import Transcriber
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="Process audio recordings and generate transcriptions.")
@@ -13,7 +16,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.exists(args.input_folder):
-        print(f"Error: The input folder '{args.input_folder}' does not exist.")
+        logger.error("Input folder does not exist", {"input_folder": args.input_folder})
         return
 
     if not os.path.exists(args.output_folder):
@@ -30,7 +33,7 @@ def main():
         try:
             transcription = transcriber.transcribe(audio_path)
         except Exception as exc:
-            print(f"Error transcribing '{audio_file}': {exc}")
+            logger.error("Error transcribing file", {"audio_file": audio_file, "audio_path": audio_path, "error": str(exc)})
             continue
 
         base_name = os.path.splitext(audio_file)[0]
@@ -40,9 +43,9 @@ def main():
         try:
             with open(verbatim_filename, 'w', encoding='utf-8') as f:
                 f.write(transcription)
-            print(f"Verbatim transcription saved to '{verbatim_filename}'.")
+            logger.info("Saved verbatim transcription", {"verbatim_filename": verbatim_filename, "audio_file": audio_file})
         except Exception as exc:
-            print(f"Error saving verbatim transcription for '{audio_file}': {exc}")
+            logger.error("Error saving verbatim transcription", {"audio_file": audio_file, "verbatim_filename": verbatim_filename, "error": str(exc)})
 
         # Optional: readability-enhanced version
         if args.enhance_for_reading:
@@ -51,9 +54,9 @@ def main():
                 enhanced_filename = os.path.join(args.output_folder, f"{base_name}_enhanced.txt")
                 with open(enhanced_filename, 'w', encoding='utf-8') as f:
                     f.write(enhanced)
-                print(f"Enhanced (readability) transcription saved to '{enhanced_filename}'.")
+                logger.info("Saved enhanced (readability) transcription", {"enhanced_filename": enhanced_filename, "audio_file": audio_file})
             except Exception as exc:
-                print(f"Error creating enhanced (readability) transcription for '{audio_file}': {exc}")
+                logger.error("Error creating enhanced (readability) transcription", {"audio_file": audio_file, "error": str(exc)})
                 traceback.print_exc()
 
         # Optional: OpenAI interview-formatted version
@@ -63,9 +66,9 @@ def main():
                 interview_filename = os.path.join(args.output_folder, f"{base_name}_enhanced_interview.txt")
                 with open(interview_filename, 'w', encoding='utf-8') as f:
                     f.write(interview_text)
-                print(f"Interview-formatted transcription saved to '{interview_filename}'.")
+                logger.info("Saved interview-formatted transcription", {"interview_filename": interview_filename, "audio_file": audio_file})
             except Exception as exc:
-                print(f"Error creating interview-formatted transcription for '{audio_file}': {exc}")
+                logger.error("Error creating interview-formatted transcription", {"audio_file": audio_file, "error": str(exc)})
                 # Print traceback
                 traceback.print_exc()
 
