@@ -1,4 +1,5 @@
-OpenAI-whisper
+# Core dependencies
+openai
 argparse
 pydub
 numpy
@@ -8,3 +9,8 @@ librosa
 soundfile
 requests
 tqdm
+
+# Test dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.1
