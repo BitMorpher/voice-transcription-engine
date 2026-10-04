@@ -72,9 +72,11 @@ class Pipeline:
                       'Speaker identities and turn boundaries are unverified; no roles are inferred.\n\n'
                       + edited)
 
-    def process(self, source, *, transcriber=None, extract_only=False, enhance=False, require_nonempty=False):
+    def process(self, source, *, transcriber=None, extract_only=False, enhance=False, require_nonempty=False, expected_source_sha256=None):
         """Return per-stage statuses. Resume requires a matching, verified manifest.
 
+        An optional expected source checksum binds a caller-prevalidated job and
+        is checked before creating a job and immediately before ASR.
         Existing unverified artifacts are conflicts, never overwritten. Reattempt
         failed transcription from prepared audio; API chunks are not checkpointed.
         """
@@ -86,6 +88,8 @@ class Pipeline:
         if transcriber is not None and enhance and transcriber.editing_options.fingerprint != self.editing_options.fingerprint:
             raise PipelineError('Editing model must match the pipeline editing configuration.')
         source_hash = digest(source)
+        if expected_source_sha256 is not None and source_hash != expected_source_sha256:
+            raise PipelineError('Recording part changed after validation; no request was made for this part. Use stable sources and retry with the current manifest.')
         # Include basename bytes to distinguish identical files with different names,
         # but never persist the name itself. Full paths are not part of the ID.
         identity = hashlib.sha256(os.fsencode(source.name) + b'\0' + bytes.fromhex(source_hash)).hexdigest()
@@ -134,6 +138,8 @@ class Pipeline:
                 if transcriber is None:
                     raise PipelineError('A configured transcriber is required for the full pipeline.')
                 def transcribe():
+                    if expected_source_sha256 is not None and (source.is_symlink() or digest(source) != expected_source_sha256):
+                        raise PipelineError('Recording part changed after validation; no request was made for this part. Use stable sources and retry with the current manifest.')
                     text = transcriber.transcribe(str(audio), prepared=True)
                     if require_nonempty and (not isinstance(text, str) or not text.strip()):
                         raise PipelineError('A recording part returned empty text; no complete interview was saved. Retry or review this recording locally.')

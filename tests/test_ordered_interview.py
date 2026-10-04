@@ -725,3 +725,177 @@ def test_polish_prompt_change_reuses_asr_creates_new_generation(
     assert new.binding != first.binding
     assert interview_provider.audio.transcriptions.create.call_count == 1
     assert (first.job / "derivative_readability.txt").read_bytes() == old
+
+
+def test_later_part_changed_during_first_asr_is_not_transcribed(
+    synthetic_media, tmp_path, provider
+):
+    sources = [synthetic_media("synthetic-first.wav"), synthetic_media("synthetic-later.wav")]
+    run = workflow(manifest(tmp_path, sources), tmp_path / "output", review=True)
+
+    def change_later(**kwargs):
+        sources[1].write_bytes(sources[1].read_bytes() + b"synthetic changed trailer")
+        return SimpleNamespace(text="First completed synthetic part.")
+
+    provider.audio.transcriptions.create.side_effect = change_later
+    with pytest.raises(PipelineError):
+        run.process(transcriber=Transcriber(client=provider))
+    assert provider.audio.transcriptions.create.call_count == 1
+    assert not run.job.exists()
+    provider.chat.completions.create.assert_not_called()
+    part, directory, identity = run.parts[0]
+    assert (
+        directory / identity / "transcription.txt"
+    ).read_text() == "First completed synthetic part."
+    # The second part has only its initially validated conversion job, not a job
+    # created for changed, unapproved source bytes.
+    part, directory, identity = run.parts[1]
+    assert list(directory.iterdir()) == [directory / identity]
+    assert not (directory / identity / "transcription.txt").exists()
+
+
+@pytest.mark.parametrize("alteration", ["missing", "incorrect"])
+def test_cached_chapter_findings_references_are_revalidated(
+    synthetic_media, tmp_path, interview_provider, alteration
+):
+    from src.private_output import digest
+
+    interview_provider.priority = "low"
+    path = manifest(tmp_path, [synthetic_media("synthetic.wav")])
+    run = workflow(path, tmp_path / "output", review=True, styles=("interview",))
+    run.process(transcriber=Transcriber(client=interview_provider))
+    target = read_artifact(run, "chapters", "chapter_drafts.json")
+    document = json.loads(target.read_bytes())
+    assert document["findings"]
+    if alteration == "missing":
+        document["findings"][0].pop("recording_refs")
+    else:
+        document["findings"][0]["recording_refs"][0]["part_id"] = "synthetic-wrong-part"
+    target.write_text(json.dumps(document))
+    state = json.loads((run.job / "manifest.json").read_bytes())
+    state["stages"]["chapters"]["artifacts"][str(target.relative_to(run.job))] = digest(target)
+    (run.job / "manifest.json").write_text(json.dumps(state))
+    calls = interview_provider.mock_calls[:]
+    with pytest.raises(PipelineError):
+        workflow(path, run.output, resume=True, review=True, styles=("interview",)).process(
+            transcriber=Transcriber(client=interview_provider)
+        )
+    assert interview_provider.mock_calls == calls
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        ("fidelity", "changed, invented, omitted, or reordered words or symbols"),
+        ("provider", "API/model access, quota, and network connectivity"),
+    ],
+)
+def test_polish_failure_preserves_safe_retry_diagnostic(
+    synthetic_media, tmp_path, provider, failure, expected
+):
+    run = workflow(
+        manifest(tmp_path, [synthetic_media("synthetic.wav")]),
+        tmp_path / "output",
+        enhance=True,
+        review=True,
+    )
+    if failure == "fidelity":
+        provider.chat.completions.create.return_value.choices[0].message.content = json.dumps(
+            {"chunk_index": 1, "text": "Invented words.", "speaker_uncertain": True}
+        )
+    else:
+        provider.chat.completions.create.side_effect = RuntimeError(
+            "SYNTHETIC_PRIVATE_PROVIDER_ERROR"
+        )
+    with pytest.raises(PipelineError, match=expected) as error:
+        run.process(transcriber=Transcriber(client=provider))
+    assert "SYNTHETIC_PRIVATE" not in str(error.value)
+    assert "Check local media" not in str(error.value)
+    assert (run.job / "transcription.txt").read_text() == "Synthetic transcript."
+    assert not (run.job / "derivative_readability.txt").exists()
+
+
+def test_windows_part_combination_and_resume_preserve_exact_bytes(
+    synthetic_media, tmp_path, interview_provider, monkeypatch
+):
+    import os
+
+    real_fdopen = os.fdopen
+
+    def windows_fdopen(fd, mode, **kwargs):
+        if "b" not in mode and kwargs.get("newline") is None:
+            kwargs["newline"] = "\r\n"
+        return real_fdopen(fd, mode, **kwargs)
+
+    monkeypatch.setattr("src.private_output.os.fdopen", windows_fdopen)
+    texts = ["First न +²\r\nLF\nCR\r", "Second 👩🏽‍💻\n\r\n"]
+    interview_provider.audio.transcriptions.create.side_effect = [
+        SimpleNamespace(text=t) for t in texts
+    ]
+    path = manifest(
+        tmp_path, [synthetic_media("synthetic-a.wav"), synthetic_media("synthetic-b.mp4")]
+    )
+    run = workflow(path, tmp_path / "output", review=True, enhance=True, styles=("interview",))
+    run.process(transcriber=Transcriber(client=interview_provider))
+    combined = "\n\n".join(texts).encode()
+    assert (run.job / "transcription.txt").read_bytes() == combined
+    provenance = json.loads((run.job / "provenance.json").read_bytes())
+    assert provenance["raw_sha256"] == hashlib.sha256(combined).hexdigest()
+    for part, text in zip(provenance["parts"], texts):
+        assert (run.output / part["raw_transcript"]).read_bytes() == text.encode()
+    calls = interview_provider.mock_calls[:]
+    workflow(
+        path, run.output, resume=True, review=True, enhance=True, styles=("interview",)
+    ).process(transcriber=Transcriber(client=interview_provider))
+    assert interview_provider.mock_calls == calls
+
+
+@pytest.mark.parametrize("failure", ["fidelity", "provider", "unexpected", "subclass"])
+def test_cli_polish_failure_allowlist_preserves_guidance_and_privacy(
+    synthetic_media, tmp_path, provider, monkeypatch, capsys, failure
+):
+    from src.transcriber import TranscriptionError
+
+    class UntrustedTranscriptionError(TranscriptionError):
+        pass
+
+    transcriber = Transcriber(client=provider)
+    if failure == "fidelity":
+        provider.chat.completions.create.return_value.choices[0].message.content = json.dumps(
+            {"chunk_index": 1, "text": "Invented words.", "speaker_uncertain": True}
+        )
+    elif failure == "provider":
+        provider.chat.completions.create.side_effect = RuntimeError(
+            "SYNTHETIC_PRIVATE_PROVIDER_ERROR"
+        )
+    else:
+        error_type = RuntimeError if failure == "unexpected" else UntrustedTranscriptionError
+        transcriber.enhance_transcription = MagicMock(
+            side_effect=error_type("SYNTHETIC_PRIVATE_ERROR")
+        )
+    monkeypatch.setattr("src.cli.Transcriber", lambda **kwargs: transcriber)
+    path = manifest(tmp_path, [synthetic_media("synthetic.wav")])
+    assert (
+        main(
+            [
+                "--workflow",
+                "--interview-manifest",
+                str(path),
+                "--stages",
+                "raw,polish",
+                "--output-folder",
+                str(tmp_path / "output"),
+            ]
+        )
+        == 1
+    )
+    logs = capsys.readouterr()
+    assert "SYNTHETIC_PRIVATE" not in logs.out + logs.err
+    assert str(tmp_path) not in logs.out + logs.err
+    message = json.loads(logs.out.splitlines()[-1])["message"]
+    if failure == "fidelity":
+        assert "words or symbols" in message
+    elif failure == "provider":
+        assert "API/model access, quota" in message
+    else:
+        assert message.startswith("Interview processing failed;")

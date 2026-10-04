@@ -44,13 +44,13 @@ def output_directory(path):
 
 
 def write_private(path, text, *, replace=False):
-    """Publish complete UTF-8 text with owner-only access; default never overwrites."""
+    """Publish exact UTF-8 bytes with owner-only access; default never overwrites."""
     path = Path(path)
     if path.is_symlink():
         raise OutputError('Refusing a symlink output.')
     fd, temporary = tempfile.mkstemp(prefix='.write-', dir=path.parent)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
