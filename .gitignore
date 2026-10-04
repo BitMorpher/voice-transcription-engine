@@ -41,3 +41,13 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Private author reports and chapter drafts (including external exports)
+review_report*.json
+review_report*.xlsx
+chapter_drafts*.json
+chapter_interview*.txt
+chapter_narrative*.txt
+
+# Versioned prompt templates are source, not generated chapter drafts
+!src/prompts/*.txt

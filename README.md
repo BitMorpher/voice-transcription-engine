@@ -19,7 +19,7 @@ uv run --locked voice-transcribe --help
 
 `uv sync --locked` creates the ignored `.venv`, installs the editable CLI, runtime dependencies and the default `dev` group using committed `uv.lock`. The Python pin selects the standard CPython runtime, not a free-threaded build. Setup may download Python and packages; it never installs FFmpeg or configures credentials. Once synced, use `uv run --locked` for commands without activating the environment. For a runtime-only installation, use `uv sync --locked --no-dev` and `uv run --locked --no-dev voice-transcribe --help` (plain `uv run` would reinstall the default development group).
 
-`pyproject.toml` is the only dependency declaration: `openai` is the runtime dependency; `dev` contains pytest and Ruff. Optional `notebook` contains PyDub, `audioop-lts`, ipykernel and JupyterLab. `uv.lock` records exact versions, public PyPI locations and hashes for all groups/extras. Build-backend versions are pinned separately in `[build-system]`, since uv's project lock does not lock isolated build requirements. FFmpeg is not managed by the lock. The CLI does not need PyDub, local Whisper, Torch, NumPy or SciPy.
+`pyproject.toml` is the only dependency declaration: `openai` and `openpyxl` are runtime dependencies; `dev` contains pytest and Ruff. OpenPyXL writes the author review workbook. Optional `notebook` contains PyDub, `audioop-lts`, ipykernel and JupyterLab. `uv.lock` records exact versions, public PyPI locations and hashes for all groups/extras. Build-backend versions are pinned separately in `[build-system]`, since uv's project lock does not lock isolated build requirements. FFmpeg is not managed by the lock. The CLI does not need PyDub, local Whisper, Torch, NumPy or SciPy.
 
 The existing experimental notebook is available separately:
 
@@ -75,6 +75,27 @@ uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 
 ```
 
 Extraction does not import the OpenAI SDK, require a key, or make API calls. `--extract-only` also accepts supported audio files for normalization. It cannot be combined with enhancement.
+
+## Author review and chapter comparison
+
+Use the same CLI with `--workflow` and a local audio/video path. Default stages retain the immutable raw transcript, create a separate faithful punctuation/layout polish, then review the **raw source** into JSON and an Excel workbook. Chapter generation is optional:
+
+```bash
+uv run --locked voice-transcribe --workflow \
+  --input private/input/synthetic.mp4 --media-type auto \
+  --output-folder private/author-review
+
+uv run --locked voice-transcribe --workflow \
+  --input private/input/synthetic.mp4 --media-type video \
+  --stages raw,review --chapters both \
+  --output-folder private/author-comparison
+```
+
+Flags use a low/medium/high rubric, exact verified raw excerpts, stable IDs and source references. They prompt nuanced human review; criticism is not automatically high priority, false, or unsuitable for publication. Failed/incomplete reports are distinct from a complete report with no findings. Unresolved high findings block chapters unless `--draft-with-unresolved-high` explicitly requests visibly warned drafts; an incomplete review always blocks drafting.
+
+Interview drafts retain testimony excerpts without invented questions or speaker identities. Narrative drafts conservatively group source words in their original order; third-person mode frames exact testimony rather than inventing a story. Every passage carries provenance and linked findings, with explicit omissions, uncertainties and editorial changes. All drafts require human review and recording verification. Workbook disposition/reviewer edits are a human record, not imported approval; copy the workbook before editing because bundle changes invalidate resume.
+
+See the [complete author workflow guide](docs/author-workflow.md) for stage/style options, the review rubric, the high-priority gate and retry examples, Excel/JSON usage, provenance, integrity, limitations, and architecture. Input files are local, but transcription/polish/review/narrative requests use the hosted OpenAI API and can incur charges.
 
 ## Outputs, resumability, and failures
 
@@ -152,7 +173,7 @@ Official selection/compatibility references: [GPT-Transcribe](https://developers
 
 ## Privacy boundaries
 
-Conversion runs on your machine. Transcription sends the **normalized audio** to OpenAI; this can contain voices, names, and other sensitive spoken content even after container metadata is stripped. The multipart filename is generic `audio.wav`. Optional context/glossary/language hints are also sent; faithful editing separately sends transcript text. Review your authorization to process the material and OpenAI's current data controls before using real recordings. This tool makes no zero-retention promise and cannot prevent disclosures present in the audio or transcript itself. It does not download from Drive, publish artifacts, or upload to GitHub.
+Conversion runs on your machine. Transcription sends the **normalized audio** to OpenAI; this can contain voices, names, and other sensitive spoken content even after container metadata is stripped. The multipart filename is generic `audio.wav`. Optional context/glossary/language hints are also sent; faithful editing, author review, and narrative arrangement separately send transcript text. Review your authorization to process the material and OpenAI's current data controls before using real recordings. This tool makes no zero-retention promise and cannot prevent disclosures present in the audio or transcript itself. It does not download from Drive, publish artifacts, or upload to GitHub.
 
 Keep API keys and source/output folders private; delete retained media, transcripts, manifests, and backups according to your own retention policy. Temporary normalization files are removed on normal completion/error; abrupt termination can leave private temporary directories. SDK/network debug logging, including the current SDK's HTTP transports, is suppressed by the transcriber to avoid accidental credential/payload logging. No real recordings, personal transcripts, keys, or identifying fixtures belong in this public repository.
 
@@ -176,4 +197,4 @@ Tests generate synthetic tones and color video in temporary folders, mock all pr
 
 Builds produce ignored `dist/` wheel and source archives using the pinned backend. The source archive includes the lock, Python pin and complete offline tests. Source archives may include operating-system ownership metadata; keep them private until inspected. Review archive contents before sharing; no generated media, transcripts, keys, local environment or personal paths belong in a distribution. A clean environment can be checked without disturbing `.venv` using `UV_PROJECT_ENVIRONMENT=private/clean-venv uv sync --locked`. The lock covers declared dependencies across supported Python versions; the validated runtime is CPython 3.14.8 on macOS arm64, not a full operating-system/Python matrix.
 
-Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, and `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Packaging now exposes the existing flat modules through `voice-transcribe`; this feature does not migrate the legacy project to a new package layout.
+Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Author stages use `src/author_workflow.py`, `src/author_review.py`, `src/review_export.py`, `src/chapters.py`, and packaged versioned prompts; see the [architecture table](docs/author-workflow.md#implementation-and-verification). Packaging exposes the existing flat modules through `voice-transcribe`; this feature does not migrate the legacy project to a new package layout.

@@ -8,3 +8,6 @@ prune secrets
 prune .venv
 prune .git
 global-exclude *.py[cod] .env .env.* *.key *.pem *.wav *.mp3 *.m4a *.mp4 *.mov *.mkv *.webm *.avi *.m4v
+
+recursive-include src/prompts *.txt
+recursive-include docs *.md
