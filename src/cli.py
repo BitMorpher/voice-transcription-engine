@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 
 if __package__:
+    from .author_review import ReviewError, ReviewOptions
+    from .author_workflow import AuthorOptions, AuthorWorkflowError
+    from .chapters import ChapterOptions
     from .media import AUDIO_EXTENSIONS, MEDIA_EXTENSIONS, MediaError, require_ffmpeg
     from .model_config import (
         DEFAULT_ASR_MODEL,
@@ -20,6 +23,9 @@ if __package__:
     from .private_output import OutputError, output_directory, write_private
     from .transcriber import ConfigurationError, Transcriber, TranscriptionError
 else:
+    from author_review import ReviewError, ReviewOptions
+    from author_workflow import AuthorOptions, AuthorWorkflowError
+    from chapters import ChapterOptions
     from media import AUDIO_EXTENSIONS, MEDIA_EXTENSIONS, MediaError, require_ffmpeg
     from model_config import (
         DEFAULT_ASR_MODEL,
@@ -106,7 +112,7 @@ def _legacy_process(source, output, transcriber, args):
 
 
 def main(argv=None):
-    parser = PrivateArgumentParser(prog='voice-transcribe', color=False,
+    parser = PrivateArgumentParser(prog='voice-transcribe', color=False, allow_abbrev=False,
                                    description='Convert local media and transcribe audio using OpenAI.')
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--input', help='Local media file or folder (pipeline mode).')
@@ -131,12 +137,45 @@ def main(argv=None):
                         help='Opt in to an additional AI readability derivative; may be inaccurate.')
     parser.add_argument('--format_as_interview', action='store_true',
                         help='Legacy audio-only faithful layout alias; never assigns speaker roles.')
+    parser.add_argument('--workflow', action='store_true',
+                        help='Author workflow: raw, optional polish, review, selectable chapter drafts.')
+    parser.add_argument('--media-type', choices=('auto', 'audio', 'video'), default='auto',
+                        help='Workflow media type (default: auto by supported extension).')
+    parser.add_argument('--stages', default='raw,polish,review',
+                        help='Workflow stages, comma separated: raw,polish,review,chapters. Raw always retained.')
+    parser.add_argument('--chapters', choices=('none', 'interview', 'narrative', 'both'), default='none',
+                        help='Select chapter drafts; implies review (default: none).')
+    parser.add_argument('--narrative-person', choices=('first', 'third'), default='first',
+                        help='Conservative narrative testimony framing (default: first).')
+    parser.add_argument('--author-model', default=DEFAULT_EDITING_MODEL,
+                        help='Review/chapter model (default: gpt-6-astra).')
+    parser.add_argument('--draft-with-unresolved-high', action='store_true',
+                        help='Explicitly allow labeled drafts with unresolved high-priority findings.')
     args = parser.parse_args(argv)
-    pipeline_mode = args.pipeline or args.extract_only
+    author_options = None
+    if args.workflow:
+        requested = args.stages.split(',')
+        if (not requested or any(stage not in {'raw', 'polish', 'review', 'chapters'} for stage in requested)
+                or len(requested) != len(set(requested))):
+            parser.usage_error('--stages must be a comma-separated selection of raw,polish,review,chapters.')
+        if args.extract_only:
+            parser.usage_error('--workflow cannot be combined with --extract-only; run extraction separately.')
+        if 'chapters' in requested and args.chapters == 'none':
+            parser.usage_error('The chapters stage requires --chapters interview, narrative, or both.')
+        styles = ('interview', 'narrative') if args.chapters == 'both' else (() if args.chapters == 'none' else (args.chapters,))
+        if args.draft_with_unresolved_high and not styles:
+            parser.usage_error('--draft-with-unresolved-high requires a chapter selection.')
+    else:
+        author_flags = {'--media-type', '--stages', '--chapters', '--narrative-person', '--author-model',
+                        '--draft-with-unresolved-high'}
+        supplied_flags = {arg.split('=', 1)[0] for arg in (argv if argv is not None else sys.argv[1:])}
+        if supplied_flags & author_flags:
+            parser.usage_error('Author options require --workflow.')
+    pipeline_mode = args.pipeline or args.extract_only or args.workflow
     if args.input is not None and not pipeline_mode:
-        parser.usage_error('--input requires --pipeline or --extract-only.')
+        parser.usage_error('--input requires --pipeline or --extract-only; --workflow also accepts local media.')
     if args.resume and not pipeline_mode:
-        parser.usage_error('--resume requires --pipeline or --extract-only.')
+        parser.usage_error('--resume requires --pipeline, --extract-only, or --workflow.')
     if args.format_as_interview and pipeline_mode:
         parser.usage_error('--format_as_interview is available only in legacy audio mode.')
     if args.extract_only and args.enhance_for_reading:
@@ -152,6 +191,14 @@ def main(argv=None):
         options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                        languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
         editing_options = EditingOptions(model=args.editing_model)
+        if args.workflow:
+            author_options = AuthorOptions(
+                review='review' in requested or bool(styles),
+                review_options=ReviewOptions(model=args.author_model),
+                chapter_options=ChapterOptions(model=args.author_model, styles=styles,
+                                               person=args.narrative_person) if styles else None,
+                allow_unresolved_high=args.draft_with_unresolved_high,
+            )
         source = Path(selected_input)
         if source.is_symlink() or not source.exists():
             raise PipelineError('Input is missing or is a symlink; choose an accessible local file or folder.')
@@ -167,14 +214,21 @@ def main(argv=None):
             raise PipelineError('Unsupported input type or extension.')
         if not files:
             raise PipelineError('No supported media files were found (folders are scanned nonrecursively).')
+        if args.workflow and args.media_type != 'auto':
+            allowed = AUDIO_EXTENSIONS if args.media_type == 'audio' else MEDIA_EXTENSIONS - AUDIO_EXTENSIONS
+            if any(item.suffix.lower() not in allowed for item in files):
+                raise PipelineError('Selected media type does not match the supported input extensions.')
         require_ffmpeg()
         output = output_directory(args.output_folder)
         transcriber = None if args.extract_only else Transcriber(media_timeout=args.media_timeout,
                                                                 options=options, editing_options=editing_options)
         pipeline = Pipeline(output, resume=args.resume, media_timeout=args.media_timeout,
-                            options=options, editing_options=editing_options) if pipeline_mode else None
-    except (MediaError, PipelineError, ConfigurationError, OSError, ValueError) as error:
-        message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError) else 'Cannot access local input/output; check permissions and free space.'
+                            options=options, editing_options=editing_options,
+                            author_options=author_options,
+                            progress=(lambda stage, status: _report(item=index, status='progress',
+                                stage=stage, stage_status=status)) if args.workflow else None) if pipeline_mode else None
+    except (MediaError, PipelineError, ConfigurationError, OSError, ValueError, AuthorWorkflowError, ReviewError) as error:
+        message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError, AuthorWorkflowError, ReviewError) else 'Cannot access local input/output; check permissions and free space.'
         _report(status='failed', message=message)
         return 1
 
@@ -183,7 +237,8 @@ def main(argv=None):
         try:
             if pipeline:
                 identity, stages = pipeline.process(item, transcriber=transcriber,
-                                                    extract_only=args.extract_only, enhance=args.enhance_for_reading)
+                                                    extract_only=args.extract_only,
+                                                    enhance=args.enhance_for_reading or (args.workflow and 'polish' in requested))
                 _report(item=index, job=identity, status='complete', stages=stages)
             else:
                 stages = _legacy_process(item, output, transcriber, args)

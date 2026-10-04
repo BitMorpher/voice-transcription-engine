@@ -1,0 +1,7 @@
+Chapter interview arrangement contract v1.
+Render raw source units in their original order as testimony excerpts for human review.
+Do not generate interviewer questions, assign speaker identities, or infer turn boundaries.
+If a question is present in the raw source, retain it as source testimony without guessing who spoke.
+Every excerpt must be an exact substring of the automatic raw transcript with character provenance.
+All flags and omissions remain visible. Criticism and allegations are testimony and require nuanced
+human review. This is an inspectable draft, never a claim of a publication-ready book chapter.

@@ -6,11 +6,13 @@ import os
 from pathlib import Path
 
 if __package__:
+    from .author_workflow import AuthorWorkflowError, run_author_stages
     from .media import MEDIA_EXTENSIONS, MediaError, prepare_audio
     from .model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from .private_output import digest, output_directory, write_private
     from .transcriber import TranscriptionError
 else:
+    from author_workflow import AuthorWorkflowError, run_author_stages
     from media import MEDIA_EXTENSIONS, MediaError, prepare_audio
     from model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from private_output import digest, output_directory, write_private
@@ -27,13 +29,15 @@ class PipelineError(RuntimeError):
 
 class Pipeline:
     def __init__(self, output, *, resume=False, media_timeout=3600, model=DEFAULT_ASR_MODEL,
-                 options=None, editing_options=None):
+                 options=None, editing_options=None, author_options=None, progress=None):
         self.output = output_directory(output)
         self.resume = resume
         self.media_timeout = media_timeout
         self.options = options or TranscriptionOptions(model=model)
         self.editing_options = editing_options or EditingOptions()
         self.model = self.options.model
+        self.author_options = author_options
+        self.progress = progress or (lambda stage, status: None)
 
     @staticmethod
     def _verified(job, state, stage, filename, configuration=None, transcription_sha256=None):
@@ -147,11 +151,13 @@ class Pipeline:
                     configuration = self._enhancement_fingerprint(transcription_sha256)
                 if self.resume and self._verified(job, state, stage, filename, configuration, transcription_sha256):
                     summary[stage] = 'skipped'
+                    self.progress(stage, 'skipped')
                     continue
                 if os.path.lexists(job / filename):
                     summary[stage] = 'failed'
                     raise PipelineError('Unverified output exists; use a new output folder. No artifact was overwritten.', stages=summary)
                 try:
+                    self.progress(stage, 'running')
                     operation()
                     # Detect changes during preparation before accepting any outputs.
                     if stage == 'conversion' and digest(source) != source_hash:
@@ -169,6 +175,15 @@ class Pipeline:
                     raise PipelineError(message, stages=summary) from None
                 self._save(manifest, state)
                 summary[stage] = 'complete'
+                self.progress(stage, 'complete')
+            if not extract_only and self.author_options is not None:
+                try:
+                    run_author_stages(job, state, transcriber, self.author_options,
+                                      resume=self.resume,
+                                      save=lambda: self._save(manifest, state), summary=summary,
+                                      progress=self.progress)
+                except AuthorWorkflowError as error:
+                    raise PipelineError(str(error), stages=summary) from None
             return identity, summary
         finally:
             lock.unlink()
