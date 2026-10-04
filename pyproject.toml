@@ -39,7 +39,7 @@ dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17"]
 py-modules = [
     "cli", "transcriber", "media", "pipeline", "private_output", "model_config",
     "text_editing", "logger", "utils", "author_review", "author_workflow",
-    "chapters", "review_export",
+    "chapters", "review_export", "ordered_interview", "source_provenance",
 ]
 packages = ["prompts"]
 package-dir = {"" = "src"}

@@ -200,3 +200,7 @@ The workflow extends the existing small modules rather than introducing a servic
 | `src/prompts/*_v1.txt` | Packaged, versioned review and chapter contracts, including untrusted-source instructions. |
 
 Run the [offline verification commands](../README.md#offline-verification). Provider responses are mocked; synthetic media exercises FFmpeg without using personal content. Relevant regression coverage includes audio/video and stage selections, complete/empty/incomplete/failed review, long-source boundaries and duplicate findings, bad references/invented excerpts, refusals/truncation, embedded transcript instructions, high-priority gating and explicit override, chapter coverage/wording, resume/settings/source integrity, and Excel roundtrip/literal-cell handling. Tests establish implemented contracts under those cases; they do not benchmark recognition accuracy, issue detection quality, factual judgment, or publication readiness on real testimony.
+
+## Continuations recorded in separate files
+
+Folder batch mode creates independent jobs. For several recordings from one interview, supply [an ordered interview manifest](ordered-interviews.md) with `--workflow --interview-manifest`. It retains raw parts, combines them without rewriting in explicit order, and runs these author stages once on the combined interview, with recording-level text provenance in JSON/XLSX and chapter citations.

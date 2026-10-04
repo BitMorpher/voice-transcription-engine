@@ -72,7 +72,7 @@ class Pipeline:
                       'Speaker identities and turn boundaries are unverified; no roles are inferred.\n\n'
                       + edited)
 
-    def process(self, source, *, transcriber=None, extract_only=False, enhance=False):
+    def process(self, source, *, transcriber=None, extract_only=False, enhance=False, require_nonempty=False):
         """Return per-stage statuses. Resume requires a matching, verified manifest.
 
         Existing unverified artifacts are conflicts, never overwritten. Reattempt
@@ -133,8 +133,13 @@ class Pipeline:
             if not extract_only:
                 if transcriber is None:
                     raise PipelineError('A configured transcriber is required for the full pipeline.')
-                stages.append(('transcription', 'transcription.txt', lambda: write_private(
-                    job / 'transcription.txt', transcriber.transcribe(str(audio), prepared=True))))
+                def transcribe():
+                    text = transcriber.transcribe(str(audio), prepared=True)
+                    if require_nonempty and (not isinstance(text, str) or not text.strip()):
+                        raise PipelineError('A recording part returned empty text; no complete interview was saved. Retry or review this recording locally.')
+                    write_private(job / 'transcription.txt', text)
+
+                stages.append(('transcription', 'transcription.txt', transcribe))
                 if enhance:
                     stages.append(('enhancement', 'derivative_readability.txt', lambda: self._write_derivative(
                         job, transcriber, state['stages']['transcription']['sha256'])))

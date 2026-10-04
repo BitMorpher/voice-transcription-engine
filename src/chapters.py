@@ -405,6 +405,13 @@ def render_chapter(document, style):
     for passage in chapter['passages']:
         lines.append(f'[{passage["passage_id"]}; raw characters {passage["start"]}:{passage["end"]}; '
                      f'segments {", ".join(passage["segment_ids"])}]')
+        for reference in passage.get('recording_refs', []):
+            if reference['kind'] == 'recording':
+                lines.append(f'Recording part {reference["order"]} ({reference["part_id"]}); '
+                             f'local text characters {reference["local_start"]}:{reference["local_end"]}; '
+                             f'local segments {", ".join(reference["local_segment_ids"])}.')
+            else:
+                lines.append('Explicit recording separator; no recording time or content inferred.')
         lines.append('Review flags: ' + (', '.join(passage['finding_ids']) or 'None linked; not a publication clearance.'))
         if style == 'narrative' and chapter['person'] == 'third':
             lines.append('The source testimony states (speaker identity requires verification):')

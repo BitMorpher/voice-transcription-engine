@@ -76,6 +76,16 @@ uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 
 
 Extraction does not import the OpenAI SDK, require a key, or make API calls. `--extract-only` also accepts supported audio files for normalization. It cannot be combined with enhancement.
 
+## Multiple recordings from one interview
+
+Use an explicit ordered JSON manifest with `--workflow --interview-manifest`; folder batches remain independent jobs. Mixed audio/video parts keep separate raw transcripts and combine in the exact supplied sequence, followed by one interview-wide polish/review/chapter workflow. See [ordered interview usage and resume behavior](docs/ordered-interviews.md).
+
+```bash
+uv run --locked voice-transcribe --workflow \
+  --interview-manifest private/input/interview_manifest.json \
+  --stages raw,polish,review --chapters both --output-folder private/ordered-output
+```
+
 ## Author review and chapter comparison
 
 Use the same CLI with `--workflow` and a local audio/video path. Default stages retain the immutable raw transcript, create a separate faithful punctuation/layout polish, then review the **raw source** into JSON and an Excel workbook. Chapter generation is optional:
