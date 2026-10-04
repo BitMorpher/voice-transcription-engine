@@ -1,225 +1,199 @@
-import openai
-import os
+"""Faithful audio transcription with exact, bounded PCM chunks and safe failures."""
+
 import io
-import math
+import json
+import logging
+import os
 import tempfile
-from typing import List
+import wave
+from pathlib import Path
 
-from pydub import AudioSegment
-from logger import get_logger
+if __package__:
+    from .media import AUDIO_EXTENSIONS, prepare_audio
+    from .model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
+    from .text_editing import (
+        FAITHFUL_INSTRUCTION,
+        EditingError,
+        schema,
+        split_text,
+        validate_edit,
+        words,
+    )
+else:
+    from media import AUDIO_EXTENSIONS, prepare_audio
+    from model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
+    from text_editing import (
+        FAITHFUL_INSTRUCTION,
+        EditingError,
+        schema,
+        split_text,
+        validate_edit,
+        words,
+    )
 
-logger = get_logger(__name__)
+
+class TranscriptionError(RuntimeError):
+    """Safe transcription failure without provider payloads or source information."""
+
+
+class ConfigurationError(EnvironmentError):
+    """Safe setup guidance without values from the environment."""
+
+
+def _suppress_provider_logging():
+    """Suppress SDK/network loggers, including already configured child loggers."""
+    roots = ('openai', 'httpx', 'httpcore', 'httpx2', 'httpcore2')
+    names = set(roots) | set(logging.Logger.manager.loggerDict)
+    for name in names:
+        if any(name == root or name.startswith(root + '.') for root in roots):
+            logger = logging.getLogger(name)
+            logger.disabled = True
+            logger.setLevel(logging.CRITICAL + 1)
 
 
 class Transcriber:
-    def __init__(self, model_name="whisper-1"):
-        # Ensure OPENAI_API_KEY is set in environment
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise EnvironmentError("OPENAI_API_KEY environment variable is required.")
-        openai.api_key = api_key
-        self.model_name = model_name
-        # Maximum allowed file size per request (20 MiB)
-        self.max_bytes = 20 * 1024 * 1024
-
-    def _split_audio_into_chunks(self, audio_path: str) -> List[io.BytesIO]:
-        """Split the input audio into chunks such that each chunk's exported size is <= max_bytes.
-
-        Returns a list of BytesIO objects (ready for reading from the start). If splitting fails,
-        raises an exception.
-        """
-        file_size = os.path.getsize(audio_path)
-        if file_size <= self.max_bytes:
-            raise ValueError("File does not need splitting")
-
-        # Load audio with pydub
-        audio = AudioSegment.from_file(audio_path)
-        duration_ms = len(audio)
-        if duration_ms <= 0:
-            raise ValueError("Audio duration is zero")
-
-        # Estimate bytes per ms based on the original file size
-        bytes_per_ms = file_size / float(duration_ms)
-        # Compute max chunk duration in ms so each chunk will be <= max_bytes
-        max_ms_per_chunk = int(math.floor(self.max_bytes / bytes_per_ms))
-        # Safeguard: at least 1 second
-        if max_ms_per_chunk < 1000:
-            max_ms_per_chunk = 1000
-
-        chunks: List[io.BytesIO] = []
-        # Determine export format from file extension
-        _, ext = os.path.splitext(audio_path)
-        ext = ext.lstrip('.').lower() or 'wav'
-
-        for i in range(0, duration_ms, max_ms_per_chunk):
-            chunk = audio[i:i + max_ms_per_chunk]
-            bio = io.BytesIO()
-            # pydub export will write encoded audio to the BytesIO
-            chunk.export(bio, format=ext)
-            bio.seek(0)
-            # Give the BytesIO a name attribute so downstream libraries can infer filename
-            bio.name = f"part_{i // max_ms_per_chunk}.{ext}"
-            chunks.append(bio)
-
-        return chunks
-
-    def _split_audio_by_duration(self, audio_path: str, chunk_ms: int) -> List[str]:
-        """Split the input .m4a audio into fixed-duration chunks (milliseconds).
-
-        This writes each chunk to a temporary .m4a file and returns the list of file paths.
-        Using real files is necessary for reliable exporting/encoding of .m4a with ffmpeg.
-        """
-        # Load audio with pydub (specify format to ensure correct demuxing)
-        audio = AudioSegment.from_file(audio_path, format='m4a')
-        duration_ms = len(audio)
-        if duration_ms <= 0:
-            raise ValueError("Audio duration is zero")
-
-        temp_paths: List[str] = []
-        # Export each chunk to a temporary .mp4 file
-        for i, start in enumerate(range(0, duration_ms, chunk_ms)):
-            end = start + chunk_ms
-            chunk = audio[start:end]
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-            tmp_path = tmp.name
-            tmp.close()
-            # Export chunk to the temp file path using ffmpeg
-            chunk.export(tmp_path, format='mp4')
-            temp_paths.append(tmp_path)
-
-        return temp_paths
-
-    def transcribe(self, audio_path: str) -> str:
-        """
-        Transcribe the audio at audio_path using OpenAI's Whisper (via openai-python).
-        If the file is larger than 20 MB it will be split into multiple chunks and each chunk
-        will be transcribed separately. The final transcription is the concatenation of parts
-        in order.
-        Returns the verbatim transcription as a string.
-        """
-        client = openai.OpenAI()
-
-        try:
-            logger.info("Checking file size", {"audio_path": audio_path})
-            file_size = os.path.getsize(audio_path)
-            logger.info("File size checked", {"audio_path": audio_path, "size_bytes": file_size})
-        except OSError as e:
-            logger.error("Could not access file", {"audio_path": audio_path, "error": str(e)})
-            raise FileNotFoundError(f"Could not access file '{audio_path}': {e}")
-
-        # If file is small enough, transcribe directly
-        logger.info("Starting transcription", {"audio_path": audio_path, "size_bytes": file_size})
-
-        if file_size <= self.max_bytes:
-            with open(audio_path, "rb") as audio_file:
-                resp = client.audio.transcriptions.create(file=audio_file, model=self.model_name)
-            text = getattr(resp, "text", "")
-            logger.info("Finished transcription", {"audio_path": audio_path, "size_bytes": file_size, "transcript_length": len(text)})
-            return text
-
-        # Otherwise split into chunks and transcribe each
-        _, ext = os.path.splitext(audio_path)
-        ext = ext.lstrip('.').lower()
-        try:
-            if ext == 'm4a':
-                # For m4a files, split by fixed duration (e.g., 5 minutes) to avoid encoding/size issues
-                chunk_ms = 5 * 60 * 1000  # 5 minutes
-                logger.info("Splitting .m4a by duration", {"audio_path": audio_path, "chunk_ms": chunk_ms})
-                chunks = self._split_audio_by_duration(audio_path, chunk_ms)
-            else:
-                chunks = self._split_audio_into_chunks(audio_path)
-        except Exception as exc:
-            logger.warning("Failed to split audio, falling back to full-file transcription", {"audio_path": audio_path, "error": str(exc)})
-            # Log traceback for debugging
-            import traceback
-            traceback.print_exc()
-            # If splitting fails for any reason, fall back to transcribing the whole file
-            with open(audio_path, "rb") as audio_file:
-                resp = client.audio.transcriptions.create(file=audio_file, model=self.model_name)
-            text = getattr(resp, "text", "")
-            logger.info("Finished transcription (fallback)", {"audio_path": audio_path, "size_bytes": file_size, "transcript_length": len(text)})
-            return text
-
-        parts: List[str] = []
-        logger.info("Transcribing chunks", {"audio_path": audio_path, "num_chunks": len(chunks)})
-        for idx, chunk_item in enumerate(chunks):
-            part_text = ""
-            temp_file_to_delete = None
+    def __init__(self, model_name=DEFAULT_ASR_MODEL, *, client=None, media_timeout=3600,
+                 options=None, editing_options=None):
+        self.options = options or TranscriptionOptions(model=model_name)
+        self.editing_options = editing_options or EditingOptions()
+        self.model_name = self.options.model
+        self.max_bytes = 20 * 1024 * 1024  # Safely below the API's 25 MB limit.
+        self.media_timeout = media_timeout
+        if client is None:
+            if not os.getenv('OPENAI_API_KEY', '').strip():
+                raise ConfigurationError('Set OPENAI_API_KEY in your environment before transcribing.')
             try:
-                if isinstance(chunk_item, str):
-                    # chunk_item is a file path (from _split_audio_by_duration)
-                    temp_file_to_delete = chunk_item
-                    with open(chunk_item, 'rb') as fh:
-                        resp = client.audio.transcriptions.create(file=fh, model=self.model_name)
-                else:
-                    # Assume file-like object
-                    chunk_item.seek(0)
-                    resp = client.audio.transcriptions.create(file=chunk_item, model=self.model_name)
+                import openai
+            except ImportError:
+                raise ConfigurationError('The openai SDK is required; install the project dependencies.') from None
+            # SDK/network debug logging can contain authorization headers or payloads.
+            _suppress_provider_logging()
+            try:
+                client = openai.OpenAI(timeout=120.0, max_retries=2)
+            except Exception:
+                raise ConfigurationError('Cannot configure OpenAI; check your environment settings.') from None
+        self.client = client
+        _suppress_provider_logging()
 
-                part_text = getattr(resp, "text", "")
-                logger.info("Chunk transcribed", {"audio_path": audio_path, "chunk_index": idx, "part_length": len(part_text)})
-            except Exception as exc:
-                logger.error("Chunk transcription failed", {"audio_path": audio_path, "chunk_index": idx, "error": str(exc)})
-                part_text = f"[transcription error on part {idx}: {exc}]"
-            finally:
-                # Cleanup a temp file if we created one earlier
-                if temp_file_to_delete:
-                    try:
-                        os.remove(temp_file_to_delete)
-                        logger.info("Removed temporary chunk file", {"temp_path": temp_file_to_delete})
-                    except Exception:
-                        logger.warning("Failed to remove temporary chunk file", {"temp_path": temp_file_to_delete})
+    def _wave_chunks(self, audio_path):
+        """Yield WAV buffers covering every frame once, each below max_bytes.
 
-            parts.append(part_text)
+        Read one chunk at a time; no compressed-size estimation or unbounded list
+        of decoded audio. Frame boundaries preserve the final sub-second tail.
+        """
+        with wave.open(str(audio_path), 'rb') as audio:
+            frame_bytes = audio.getnchannels() * audio.getsampwidth()
+            max_frames = min((self.max_bytes - 64) // frame_bytes,
+                             int(self.options.chunk_seconds * audio.getframerate()))
+            if max_frames < 1 or audio.getnframes() < 1:
+                raise TranscriptionError('Audio is empty or chunk size is invalid.')
+            remaining = audio.getnframes()
+            while remaining:
+                count = min(max_frames, remaining)
+                frames = audio.readframes(count)
+                if len(frames) != count * frame_bytes:
+                    raise TranscriptionError('Audio ended unexpectedly; no complete transcript was produced.')
+                buffer = io.BytesIO()
+                with wave.open(buffer, 'wb') as chunk:
+                    chunk.setparams(audio.getparams())
+                    chunk.writeframes(frames)
+                if buffer.tell() > self.max_bytes:
+                    raise TranscriptionError('Encoded chunk exceeds the upload limit.')
+                buffer.seek(0)
+                buffer.name = 'audio.wav'  # Never send the personal source filename.
+                yield buffer
+                remaining -= count
 
-        combined = "\n\n".join(parts)
-        logger.info("Finished transcription (chunks combined)", {"audio_path": audio_path, "size_bytes": file_size, "num_chunks": len(chunks), "transcript_length": len(combined)})
-        return combined
+    def transcribe(self, audio_path: str, *, prepared=False) -> str:
+        """Transcribe WAV/MP3/M4A in order; any failed chunk fails the entire stage.
+
+        ``prepared`` is reserved for pipeline-produced mono PCM WAV. Legacy
+        callers keep using ``transcribe(path)``; media is normalized locally.
+        """
+        source = Path(audio_path)
+        if not source.is_file():
+            raise FileNotFoundError('Audio input is missing or inaccessible.')
+        if source.suffix.lower() not in AUDIO_EXTENSIONS:
+            raise TranscriptionError('Unsupported audio extension; convert video to audio first.')
+        if prepared:
+            return self._transcribe_wave(source)
+        with tempfile.TemporaryDirectory(prefix='voice-transcription-') as temporary:
+            audio = prepare_audio(source, Path(temporary) / 'audio.wav', timeout=self.media_timeout)
+            return self._transcribe_wave(audio)
+
+    def _transcribe_wave(self, audio_path):
+        parts = []
+        try:
+            for index, chunk in enumerate(self._wave_chunks(audio_path), start=1):
+                try:
+                    _suppress_provider_logging()
+                    response = self.client.audio.transcriptions.create(
+                        file=('audio.wav', chunk, 'audio/wav'), **self.options.request_parameters(),
+                    )
+                    text = getattr(response, 'text', None)
+                    if not isinstance(text, str):
+                        raise TranscriptionError('Provider returned an invalid transcription response.')
+                    parts.append(text)
+                except Exception:
+                    raise TranscriptionError(
+                        f'Transcription failed on chunk {index}; no complete transcript was saved. '
+                        'Check API access, quota, and network connectivity before retrying.'
+                    ) from None
+                finally:
+                    chunk.close()
+        except (OSError, EOFError, wave.Error):
+            raise TranscriptionError('Prepared audio could not be read.') from None
+        return '\n\n'.join(parts)
+
+    def _enhance(self, transcription):
+        if not isinstance(transcription, str):
+            raise TranscriptionError('Editing input must be transcript text.')
+        if not transcription.strip():
+            return transcription
+        edited_parts, uncertain = [], []
+        try:
+            for index, source in enumerate(split_text(transcription, self.editing_options.chunk_bytes), start=1):
+                if not source.strip():
+                    edited_parts.append(source)
+                    continue
+                _suppress_provider_logging()
+                # Budget includes reasoning. Byte-bounded input leaves ample output
+                # headroom; length/content-filter/refusal still fail explicitly.
+                budget = min(32768, max(16384, len(source.encode('utf-8')) * 3 + 8192))
+                response = self.client.chat.completions.create(
+                    model=self.editing_options.model,
+                    messages=[
+                        {'role': 'system', 'content': FAITHFUL_INSTRUCTION},
+                        {'role': 'user', 'content': json.dumps({'chunk_index': index, 'text': source}, ensure_ascii=False)},
+                    ],
+                    response_format=schema(index),
+                    # extra_body keeps the existing SDK entry point compatible
+                    # with newer API fields without passing unsupported kwargs.
+                    extra_body={'reasoning_effort': self.editing_options.reasoning_effort,
+                                'max_completion_tokens': budget, 'store': False},
+                )
+                choice = response.choices[0]
+                if choice.finish_reason != 'stop' or getattr(choice.message, 'refusal', None):
+                    raise EditingError('Derivative output was incomplete or refused; retain the original transcript.')
+                edited, speaker_uncertain = validate_edit(choice.message.content, source, index)
+                edited_parts.append(edited)
+                if speaker_uncertain:
+                    uncertain.append(index)
+            combined = ''.join(edited_parts)
+            if words(combined) != words(transcription):
+                raise EditingError('Reassembled editing changed words, symbols, or boundaries; no derivative was saved.')
+            if uncertain:
+                combined = '[Speaker attribution uncertain in chunks: ' + ', '.join(map(str, uncertain)) + ']\n\n' + combined
+            return combined
+        except EditingError as error:
+            raise TranscriptionError(str(error)) from None
+        except Exception:
+            raise TranscriptionError('Optional editing failed; check API/model access, quota, and network connectivity. The original transcript is retained.') from None
 
     def enhance_transcription(self, transcription: str) -> str:
-        """
-        Improve readability: punctuation, capitalization, paragraphing while preserving meaning.
-        """
-        # ...existing readability enhancement code...
-        prompt = (
-            "You will receive a verbatim transcript. Return the same content edited for readability: "
-            "add punctuation, capitalization, and paragraph breaks. Do not change meaning or add new information.\n\n"
-            f"Transcript:\n{transcription}\n\nOutput:"
-        )
-        client = openai.OpenAI()
-        resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=2048,
-        )
-        return getattr(resp.choices[0].message, "content", "").strip()
+        """Opt-in punctuation/layout derivative with verified word preservation."""
+        return self._enhance(transcription)
 
     def enhance_as_interview(self, transcription: str) -> str:
-        """
-        Use OpenAI to restructure the transcription as an interview between two people:
-        "Interviewer" and "Interviewee". Keep the content and meaning verbatim (no added facts).
-        Apply punctuation, short turns, and clear labels for each speaker.
-
-        Returns the interview-formatted text.
-        """
-        prompt = (
-            "You are an assistant that reformats verbatim transcripts into a clear interview "
-            "between two people labeled 'Interviewer' and 'Interviewee'. Preserve the original "
-            "content and meaning exactly—do not invent, omit, or add facts. Improve readability "
-            "with punctuation, capitalization, and short paragraphs for each turn. Use the format:\n\n"
-            "Interviewer: <question or prompt>\n"
-            "Interviewee: <response>\n\n"
-            "If speaker identity is unclear, assign turns logically but do not attribute words to a "
-            "specific real person. Keep the tone neutral and faithful to the source.\n\n"
-            f"Transcript:\n{transcription}\n\nFormatted interview:"
-        )
-
-        client = openai.OpenAI()
-        resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=2048,
-        )
-        return getattr(resp.choices[0].message, "content", "").strip()
+        """Legacy alias for faithful layout only; never generate interviewer turns."""
+        return self._enhance(transcription)

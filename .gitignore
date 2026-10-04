@@ -4,3 +4,40 @@ data/
 # Ignore macOS system files
 .DS_Store
 .DS_Store?
+
+# Private inputs, intermediates, transcripts, resumability manifests, and exports
+private/
+output/
+outputs/
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.m4v
+*_transcription.txt
+*_enhanced*.txt
+manifest.json
+transcription.txt
+derivative_*.txt
+
+# Credentials and local environment state
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
