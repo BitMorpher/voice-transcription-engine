@@ -287,3 +287,62 @@ def test_actual_review_report_contract_exports_with_mocked_model(tmp_path):
     assert ''.join(json.loads(row[4]) if row[5] == 'JSON string (escaped)' else row[4]
                    for row in workbook['Source segments'].iter_rows(
                        min_row=2, values_only=True)) == raw
+
+
+def _recording_report(raw, client, *, part_id='synthetic-part'):
+    from src.author_review import review_transcript, source_segments
+    from src.source_provenance import bind_report
+    report = review_transcript(raw, client)
+    checksum = hashlib.sha256(raw.encode()).hexdigest()
+    provenance = {
+        'version': 1, 'human_review_required': True, 'separator': '\n\n',
+        'raw_sha256': checksum,
+        'parts': [{'id': part_id, 'order': 1, 'start': 0, 'end': len(raw),
+                   'path': '=SYNTHETIC_SOURCE.wav', 'source_sha256': 'a' * 64,
+                   'raw_transcript': '=SYNTHETIC_TRANSCRIPT', 'raw_sha256': checksum,
+                   'segments': [{k: v for k, v in segment.items() if k != 'text'}
+                                for segment in source_segments(raw)]}],
+        'spans': [{'kind': 'recording', 'part_id': part_id, 'order': 1, 'start': 0, 'end': len(raw)}],
+    }
+    bind_report(report, provenance)
+    return report
+
+
+def test_recording_citation_cell_limit_rejects_incomplete_export(tmp_path):
+    client = MagicMock()
+    def respond(**kwargs):
+        data = json.loads(kwargs['messages'][-1]['content'])
+        body = {'chunk_index': data['chunk_index'], 'fully_reviewed': True, 'findings': [],
+                'reviewed_start': data['core_start'], 'reviewed_end': data['core_end']}
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+            message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+    client.chat.completions.create.side_effect = respond
+    report = _recording_report('a\n' * 3000, client)
+    assert len(', '.join(s['segment_id'] for s in report['recording_provenance']['parts'][0]['segments'])) > 32767
+    target = tmp_path / 'synthetic-overflow.xlsx'
+    with pytest.raises(ReviewExportError, match='cell limit'):
+        export_review(report, target)
+    assert not target.exists()
+
+
+def test_recording_citations_below_cell_limit_and_literal_formula_prefixes(tmp_path):
+    client = MagicMock()
+    def respond(**kwargs):
+        data = json.loads(kwargs['messages'][-1]['content'])
+        body = {'chunk_index': data['chunk_index'], 'fully_reviewed': True, 'findings': [],
+                'reviewed_start': data['core_start'], 'reviewed_end': data['core_end']}
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+            message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+    client.chat.completions.create.side_effect = respond
+    report = _recording_report('a\n' * 2730, client, part_id='=SYNTHETIC_PART')
+    expected = ', '.join(s['segment_id'] for s in report['recording_provenance']['parts'][0]['segments'])
+    assert len(expected) == 32758
+    target = tmp_path / 'synthetic-safe-citations.xlsx'
+    export_review(report, target)
+    workbook = load_workbook(target)
+    chunk = next(row for row in workbook['Recording references'].iter_rows(min_row=2) if row[0].value == 'chunk')
+    assert chunk[9].value == expected
+    assert chunk[4].value == '=SYNTHETIC_PART'
+    assert workbook['Recording parts']['C2'].value == '=SYNTHETIC_SOURCE.wav'
+    for name in ('Recording parts', 'Recording references'):
+        assert all(cell.data_type != 'f' for row in workbook[name] for cell in row)

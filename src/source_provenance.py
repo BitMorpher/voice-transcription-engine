@@ -55,6 +55,8 @@ def validate_binding(report, provenance):
 
 def bind_chapters(document, provenance):
     document["recording_provenance"] = copy.deepcopy(provenance)
+    for finding in document["findings"]:
+        finding["recording_refs"] = references(provenance, finding["start"], finding["end"])
     for chapter in document["chapters"].values():
         for item in [*chapter["passages"], *chapter["coverage_omissions"]]:
             item["recording_refs"] = references(provenance, item["start"], item["end"])

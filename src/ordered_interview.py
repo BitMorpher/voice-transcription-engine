@@ -416,13 +416,20 @@ class OrderedInterview:
                     media_timeout=self.media_timeout,
                     options=self.options,
                 )
-                pipeline.process(part["path"], extract_only=True)
+                pipeline.process(
+                    part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
+                )
             self.preflight()
             for part, directory, identity in self.parts:
                 self.progress("part_transcription", "running")
                 Pipeline(
                     directory, resume=True, media_timeout=self.media_timeout, options=self.options
-                ).process(part["path"], transcriber=transcriber, require_nonempty=True)
+                ).process(
+                    part["path"],
+                    transcriber=transcriber,
+                    require_nonempty=True,
+                    expected_source_sha256=part["source_sha256"],
+                )
                 self.progress("part_transcription", "complete")
             self.preflight()
             raw, provenance = self._combine()
@@ -471,7 +478,9 @@ class OrderedInterview:
             return self.binding, summary
         except PipelineError:
             raise
-        except Exception:
+        except Exception as error:
+            if type(error) is asr_engine.TranscriptionError:
+                raise PipelineError(str(error)) from None
             raise PipelineError(
                 "Interview processing failed; completed part outputs are retained. Check local media and output access before resuming."
             ) from None

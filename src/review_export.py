@@ -246,9 +246,9 @@ def _build(report):
                                     ('finding', findings, 'finding_id'), ('chunk', chunks, 'chunk_index')]:
             for item in items:
                 for ref in references(provenance, item['start'], item['end']):
-                    _row(refs_sheet, (kind, str(item[id_key]), ref['kind'], ref.get('order', ''),
-                         ref.get('part_id', ''), ref['start'], ref['end'], ref.get('local_start', ''),
-                         ref.get('local_end', ''), ', '.join(ref.get('local_segment_ids', []))))
+                    _row(refs_sheet, (_text(kind), _text(str(item[id_key])), _text(ref['kind']), ref.get('order', ''),
+                         _text(ref.get('part_id', '')), ref['start'], ref['end'], ref.get('local_start', ''),
+                         ref.get('local_end', ''), _text(', '.join(ref.get('local_segment_ids', [])))))
         for sheet in (parts_sheet, refs_sheet):
             sheet.auto_filter.ref = sheet.dimensions
 
