@@ -1,38 +1,114 @@
-import unittest
-from unittest.mock import patch, MagicMock
-import sys
-import os
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
 from src.cli import main
+from src.transcriber import Transcriber
 
-class TestCLI(unittest.TestCase):
 
-    @patch('src.cli.Transcriber')
-    @patch('argparse.ArgumentParser.parse_args')
-    def test_main_with_valid_arguments(self, mock_parse_args, mock_transcriber):
-        mock_parse_args.return_value = MagicMock(input_folder='input', output_folder='output', enhance_for_reading=True)
-        mock_transcriber.return_value.transcribe.return_value = "Transcription result"
+def test_legacy_audio_arguments_and_names(monkeypatch, synthetic_media, tmp_path, provider, capsys):
+    source = synthetic_media('synthetic.wav')
+    synthetic_media('ignored.mp4')
+    transcriber = Transcriber(client=provider)
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kwargs: transcriber)
+    output = tmp_path / 'output'
+    assert main(['--input_folder', str(source.parent), '--output_folder', str(output)]) == 0
+    assert (output / 'synthetic_transcription.txt').read_text() == 'Synthetic transcript.'
+    assert not (output / 'ignored_transcription.txt').exists()
+    provider.chat.completions.create.assert_not_called()
+    captured = capsys.readouterr()
+    assert source.name not in captured.out
+    assert str(tmp_path) not in captured.out
+    assert 'Synthetic transcript.' not in captured.out
+    assert captured.err == ''
 
-        with patch('sys.stdout', new_callable=MagicMock()) as mock_stdout:
-            main()
-            mock_transcriber.assert_called_once_with('input', 'output', True)
-            mock_transcriber.return_value.transcribe.assert_called_once()
-            mock_stdout.write.assert_called_once_with("Transcription result\n")
 
-    @patch('src.cli.Transcriber')
-    @patch('argparse.ArgumentParser.parse_args')
-    def test_main_with_missing_input_folder(self, mock_parse_args, mock_transcriber):
-        mock_parse_args.return_value = MagicMock(input_folder=None, output_folder='output', enhance_for_reading=False)
+def test_cli_full_pipeline(monkeypatch, synthetic_media, tmp_path, provider, capsys):
+    source = synthetic_media()
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kwargs: Transcriber(client=provider))
+    assert main(['--pipeline', '--input', str(source), '--output_folder', str(tmp_path / 'output')]) == 0
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows[0]['stages'] == {'conversion': 'complete', 'transcription': 'complete'}
+    assert rows[-1]['failed'] == 0
 
-        with self.assertRaises(SystemExit):
-            main()
 
-    @patch('src.cli.Transcriber')
-    @patch('argparse.ArgumentParser.parse_args')
-    def test_main_with_invalid_output_folder(self, mock_parse_args, mock_transcriber):
-        mock_parse_args.return_value = MagicMock(input_folder='input', output_folder=None, enhance_for_reading=False)
+def test_extract_only_never_initializes_provider(monkeypatch, synthetic_media, tmp_path):
+    factory = MagicMock(side_effect=AssertionError('No provider allowed.'))
+    monkeypatch.setattr('src.cli.Transcriber', factory)
+    assert main(['--extract-only', '--input', str(synthetic_media()), '--output_folder', str(tmp_path / 'output')]) == 0
+    factory.assert_not_called()
 
-        with self.assertRaises(SystemExit):
-            main()
 
-if __name__ == '__main__':
-    unittest.main()
+def test_missing_key_is_clear_nonsecret(synthetic_media, tmp_path, capsys):
+    source = synthetic_media()
+    assert main(['--pipeline', '--input', str(source), '--output_folder', str(tmp_path / 'output')]) == 1
+    output = capsys.readouterr().out
+    assert 'OPENAI_API_KEY' in output
+    assert str(tmp_path) not in output and source.name not in output
+
+
+def test_batch_continues_and_redacts_raw_errors(monkeypatch, tmp_path, capsys):
+    inputs = tmp_path / 'input'
+    inputs.mkdir()
+    (inputs / 'personal-a.wav').touch()
+    (inputs / 'personal-b.wav').touch()
+    mock = MagicMock()
+    mock.transcribe.side_effect = [RuntimeError('PRIVATE_PROVIDER_ERROR full/path key payload'), 'Synthetic safe text']
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kwargs: mock)
+    monkeypatch.setattr('src.cli.require_ffmpeg', lambda: None)
+    output = tmp_path / 'output'
+    assert main(['--input_folder', str(inputs), '--output_folder', str(output)]) == 1
+    captured = capsys.readouterr()
+    assert 'PRIVATE_PROVIDER_ERROR' not in captured.out
+    assert 'personal-' not in captured.out
+    assert 'Synthetic safe text' not in captured.out
+    assert str(tmp_path) not in captured.out
+    assert captured.err == ''
+    assert (output / 'personal-b_transcription.txt').exists()
+    assert not (output / 'personal-a_transcription.txt').exists()
+
+
+def test_preflight_os_error_does_not_leak(monkeypatch, tmp_path, capsys):
+    source = tmp_path / 'private.wav'
+    source.touch()
+    def denied(*args):
+        raise PermissionError('PRIVATE_PATH_ERROR')
+    monkeypatch.setattr('src.cli.output_directory', denied)
+    monkeypatch.setattr('src.cli.require_ffmpeg', lambda: None)
+    assert main(['--extract-only', '--input', str(source)]) == 1
+    assert 'PRIVATE_PATH_ERROR' not in capsys.readouterr().out
+
+
+def test_legacy_never_overwrites(monkeypatch, tmp_path):
+    inputs = tmp_path / 'input'
+    inputs.mkdir()
+    (inputs / 'same.wav').touch()
+    output = tmp_path / 'output'
+    output.mkdir()
+    target = output / 'same_transcription.txt'
+    target.write_text('Synthetic original.')
+    transcriber = MagicMock()
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kwargs: transcriber)
+    monkeypatch.setattr('src.cli.require_ffmpeg', lambda: None)
+    assert main(['--input_folder', str(inputs), '--output_folder', str(output)]) == 1
+    transcriber.transcribe.assert_not_called()
+    assert target.read_text() == 'Synthetic original.'
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--pipeline', '--input', 'unused', '--media-timeout', 'nan'],
+    ['--pipeline', '--input', 'unused', '--media-timeout', '0'],
+    ['--pipeline', '--input', 'unused', '--format_as_interview'],
+    ['--extract-only', '--input', 'unused', '--enhance_for_reading'],
+    ['--input', 'unused'],
+    ['--input_folder', 'unused', '--resume'],
+])
+def test_invalid_arguments_fail_without_processing(arguments):
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+    assert error.value.code == 2
+
+
+def test_empty_folder_is_failure(tmp_path):
+    assert main(['--extract-only', '--input', str(tmp_path)]) == 1

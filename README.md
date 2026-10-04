@@ -1,210 +1,120 @@
-# voice-transcription-engine
+# Voice Transcription Engine
 
-## Overview
-The `voice-transcription-engine` is a command-line interface (CLI) tool that leverages OpenAI's Whisper model to transcribe audio recordings into text with high accuracy. This project provides a user-friendly interface for batch processing audio files with optional AI-powered enhancements for improved readability and interview-style formatting.
+Convert video to audio locally, then transcribe it with OpenAI's hosted Whisper API using one CLI. The default output is the original API transcription, with no AI rewriting. Existing WAV, MP3, and M4A folder commands and output naming remain supported.
 
-## Features
-- **Whisper-powered Transcription**: Utilizes OpenAI's Whisper model API for accurate audio-to-text conversion
-- **Batch Processing**: Process multiple audio files in a directory automatically
-- **Large File Support**: Automatically handles files larger than 20MB by intelligently splitting them into chunks
-- **Multiple Output Formats**:
-  - Verbatim transcription (raw output from Whisper)
-  - Enhanced readability version (improved punctuation, capitalization, and paragraphing)
-  - Interview-style formatting (structured as Interviewer/Interviewee dialogue)
-- **Supported Audio Formats**: WAV, MP3, M4A
-- **Robust Error Handling**: Detailed logging with JSON-formatted output for debugging
-- **Automatic Directory Creation**: Creates output directories if they don't exist
+## Requirements and setup
 
-## Prerequisites
+- Python 3.9 or newer.
+- FFmpeg **and ffprobe** available on `PATH`. Check with `ffmpeg -version` and `ffprobe -version`. Install them yourself through your trusted package manager if missing.
+- The `openai` Python SDK for transcription; extraction alone uses only Python's standard library and FFmpeg.
+- Your own OpenAI account, API key, quota, and network access for transcription. Hosted API use can incur charges; this project does not run a local Whisper model.
 
-- **Python**: 3.6 or higher (tested with Python 3.12)
-- **OpenAI API Key**: Required for accessing Whisper and GPT-4 models
-- **FFmpeg**: Required by pydub for audio processing (must be installed separately)
-
-### Installing FFmpeg
-
-**macOS**:
-```bash
-brew install ffmpeg
-```
-
-**Ubuntu/Debian**:
-```bash
-sudo apt-get install ffmpeg
-```
-
-**Windows**:
-Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
-
-## Installation
-
-1. **Clone the repository**:
-```bash
-git clone https://github.com/BitMorpher/voice-transcription-engine.git
-cd voice-transcription-engine
-```
-
-2. **Install Python dependencies**:
-```bash
-pip install -r requirements.txt
-```
-
-3. **Set up OpenAI API key**:
-```bash
-export OPENAI_API_KEY='your-api-key-here'
-```
-
-For permanent setup, add the above line to your `~/.bashrc`, `~/.zshrc`, or equivalent shell configuration file.
-
-## Usage
-
-### Basic Usage
-
-Transcribe all audio files in a folder:
+In a virtual environment, install the CLI with your preferred package manager:
 
 ```bash
-python src/cli.py --input_folder /path/to/audio/files --output_folder /path/to/output
+uv venv
+uv pip install .
+# Development only:
+uv pip install -r requirements-dev.txt
 ```
 
-### With Enhanced Readability
+The equivalent `python -m pip install .` works in an existing virtual environment. These commands install dependencies; review them before running. No installer or credential setup runs automatically.
 
-Generate both verbatim and enhanced versions:
+The legacy experimental notebook additionally needs PyDub (`uv pip install '.[notebook]'`). The CLI no longer needs local Whisper, Torch, NumPy, or SciPy.
+
+Set `OPENAI_API_KEY` yourself in the current process environment, preferably through your secret manager. An interactive terminal prompt avoids putting the key into shell history:
 
 ```bash
-python src/cli.py --input_folder /path/to/audio/files --output_folder /path/to/output --enhance_for_reading
+read -rs OPENAI_API_KEY
+export OPENAI_API_KEY
 ```
 
-### With Interview Formatting
+This prompt syntax works in bash/zsh. Never paste a real key into a command, notebook, tracked file, or chat. `.env.example` contains a placeholder; `.env` files are ignored and **are not automatically loaded**. The CLI never creates persistent credentials. SDK environment settings, including a custom base URL, remain user-managed.
 
-Generate interview-style formatted transcriptions:
+## One command: video/audio → WAV → transcription
+
+Keep source media outside the checkout, or under ignored `private/input/`. Only local regular files are accepted; symlinks and network media inputs are rejected.
 
 ```bash
-python src/cli.py --input_folder /path/to/audio/files --output_folder /path/to/output --format_as_interview
+voice-transcribe --pipeline --input private/input/synthetic.mp4 --output-folder private/output
+# Process supported files in a mixed folder, nonrecursively:
+voice-transcribe --pipeline --input-folder private/input --output-folder private/output
+# Continue a previous run, verifying completed artifacts before skipping them:
+voice-transcribe --pipeline --input-folder private/input --output-folder private/output --resume
 ```
 
-### All Options Combined
+Without installing the CLI, run the same options with either `python src/cli.py` or `python -m src.cli` from the checkout.
 
-Generate all three output formats:
+Videos: `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.m4v`. Audio: `.wav`, `.mp3`, `.m4a`. Extensions are case-insensitive; FFprobe checks for an audio stream and FFmpeg must be able to decode the container/codecs. Files without audio or corrupt media fail clearly. Unsupported files in folders are skipped; subfolders are not traversed. Unsupported single files and empty input folders fail.
+
+All media is normalized to a mono, 16 kHz, 16-bit PCM WAV. For video, the **first audio stream** is selected; alternate languages/tracks are not combined. Normalization may change fidelity and stereo information. Source files are never modified. Source metadata, chapter tags, subtitles, artwork, and video streams are not copied. FFmpeg operations have a configurable time limit (`--media-timeout 3600` by default); FFprobe is limited to 30 seconds. Very large prepared WAV files at or above 4 GiB are rejected rather than risking WAV size overflow; split those sources into smaller recordings first.
+
+## Extract audio only, entirely locally
 
 ```bash
-python src/cli.py --input_folder /path/to/audio/files --output_folder /path/to/output --enhance_for_reading --format_as_interview
+voice-transcribe --extract-only --input private/input/synthetic.mp4 --output-folder private/output
+# Transcribe the same source later, reusing the verified extraction:
+voice-transcribe --pipeline --input private/input/synthetic.mp4 --output-folder private/output --resume
 ```
 
-## Command-Line Parameters
+Extraction does not import the OpenAI SDK, require a key, or make API calls. `--extract-only` also accepts supported audio files for normalization. It cannot be combined with enhancement.
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `--input_folder` | Yes | Path to the folder containing audio files (`.wav`, `.mp3`, `.m4a`) |
-| `--output_folder` | Yes | Path to the folder where transcriptions will be saved |
-| `--enhance_for_reading` | No | Generate an enhanced version with improved punctuation, capitalization, and paragraph breaks |
-| `--format_as_interview` | No | Generate an interview-formatted version with Interviewer/Interviewee labels |
+## Outputs, resumability, and failures
 
-## Output Files
+Pipeline output is stored under an opaque job ID:
 
-The tool generates files with the following naming conventions:
-
-- **`<filename>_transcription.txt`**: Verbatim transcription from Whisper (always generated)
-- **`<filename>_enhanced.txt`**: Readability-enhanced version (if `--enhance_for_reading` is used)
-- **`<filename>_enhanced_interview.txt`**: Interview-formatted version (if `--format_as_interview` is used)
-
-### Example
-For an input file named `meeting.mp3`:
-- `meeting_transcription.txt` (verbatim)
-- `meeting_enhanced.txt` (if enhanced)
-- `meeting_enhanced_interview.txt` (if interview format)
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | Your OpenAI API key for accessing Whisper and GPT-4 models |
-
-## How It Works
-
-1. **File Discovery**: Scans the input folder for supported audio files (`.wav`, `.mp3`, `.m4a`)
-2. **File Size Check**: Determines if files need to be split (files larger than 20MB)
-3. **Transcription**: 
-   - Small files: Sent directly to Whisper API
-   - Large files: Automatically split into chunks, transcribed separately, then combined
-4. **Enhancement** (optional): Uses GPT-4.1-mini to improve readability while preserving meaning
-5. **Interview Formatting** (optional): Uses GPT-4.1-mini to structure content as an interview dialogue
-6. **Output**: Saves all requested formats to the output folder with appropriate filenames
-
-## Project Structure
-```
-voice-transcription-engine
-├── src
-│   ├── cli.py           # Command-line interface implementation
-│   ├── transcriber.py   # Core transcription functionality with chunking logic
-│   ├── logger.py        # JSON-formatted logging utilities
-│   └── utils.py         # Utility functions for file handling and formatting
-├── tests
-│   ├── test_cli.py      # Unit tests for CLI functionality
-│   ├── test_transcriber.py # Unit tests for Transcriber class
-│   └── test_utils.py    # Unit tests for utility functions
-├── notebook
-│   └── development.ipynb # Development and experimentation notebook
-├── requirements.txt     # List of Python dependencies
-├── setup.py             # Packaging and distribution configuration
-├── .gitignore           # Files and directories to ignore in version control
-└── README.md            # This file
+```text
+private/output/<job-id>/
+  audio.wav                     # local intermediate
+  transcription.txt             # original API transcript
+  manifest.json                 # version, source checksum, model, stage checksums/status
+  derivative_readability.txt    # only with explicit enhancement
 ```
 
-## Troubleshooting
+Job IDs hash the source basename and entire file contents; they contain no plaintext names or paths. Different extensions with the same stem cannot collide in ordinary use. Identical content and basename reuse the same job even if moved; changing either creates a new job. Hashes can still link known source files and should be treated as private. Generated directories use owner-only permissions (0700); artifacts use 0600 on supported local filesystems. Storage is not encrypted.
 
-### "OPENAI_API_KEY environment variable is required"
-Ensure you've set the `OPENAI_API_KEY` environment variable:
+The default output directory is ignored `private/output`. In a Git checkout, the CLI refuses output locations outside `private/` or `data/`. These trees are ignored in this repository. Keep artifacts in those trees or outside **all** repositories; an unrelated checkout may have different ignore rules. Original inputs and common generated formats are also ignored as a second layer. Gitignore is not access control, and forced staging can bypass it.
+
+- Runs never overwrite an existing audio/transcript artifact. A repeat run requires `--resume`.
+- Resume checks the manifest version, source checksum, model, and SHA-256 of each complete artifact. Missing artifacts can be regenerated; existing artifacts with a missing, invalid, or mismatched record are conflicts. Use a fresh output folder for conflicting/tampered artifacts or changed processing configuration.
+- Completed conversion and transcription stages are skipped separately. A failed enhancement can resume without retranscribing. A failed transcription retains the prepared audio and retries transcription. **API chunks are not checkpointed**: retrying a failed transcription stage can repeat successful chunk requests and charges.
+- Text is published atomically only after every chunk succeeds. Any failed or malformed chunk fails the whole transcription stage; there is no full-file fallback, error text in the transcript, or silent successful partial transcript.
+- The original audio is streamed into exact PCM frame chunks of at most 20 MiB each, below the documented 25 MB upload limit. Every frame, including the final short tail, is processed in order. Fixed boundaries can split speech mid-sentence and affect recognition quality; check the transcript against the recording.
+- A private lock prevents concurrent processing of the same job. If a process is killed, verify that it has stopped before manually deleting its job's `.lock`. A crash between publishing an artifact and recording its checksum produces a safe conflict; use a fresh output directory.
+- JSON progress reports show item indices, opaque IDs, stage statuses, and sanitized guidance. Errors report a nonzero exit status and processing continues for other files. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
+
+## Existing audio folder workflow
+
 ```bash
-export OPENAI_API_KEY='your-api-key-here'
+python src/cli.py --input_folder private/input --output_folder private/audio-transcripts
 ```
 
-### "Input folder does not exist"
-Verify the path to your input folder is correct and the directory exists.
+This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` names. Video files remain skipped unless you select pipeline mode. Existing output files, including same-stem collisions, fail rather than overwrite. Resume manifests apply only to pipeline mode.
 
-### FFmpeg-related errors
-Ensure FFmpeg is installed and accessible in your system PATH:
+Legacy `--enhance_for_reading` and `--format_as_interview` remain explicit opt-ins. The interview flag is limited to legacy audio mode; it requests formatting existing dialogue, without fabricated questions or inferred identities. It may still produce inaccurate content and requires human verification.
+
+Pipeline mode supports an optional readability derivative:
+
 ```bash
-ffmpeg -version
+voice-transcribe --pipeline --input private/input/synthetic.mp4 --enhance-for-reading
 ```
 
-### Large File Processing Issues
-For very large M4A files, the tool automatically splits them into 5-minute chunks. If you encounter issues, ensure you have sufficient disk space for temporary files.
+Enhancement sends the transcript to `gpt-4.1-mini` as an additional paid request. Derivatives carry an AI label and never replace the original transcription. Incomplete responses (including token-limit truncation) fail; the complete original remains saved. Long transcripts may exceed the enhancement limit; retain the original rather than accepting a truncated derivative. The CLI does not claim that AI rewriting is faithful or that Whisper recognition is error-free.
 
-### API Rate Limits
-If processing many files, you may hit OpenAI API rate limits. The tool will log errors for individual files and continue processing others.
+## Privacy boundaries
 
-## Development
+Conversion runs on your machine. Transcription sends the **normalized audio** to OpenAI; this can contain voices, names, and other sensitive spoken content even after container metadata is stripped. The multipart filename is generic `audio.wav`. Optional enhancement separately sends transcript text. Review your authorization to process the material and OpenAI's current data controls before using real recordings. This tool makes no zero-retention promise and cannot prevent disclosures present in the audio or transcript itself. It does not download from Drive, publish artifacts, or upload to GitHub.
 
-### Running Tests
+Keep API keys and source/output folders private; delete retained media, transcripts, manifests, and backups according to your own retention policy. Temporary normalization files are removed on normal completion/error; abrupt termination can leave private temporary directories. SDK/network debug logging is suppressed by the transcriber to avoid accidental credential/payload logging. No real recordings, personal transcripts, keys, or identifying fixtures belong in this public repository.
+
+Official references: [OpenAI transcription formats and limits](https://developers.openai.com/api/docs/guides/speech-to-text), [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data), and [FFmpeg stream/metadata mapping](https://ffmpeg.org/ffmpeg.html).
+
+## Offline verification
+
 ```bash
-python -m pytest tests/
+python -m pytest tests/ -q
 ```
 
-### Adding New Features
-The codebase is modular:
-- **CLI logic**: Modify `src/cli.py`
-- **Transcription logic**: Modify `src/transcriber.py`
-- **Utilities**: Modify `src/utils.py`
-- **Logging**: Modify `src/logger.py`
+Tests generate synthetic tones and color video in temporary folders, mock all provider responses, and block Python network connections. Coverage includes actual FFmpeg conversion, metadata removal, WAV/MP3/M4A compatibility, exact chunk coverage, failed chunks, missing tools/key, corrupt/no-audio input, privacy of logs, output conflicts, and resume checks. FFmpeg-dependent tests skip if binaries are absent; no tests use real media or make paid OpenAI calls.
 
-## Contributing
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes and test thoroughly
-4. Commit your changes (`git commit -m 'Add amazing feature'`)
-5. Push to the branch (`git push origin feature/amazing-feature`)
-6. Open a Pull Request
-
-Please ensure your code follows the existing style and includes appropriate tests.
-
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
-
-## Acknowledgments
-- OpenAI for the Whisper and GPT-4 models
-- The pydub library for audio processing capabilities
-
-## Support
-For issues, questions, or suggestions, please open an issue on the GitHub repository.
+Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, and `src/private_output.py` writes private artifacts. Packaging now exposes the existing flat modules through `voice-transcribe`; this feature does not migrate the legacy project to a new package layout.

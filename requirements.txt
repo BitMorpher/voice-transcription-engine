@@ -1,10 +1,2 @@
-OpenAI-whisper
-argparse
-pydub
-numpy
-scipy
-torch
-librosa
-soundfile
-requests
-tqdm
+# Transcription uses the hosted OpenAI API, not the local Whisper model.
+openai>=1.0
