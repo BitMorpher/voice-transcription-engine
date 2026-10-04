@@ -51,3 +51,8 @@ chapter_narrative*.txt
 
 # Versioned prompt templates are source, not generated chapter drafts
 !src/prompts/*.txt
+
+# Private ordered-interview indexes
+provenance.json
+part_boundaries.txt
+interview_manifest*.json

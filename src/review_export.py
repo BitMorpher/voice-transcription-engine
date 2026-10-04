@@ -14,8 +14,10 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 try:
     from .private_output import output_directory
+    from .source_provenance import validate_binding, validate_provenance, references
 except ImportError:
     from private_output import output_directory
+    from source_provenance import validate_binding, validate_provenance, references
 
 
 class ReviewExportError(ValueError):
@@ -220,6 +222,35 @@ def _build(report):
     if (not source.strip() or hashlib.sha256(source.encode('utf-8')).hexdigest()
             != report['raw_sha256']):
         raise ReviewExportError('Report source does not match its raw transcript hash.')
+
+    if 'recording_provenance' in report:
+        provenance = report['recording_provenance']
+        validate_provenance(source, provenance)
+        validate_binding(report, provenance)
+        parts_sheet = workbook.create_sheet('Recording parts')
+        _table(parts_sheet, ('Order', 'Part ID', 'Local source file', 'Source SHA-256',
+                            'Part raw transcript', 'Part raw SHA-256', 'Combined start', 'Combined end'),
+               {'A': 12, 'B': 22, 'C': 65, 'D': 68, 'E': 65, 'F': 68, 'G': 20, 'H': 20})
+        _row(overview, ('Recording references', 'Recording parts and Recording references map '
+             'combined characters to local part text. Separators are metadata, not missing speech. '
+             'Text offsets are not audio timestamps; no global timeline is inferred across pauses.'))
+        for part in provenance['parts']:
+            _row(parts_sheet, (_integer(part['order']), _text(part['id']), _text(part['path']),
+                 _text(part['source_sha256']), _text(part['raw_transcript']), _text(part['raw_sha256']),
+                 _integer(part['start']), _integer(part['end'])))
+        refs_sheet = workbook.create_sheet('Recording references')
+        _table(refs_sheet, ('Reference type', 'Reference ID', 'Span kind', 'Part order', 'Part ID',
+                           'Combined start', 'Combined end', 'Part local start', 'Part local end', 'Part segment IDs'),
+               {'A': 22, 'B': 40, 'C': 20, 'D': 14, 'E': 22, 'F': 20, 'G': 20, 'H': 20, 'I': 20, 'J': 35})
+        for kind, items, id_key in [('segment', segments, 'segment_id'),
+                                    ('finding', findings, 'finding_id'), ('chunk', chunks, 'chunk_index')]:
+            for item in items:
+                for ref in references(provenance, item['start'], item['end']):
+                    _row(refs_sheet, (kind, str(item[id_key]), ref['kind'], ref.get('order', ''),
+                         ref.get('part_id', ''), ref['start'], ref['end'], ref.get('local_start', ''),
+                         ref.get('local_end', ''), ', '.join(ref.get('local_segment_ids', []))))
+        for sheet in (parts_sheet, refs_sheet):
+            sheet.auto_filter.ref = sheet.dimensions
 
     finding_sheet = workbook.create_sheet('Findings', 1)
     _table(finding_sheet, _HEADERS, {

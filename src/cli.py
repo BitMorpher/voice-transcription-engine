@@ -20,6 +20,7 @@ if __package__:
         load_hints,
     )
     from .pipeline import Pipeline, PipelineError
+    from .ordered_interview import OrderedInterview
     from .private_output import OutputError, output_directory, write_private
     from .transcriber import ConfigurationError, Transcriber, TranscriptionError
 else:
@@ -36,6 +37,7 @@ else:
         load_hints,
     )
     from pipeline import Pipeline, PipelineError
+    from ordered_interview import OrderedInterview
     from private_output import OutputError, output_directory, write_private
     from transcriber import ConfigurationError, Transcriber, TranscriptionError
 
@@ -117,6 +119,7 @@ def main(argv=None):
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--input', help='Local media file or folder (pipeline mode).')
     inputs.add_argument('--input_folder', '--input-folder', help='Folder of audio files; also accepted in pipeline mode.')
+    inputs.add_argument('--interview-manifest', help='Version 1 JSON manifest: ordered recordings from one interview; requires --workflow.')
     parser.add_argument('--output_folder', '--output-folder', default='private/output',
                         help='Private output directory (default: ignored private/output).')
     parser.add_argument('--pipeline', action='store_true', help='Prepare audio/video, then transcribe.')
@@ -153,6 +156,11 @@ def main(argv=None):
                         help='Explicitly allow labeled drafts with unresolved high-priority findings.')
     args = parser.parse_args(argv)
     author_options = None
+    if args.interview_manifest is not None:
+        if not args.workflow:
+            parser.usage_error('--interview-manifest requires --workflow.')
+        if args.media_type != 'auto':
+            parser.usage_error('Set each recording media_type in the interview manifest.')
     if args.workflow:
         requested = args.stages.split(',')
         if (not requested or any(stage not in {'raw', 'polish', 'review', 'chapters'} for stage in requested)
@@ -199,6 +207,20 @@ def main(argv=None):
                                                person=args.narrative_person) if styles else None,
                 allow_unresolved_high=args.draft_with_unresolved_high,
             )
+        if args.interview_manifest is not None:
+            interview = OrderedInterview(args.interview_manifest, args.output_folder,
+                options=options, editing_options=editing_options, author_options=author_options,
+                resume=args.resume, media_timeout=args.media_timeout,
+                enhance=args.enhance_for_reading or 'polish' in requested,
+                progress=lambda stage, status: _report(status='progress', stage=stage, stage_status=status))
+            interview.preflight()
+            require_ffmpeg()
+            transcriber = Transcriber(media_timeout=args.media_timeout, options=options,
+                                      editing_options=editing_options)
+            identity, stages = interview.process(transcriber=transcriber)
+            _report(job=identity, status='complete', stages=stages)
+            _report(status='summary', processed=1, failed=0)
+            return 0
         source = Path(selected_input)
         if source.is_symlink() or not source.exists():
             raise PipelineError('Input is missing or is a symlink; choose an accessible local file or folder.')
@@ -227,7 +249,7 @@ def main(argv=None):
                             author_options=author_options,
                             progress=(lambda stage, status: _report(item=index, status='progress',
                                 stage=stage, stage_status=status)) if args.workflow else None) if pipeline_mode else None
-    except (MediaError, PipelineError, ConfigurationError, OSError, ValueError, AuthorWorkflowError, ReviewError) as error:
+    except (MediaError, PipelineError, ConfigurationError, OSError, ValueError, AuthorWorkflowError, ReviewError, TranscriptionError) as error:
         message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError, AuthorWorkflowError, ReviewError) else 'Cannot access local input/output; check permissions and free space.'
         _report(status='failed', message=message)
         return 1

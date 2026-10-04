@@ -14,11 +14,13 @@ if __package__:
     from .chapters import ChapterError, ChapterOptions, draft_chapters, render_chapter
     from .private_output import digest, write_private
     from .review_export import export_review
+    from .source_provenance import author_binding, bind_report, bind_chapters, validate_binding
 else:
     from author_review import ReviewError, ReviewOptions, review_transcript, validate_review_report
     from chapters import ChapterError, ChapterOptions, draft_chapters, render_chapter
     from private_output import digest, write_private
     from review_export import export_review
+    from source_provenance import author_binding, bind_report, bind_chapters, validate_binding
 
 
 class AuthorWorkflowError(RuntimeError):
@@ -126,7 +128,7 @@ def _unique_object(pairs):
     return result
 
 
-def _load_bound_report(job, record, raw, options):
+def _load_bound_report(job, record, raw, options, *, provenance=None):
     """Parse the same bytes whose checksum is bound in the manifest."""
     try:
         path = _artifact(job, record, 'review_report.json')
@@ -139,6 +141,8 @@ def _load_bound_report(job, record, raw, options):
         if not isinstance(report, dict):
             raise ValueError()
         validate_review_report(raw, report, options)
+        if provenance is not None:
+            validate_binding(report, provenance)
         return report, checksum
     except (OSError, ValueError, KeyError, TypeError, ReviewError):
         raise AuthorWorkflowError('Saved author review is invalid or changed; use a new output folder.') from None
@@ -153,7 +157,7 @@ def _check_report_unchanged(job, record, expected):
         raise AuthorWorkflowError('Author review changed during drafting; no accepted draft was saved.') from None
 
 
-def run_author_stages(job, state, transcriber, options, *, resume, save, summary, progress=None):
+def run_author_stages(job, state, transcriber, options, *, resume, save, summary, progress=None, provenance=None):
     """Retain unsuccessful review attempts; only complete bound reports are reusable."""
     progress = progress or (lambda stage, status: None)
     raw_hash = state['stages']['transcription']['sha256']
@@ -174,12 +178,14 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
                                for style in options.chapter_options.styles)})
         review_hash = None
         if stage == 'chapters':
-            report, review_hash = _load_bound_report(job, state['stages']['author_review'], raw, options.review_options)
+            report, review_hash = _load_bound_report(job, state['stages']['author_review'], raw, options.review_options, provenance=provenance)
         fingerprint = options.fingerprint(stage, raw_hash, review_hash)
+        if provenance is not None:
+            fingerprint = author_binding(fingerprint, provenance)
         record = state['stages'].get(stage)
         if resume and _verified_bundle(job, record, fingerprint, raw_hash, expected_names):
             if stage == 'author_review':
-                report, _ = _load_bound_report(job, record, raw, options.review_options)
+                report, _ = _load_bound_report(job, record, raw, options.review_options, provenance=provenance)
             _raw_snapshot(job, raw_hash)
             if stage == 'chapters':
                 _check_report_unchanged(job, state['stages']['author_review'], review_hash)
@@ -197,6 +203,8 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
                 if report.get('status') == 'complete':
                     validate_review_report(raw, report, options.review_options)
                 _raw_snapshot(job, raw_hash)
+                if provenance is not None:
+                    bind_report(report, provenance)
 
                 def writer(directory):
                     write_private(directory / 'review_report.json', json.dumps(report, indent=2, ensure_ascii=False) + '\n')
@@ -206,6 +214,8 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
                                           allow_unresolved_high=options.allow_unresolved_high)
                 _raw_snapshot(job, raw_hash)
                 _check_report_unchanged(job, state['stages']['author_review'], review_hash)
+                if provenance is not None:
+                    bind_chapters(chapters, provenance)
 
                 def writer(directory):
                     write_private(directory / 'chapter_drafts.json', json.dumps(chapters, indent=2, ensure_ascii=False) + '\n')
