@@ -157,3 +157,51 @@ def test_unicode_marks_survive_many_byte_bounded_chunks(provider):
     result = Transcriber(client=provider, editing_options=EditingOptions(chunk_bytes=64)).enhance_transcription(source)
     assert result.split('\n\n', 1)[1] == source
     assert provider.chat.completions.create.call_count > 1
+
+
+CHANGED_SYMBOLS = [
+    ('Pay €100.', 'Pay $100.'),
+    ('Pay €100.', 'Pay 100.'),
+    ('x + y', 'x = y'),
+    ('x + y', 'x + + y'),
+    ('Synthetic 🙂 text.', 'Synthetic text.'),
+    ('Synthetic 🙂 text.', 'Synthetic 🙁 text.'),
+    ('a + b = c', 'a = b + c'),
+    ('Synthetic ^ text.', 'Synthetic ~ text.'),
+    ('Synthetic 👍🏽 text.', 'Synthetic 👍 text.'),
+    ('Synthetic 👩\u200d💻 text.', 'Synthetic 👩 💻 text.'),
+]
+
+
+@pytest.mark.parametrize('source,edited', CHANGED_SYMBOLS)
+def test_chunk_guard_rejects_changed_symbol_identity_and_order(source, edited):
+    with pytest.raises(EditingError, match='changed, invented'):
+        validate_edit(json.dumps({
+            'chunk_index': 1, 'text': edited, 'speaker_uncertain': False,
+        }), source, 1)
+
+
+@pytest.mark.parametrize('source,edited', CHANGED_SYMBOLS)
+def test_final_guard_independently_rejects_changed_symbols(monkeypatch, provider, source, edited):
+    monkeypatch.setattr('src.transcriber.validate_edit', lambda *args: (edited, False))
+    with pytest.raises(TranscriptionError, match='Reassembled editing changed'):
+        Transcriber(client=provider).enhance_transcription(source)
+
+
+@pytest.mark.parametrize('source,edited', [
+    ('Pay €100 synthetic', 'PAY €100! Synthetic.'),
+    ('x+y=c', 'X + Y = C.'),
+    ('Synthetic 👩\u200d💻 café क़.', 'SYNTHETIC 👩\u200d💻 CAFE\u0301 क\u093c!'),
+    ('€+$', '€ + $'),
+])
+def test_unchanged_symbols_allow_case_punctuation_layout_and_canonical_spelling(
+        provider, source, edited):
+    assert words(source) == words(edited)
+    provider.chat.completions.create.return_value.choices[0].message.content = json.dumps({
+        'chunk_index': 1, 'text': edited, 'speaker_uncertain': False,
+    })
+    assert Transcriber(client=provider).enhance_transcription(source) == edited
+
+
+def test_symbols_are_separate_ordered_comparison_tokens():
+    assert words('Pay €100 + $20 🙂 ^') == ['pay', '€', '100', '+', '$', '20', '🙂', '^']
