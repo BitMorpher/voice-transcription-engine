@@ -4,23 +4,40 @@ Convert video to audio locally, then transcribe it with OpenAI's hosted Transcri
 
 ## Requirements and setup
 
-- Python 3.9 or newer.
-- FFmpeg **and ffprobe** available on `PATH`. Check with `ffmpeg -version` and `ffprobe -version`. Install them yourself through your trusted package manager if missing.
-- The `openai` Python SDK for transcription; extraction alone uses only Python's standard library and FFmpeg.
+- Python **3.14 or newer**; the development/runtime pin is **3.14.8** in `.python-version`. Python 3.9 is no longer supported. The 3.14 floor follows this project's current environment standard; it is not a claim that the SDK itself requires 3.14.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) **0.12.23 or newer**. Older versions may not know the pinned Python release.
+- FFmpeg **and ffprobe** available on `PATH`. Check with `ffmpeg -version` and `ffprobe -version`. They are external system prerequisites, not Python packages; install them yourself through your trusted package manager if missing.
 - Your own OpenAI account, API key, quota, and network access for transcription. Hosted API use can incur charges; this project does not run a local Whisper model.
 
-In a virtual environment, install the CLI with your preferred package manager:
+From the checkout root:
 
 ```bash
-uv venv
-uv pip install .
-# Development only:
-uv pip install -r requirements-dev.txt
+uv python install 3.14.8
+uv sync --locked
+uv run --locked voice-transcribe --help
 ```
 
-The equivalent `python -m pip install .` works in an existing virtual environment. These commands install dependencies; review them before running. No installer or credential setup runs automatically.
+`uv sync --locked` creates the ignored `.venv`, installs the editable CLI, runtime dependencies and the default `dev` group using committed `uv.lock`. The Python pin selects the standard CPython runtime, not a free-threaded build. Setup may download Python and packages; it never installs FFmpeg or configures credentials. Once synced, use `uv run --locked` for commands without activating the environment. For a runtime-only installation, use `uv sync --locked --no-dev` and `uv run --locked --no-dev voice-transcribe --help` (plain `uv run` would reinstall the default development group).
 
-The legacy experimental notebook additionally needs PyDub (`uv pip install '.[notebook]'`). The CLI no longer needs local Whisper, Torch, NumPy, or SciPy.
+`pyproject.toml` is the only dependency declaration: `openai` is the runtime dependency; `dev` contains pytest and Ruff. Optional `notebook` contains PyDub, `audioop-lts`, ipykernel and JupyterLab. `uv.lock` records exact versions, public PyPI locations and hashes for all groups/extras. Build-backend versions are pinned separately in `[build-system]`, since uv's project lock does not lock isolated build requirements. FFmpeg is not managed by the lock. The CLI does not need PyDub, local Whisper, Torch, NumPy or SciPy.
+
+The existing experimental notebook is available separately:
+
+```bash
+uv sync --locked --extra notebook
+uv run --locked --extra notebook jupyter lab notebook/development.ipynb
+```
+
+`audioop-lts` provides the module PyDub needs after Python [removed `audioop` in 3.13](https://docs.python.org/3/library/audioop.html). These notebook dependencies are excluded from the default CLI install. The blank notebook input must be supplied locally; keep any outputs/media and saved notebook results private. Clear notebook outputs before committing changes.
+
+The old `setup.py` and hand-maintained requirements files have been replaced. Standard Python installers can still install this PEP 517/621 project with `python -m pip install .` in a compatible virtual environment, but that command does not consume `uv.lock`. If a pip requirements export is needed, generate it from the lock into ignored storage:
+
+```bash
+mkdir -p private
+uv export --locked --no-dev --no-emit-project --format requirements.txt --output-file private/requirements.txt
+```
+
+To deliberately update dependencies, edit/add them with uv, run `uv lock`, review the lock diff and run the checks below. `uv lock --check` and `--locked` refuse a stale lock instead of silently updating it. See the official [uv project sync documentation](https://docs.astral.sh/uv/concepts/projects/sync/) for group/extra selection.
 
 Set `OPENAI_API_KEY` yourself in the current process environment, preferably through your secret manager. An interactive terminal prompt avoids putting the key into shell history:
 
@@ -36,14 +53,14 @@ This prompt syntax works in bash/zsh. Never paste a real key into a command, not
 Keep source media outside the checkout, or under ignored `private/input/`. Only local regular files are accepted; symlinks and network media inputs are rejected.
 
 ```bash
-voice-transcribe --pipeline --input private/input/synthetic.mp4 --output-folder private/output
+uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --output-folder private/output
 # Process supported files in a mixed folder, nonrecursively:
-voice-transcribe --pipeline --input-folder private/input --output-folder private/output
+uv run --locked voice-transcribe --pipeline --input-folder private/input --output-folder private/output
 # Continue a previous run, verifying completed artifacts before skipping them:
-voice-transcribe --pipeline --input-folder private/input --output-folder private/output --resume
+uv run --locked voice-transcribe --pipeline --input-folder private/input --output-folder private/output --resume
 ```
 
-Without installing the CLI, run the same options with either `python src/cli.py` or `python -m src.cli` from the checkout.
+Without installing the CLI, run the same options with either `uv run --locked python src/cli.py` or `uv run --locked python -m src.cli` from the checkout.
 
 Videos: `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.m4v`. Audio: `.wav`, `.mp3`, `.m4a`. Extensions are case-insensitive; FFprobe checks for an audio stream and FFmpeg must be able to decode the container/codecs. Files without audio or corrupt media fail clearly. Unsupported files in folders are skipped; subfolders are not traversed. Unsupported single files and empty input folders fail.
 
@@ -52,9 +69,9 @@ All media is normalized to a mono, 16 kHz, 16-bit PCM WAV. For video, the **firs
 ## Extract audio only, entirely locally
 
 ```bash
-voice-transcribe --extract-only --input private/input/synthetic.mp4 --output-folder private/output
+uv run --locked voice-transcribe --extract-only --input private/input/synthetic.mp4 --output-folder private/output
 # Transcribe the same source later, reusing the verified extraction:
-voice-transcribe --pipeline --input private/input/synthetic.mp4 --output-folder private/output --resume
+uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --output-folder private/output --resume
 ```
 
 Extraction does not import the OpenAI SDK, require a key, or make API calls. `--extract-only` also accepts supported audio files for normalization. It cannot be combined with enhancement.
@@ -86,7 +103,7 @@ The default output directory is ignored `private/output`. In a Git checkout, the
 ## Existing audio folder workflow
 
 ```bash
-python src/cli.py --input_folder private/input --output_folder private/audio-transcripts
+uv run --locked python src/cli.py --input_folder private/input --output_folder private/audio-transcripts
 ```
 
 This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` names. Video files remain skipped unless you select pipeline mode. Existing output files, including same-stem collisions, fail rather than overwrite. Resume manifests apply only to pipeline mode.
@@ -96,9 +113,9 @@ This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` n
 The quality-first default is **`gpt-transcribe`**, the model recommended by current OpenAI documentation for general-purpose file transcription. Optional faithful editing defaults to **`gpt-6-astra`** with high reasoning, because OpenAI currently identifies it as its most capable model and quality is the priority here. This is a documentation-based selection, not an empirical quality claim or benchmark on your recordings. No real audio or paid calls were used to evaluate these models.
 
 ```bash
-voice-transcribe --pipeline --input private/input/synthetic.mp4 --model gpt-transcribe
+uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --model gpt-transcribe
 # Optional known context and literal terms, supplied by you:
-voice-transcribe --pipeline --input private/input/synthetic.mp4 \
+uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 \
   --context-file private/hints/context.txt --glossary-file private/hints/glossary.txt \
   --language en --language fr
 ```
@@ -114,9 +131,9 @@ Application safety limits: context ≤8192 UTF-8 bytes, at most 100 glossary ter
 ## Optional faithful text editing
 
 ```bash
-voice-transcribe --pipeline --input private/input/synthetic.mp4 --enhance-for-reading
+uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --enhance-for-reading
 # Explicit alternative from the current documented model family:
-voice-transcribe --pipeline --input private/input/synthetic.mp4 \
+uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 \
   --enhance-for-reading --editing-model gpt-6.1-sol
 ```
 
@@ -136,16 +153,26 @@ Official selection/compatibility references: [GPT-Transcribe](https://developers
 
 Conversion runs on your machine. Transcription sends the **normalized audio** to OpenAI; this can contain voices, names, and other sensitive spoken content even after container metadata is stripped. The multipart filename is generic `audio.wav`. Optional context/glossary/language hints are also sent; faithful editing separately sends transcript text. Review your authorization to process the material and OpenAI's current data controls before using real recordings. This tool makes no zero-retention promise and cannot prevent disclosures present in the audio or transcript itself. It does not download from Drive, publish artifacts, or upload to GitHub.
 
-Keep API keys and source/output folders private; delete retained media, transcripts, manifests, and backups according to your own retention policy. Temporary normalization files are removed on normal completion/error; abrupt termination can leave private temporary directories. SDK/network debug logging is suppressed by the transcriber to avoid accidental credential/payload logging. No real recordings, personal transcripts, keys, or identifying fixtures belong in this public repository.
+Keep API keys and source/output folders private; delete retained media, transcripts, manifests, and backups according to your own retention policy. Temporary normalization files are removed on normal completion/error; abrupt termination can leave private temporary directories. SDK/network debug logging, including the current SDK's HTTP transports, is suppressed by the transcriber to avoid accidental credential/payload logging. No real recordings, personal transcripts, keys, or identifying fixtures belong in this public repository.
 
 Official references: [OpenAI transcription formats and limits](https://developers.openai.com/api/docs/guides/speech-to-text), [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data), and [FFmpeg stream/metadata mapping](https://ffmpeg.org/ffmpeg.html).
 
 ## Offline verification
 
 ```bash
-python -m pytest tests/ -q
+uv lock --check
+uv sync --locked
+uv run --locked pytest -q
+uv run --locked ruff check .
+uv build
+uv run --locked voice-transcribe --help
+# Include the optional notebook compatibility roundtrip:
+uv sync --locked --extra notebook
+uv run --locked --extra notebook pytest -q
 ```
 
-Tests generate synthetic tones and color video in temporary folders, mock all provider responses, and block Python network connections. Coverage includes actual FFmpeg conversion, metadata removal, WAV/MP3/M4A compatibility, exact byte/duration chunk coverage, model selection/capability gates, user-supplied hints, long-text reassembly, faithfulness checks, failed chunks, truncation/refusal handling, missing tools/key, corrupt/no-audio input, privacy of logs, output conflicts, and configuration-aware resume checks. FFmpeg-dependent tests skip if binaries are absent; no tests use real media or make paid OpenAI calls.
+Tests generate synthetic tones and color video in temporary folders, mock all provider responses, and block Python network connections. Coverage includes actual FFmpeg conversion, metadata removal, WAV/MP3/M4A compatibility, exact byte/duration chunk coverage, model selection/capability gates, user-supplied hints, long-text reassembly, faithfulness checks, failed chunks, truncation/refusal handling, missing tools/key, corrupt/no-audio input, privacy of logs, output conflicts, and configuration-aware resume checks. The default suite skips the optional PyDub test; installing the notebook extra exercises a synthetic M4A chunk roundtrip. FFmpeg-dependent tests skip if binaries are absent; no tests use real media or make paid OpenAI calls. SDK contract tests use a local mock transport to check real serialization, response parsing and privacy of transport logs.
+
+Builds produce ignored `dist/` wheel and source archives using the pinned backend. The source archive includes the lock, Python pin and complete offline tests. Source archives may include operating-system ownership metadata; keep them private until inspected. Review archive contents before sharing; no generated media, transcripts, keys, local environment or personal paths belong in a distribution. A clean environment can be checked without disturbing `.venv` using `UV_PROJECT_ENVIRONMENT=private/clean-venv uv sync --locked`. The lock covers declared dependencies across supported Python versions; the validated runtime is CPython 3.14.8 on macOS arm64, not a full operating-system/Python matrix.
 
 Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, and `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Packaging now exposes the existing flat modules through `voice-transcribe`; this feature does not migrate the legacy project to a new package layout.

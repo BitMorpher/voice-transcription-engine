@@ -1,0 +1,10 @@
+include .python-version uv.lock
+recursive-include tests *.py
+prune private
+prune data
+prune output
+prune outputs
+prune secrets
+prune .venv
+prune .git
+global-exclude *.py[cod] .env .env.* *.key *.pem *.wav *.mp3 *.m4a *.mp4 *.mov *.mkv *.webm *.avi *.m4v

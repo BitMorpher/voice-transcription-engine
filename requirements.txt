@@ -1,2 +1,0 @@
-# Transcription uses the hosted OpenAI API, not the local Whisper model.
-openai>=1.0
