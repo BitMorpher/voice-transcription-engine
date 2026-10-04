@@ -181,7 +181,7 @@ class Transcriber:
                     uncertain.append(index)
             combined = ''.join(edited_parts)
             if words(combined) != words(transcription):
-                raise EditingError('Reassembled editing changed word boundaries; no derivative was saved.')
+                raise EditingError('Reassembled editing changed words, symbols, or boundaries; no derivative was saved.')
             if uncertain:
                 combined = '[Speaker attribution uncertain in chunks: ' + ', '.join(map(str, uncertain)) + ']\n\n' + combined
             return combined

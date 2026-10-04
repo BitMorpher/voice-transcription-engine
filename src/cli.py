@@ -133,7 +133,7 @@ def main(argv=None):
                         help='Legacy audio-only faithful layout alias; never assigns speaker roles.')
     args = parser.parse_args(argv)
     pipeline_mode = args.pipeline or args.extract_only
-    if args.input and not pipeline_mode:
+    if args.input is not None and not pipeline_mode:
         parser.usage_error('--input requires --pipeline or --extract-only.')
     if args.resume and not pipeline_mode:
         parser.usage_error('--resume requires --pipeline or --extract-only.')
@@ -145,14 +145,17 @@ def main(argv=None):
         parser.usage_error('--extract-only cannot request transcription hints; supply them when transcribing.')
 
     try:
+        selected_input = args.input if args.input is not None else args.input_folder
+        if selected_input == '':
+            raise PipelineError('Input path must not be empty; choose an accessible local file or folder.')
         context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)
         options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                        languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
         editing_options = EditingOptions(model=args.editing_model)
-        source = Path(args.input or args.input_folder)
+        source = Path(selected_input)
         if source.is_symlink() or not source.exists():
             raise PipelineError('Input is missing or is a symlink; choose an accessible local file or folder.')
-        if args.input_folder and not source.is_dir():
+        if args.input_folder is not None and not source.is_dir():
             raise PipelineError('--input_folder must be a local directory.')
         extensions = MEDIA_EXTENSIONS if pipeline_mode else AUDIO_EXTENSIONS
         if source.is_dir():

@@ -1,4 +1,4 @@
-"""Bounded faithful editing: exact source chunks, strict output, and word checks."""
+"""Bounded faithful editing: exact chunks, strict output, and word/symbol checks."""
 
 import json
 import unicodedata
@@ -30,22 +30,28 @@ def split_text(text, max_bytes):
 
 
 def words(text):
-    """Compare case-insensitively without discarding meaningful Unicode marks.
+    """Compare words and ordered symbols without discarding Unicode marks.
 
     NFC treats canonical spellings as equivalent; compatibility normalization
     could hide substitutions. Normalize again after casefolding because it can
     introduce decomposed characters. Preserve all mark categories and joining
     controls, including when a chunk begins with a detached combining mark.
+    Symbols (Sc/Sm/Sk/So) are separate tokens, preserving identity, count and
+    position relative to words while allowing surrounding layout changes.
     """
     normalized = unicodedata.normalize('NFC', unicodedata.normalize('NFC', text).casefold())
     tokens, current = [], []
     for character in normalized:
-        if (character.isalnum() or unicodedata.category(character).startswith('M')
+        category = unicodedata.category(character)
+        if (character.isalnum() or category.startswith('M')
                 or character in ('\u200c', '\u200d')):
             current.append(character)
-        elif current:
-            tokens.append(''.join(current))
-            current = []
+        else:
+            if current:
+                tokens.append(''.join(current))
+                current = []
+            if category.startswith('S'):
+                tokens.append(character)
     if current:
         tokens.append(''.join(current))
     return tokens
@@ -82,7 +88,7 @@ def validate_edit(content, source, index):
     except (ValueError, TypeError):
         raise EditingError('Editing response was empty, malformed, or out of order; retain the original transcript.') from None
     if words(edited) != words(source):
-        raise EditingError('Editing changed, invented, omitted, or reordered words; no derivative was saved.')
+        raise EditingError('Editing changed, invented, omitted, or reordered words or symbols; no derivative was saved.')
     # Restore boundary whitespace so adjacent edited chunks cannot merge words.
     leading = source[:len(source) - len(source.lstrip())]
     trailing = source[len(source.rstrip()):]
@@ -91,7 +97,8 @@ def validate_edit(content, source, index):
 
 FAITHFUL_INSTRUCTION = (
     'You are a transcript copy editor, not an author. Edit only punctuation, capitalization, '
-    'and paragraph layout. Preserve every word in exactly the same order. Preserve repetitions, '
+    'and paragraph layout. Preserve every word and symbol in exactly the same order. '
+    'Preserve currency signs, math operators, emoji, Unicode marks and joining controls. Preserve repetitions, '
     'disfluencies, numbers, and existing uncertainty markers. Never paraphrase, correct facts, '
     'summarize, invent questions, answers, speaker identities, or speaker turns. Never add speaker '
     'labels or assign roles. Keep monologues as monologues. If attribution or turn boundaries '

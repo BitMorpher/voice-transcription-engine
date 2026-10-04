@@ -193,3 +193,45 @@ def test_command_mode_error_retains_fixed_guidance(capsys):
     captured = capsys.readouterr()
     assert 'DO_NOT_LOG' not in captured.out + captured.err
     assert '--input requires --pipeline or --extract-only' in captured.err
+
+
+@pytest.mark.parametrize('option', ['--input', '--input_folder', '--input-folder'])
+@pytest.mark.parametrize('mode', [None, '--pipeline', '--extract-only'])
+def test_empty_input_is_rejected_before_filesystem_or_provider_work(
+        monkeypatch, tmp_path, capsys, option, mode):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'SYNTHETIC_DO_NOT_LOG.wav').touch()
+    paths = MagicMock(side_effect=AssertionError('Empty input must not construct a Path.'))
+    hints = MagicMock(side_effect=AssertionError('Empty input must not read hint files.'))
+    tools = MagicMock(side_effect=AssertionError('Empty input must not check tools.'))
+    output = MagicMock(side_effect=AssertionError('Empty input must not create output.'))
+    provider = MagicMock(side_effect=AssertionError('Empty input must not initialize a provider.'))
+    monkeypatch.setattr('src.cli.Path', paths)
+    monkeypatch.setattr('src.cli.load_hints', hints)
+    monkeypatch.setattr('src.cli.require_ffmpeg', tools)
+    monkeypatch.setattr('src.cli.output_directory', output)
+    monkeypatch.setattr('src.cli.Transcriber', provider)
+    arguments = ([mode] if mode else []) + [option, '']
+    if option == '--input' and mode is None:
+        with pytest.raises(SystemExit) as error:
+            main(arguments)
+        assert error.value.code == 2
+    else:
+        assert main(arguments) == 1
+    captured = capsys.readouterr()
+    assert 'Traceback' not in captured.out + captured.err
+    assert 'DO_NOT_LOG' not in captured.out + captured.err
+    assert str(tmp_path) not in captured.out + captured.err
+    if mode or option != '--input':
+        assert 'Input path must not be empty' in captured.out
+    for dependency in (paths, hints, tools, output, provider):
+        dependency.assert_not_called()
+
+
+def test_explicit_whitespace_folder_is_not_trimmed(monkeypatch, synthetic_media, tmp_path):
+    source = synthetic_media('synthetic.wav')
+    folder = tmp_path / ' '
+    folder.mkdir()
+    source.rename(folder / source.name)
+    monkeypatch.chdir(tmp_path)
+    assert main(['--extract-only', '--input', ' ', '--output-folder', str(tmp_path / 'output')]) == 0

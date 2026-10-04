@@ -1,4 +1,6 @@
 import json
+import hashlib
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -346,3 +348,42 @@ def test_raw_change_between_stage_checks_cannot_skip_derivative(
     assert failure.value.stages['enhancement'] == 'failed'
     assert derivative.read_bytes() == original
     assert provider.chat.completions.create.call_count == 1
+
+
+@pytest.mark.parametrize('derivative_present', [True, False])
+def test_symbol_preservation_contract_invalidates_bound_legacy_derivative(
+        synthetic_media, tmp_path, provider, derivative_present):
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    provider.audio.transcriptions.create.return_value = SimpleNamespace(text='Pay €100.')
+    transcriber = Transcriber(client=provider)
+    identity, _ = Pipeline(output).process(source, transcriber=transcriber, enhance=True)
+    job = output / identity
+    target = job / 'derivative_readability.txt'
+    # Simulate a checksum-valid, raw-bound derivative accepted by contract 2.
+    target.write_text(target.read_text().replace('€', '$'))
+    manifest = job / 'manifest.json'
+    state = json.loads(manifest.read_text())
+    legacy_editor = hashlib.sha256(json.dumps({
+        'faithful_editing_contract': 2, **asdict(transcriber.editing_options),
+    }, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    legacy_binding = hashlib.sha256(json.dumps({
+        'contract': 1, 'editing_configuration_sha256': legacy_editor,
+        'transcription_sha256': digest(job / 'transcription.txt'),
+    }, sort_keys=True).encode()).hexdigest()
+    state['stages']['enhancement']['configuration_sha256'] = legacy_binding
+    state['stages']['enhancement']['sha256'] = digest(target)
+    manifest.write_text(json.dumps(state))
+    before = target.read_bytes()
+    if derivative_present:
+        with pytest.raises(PipelineError, match='Unverified output'):
+            Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+        assert target.read_bytes() == before
+        assert provider.chat.completions.create.call_count == 1
+    else:
+        target.unlink()
+        _, stages = Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+        assert stages['enhancement'] == 'complete'
+        assert '€100' in target.read_text() and '$100' not in target.read_text()
+        assert provider.chat.completions.create.call_count == 2
+    assert provider.audio.transcriptions.create.call_count == 1
