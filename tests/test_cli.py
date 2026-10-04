@@ -112,3 +112,34 @@ def test_invalid_arguments_fail_without_processing(arguments):
 
 def test_empty_folder_is_failure(tmp_path):
     assert main(['--extract-only', '--input', str(tmp_path)]) == 1
+
+
+def test_model_and_private_hint_options_reach_api(monkeypatch, synthetic_media, tmp_path, provider, capsys):
+    context = tmp_path / 'context.txt'
+    glossary = tmp_path / 'glossary.txt'
+    context.write_text('SYNTHETIC_CONTEXT_DO_NOT_LOG', encoding='utf-8')
+    glossary.write_text('SYNTHETIC_TERM_DO_NOT_LOG\n', encoding='utf-8')
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kwargs: Transcriber(client=provider, **kwargs))
+    assert main(['--pipeline', '--input', str(synthetic_media()), '--output-folder', str(tmp_path / 'output'),
+                 '--model', 'gpt-transcribe', '--context-file', str(context), '--glossary-file', str(glossary),
+                 '--language', 'en', '--language', 'fr', '--editing-model', 'gpt-6.1-sol', '--enhance-for-reading']) == 0
+    request = provider.audio.transcriptions.create.call_args.kwargs
+    assert request['prompt'] == 'SYNTHETIC_CONTEXT_DO_NOT_LOG'
+    assert request['extra_body']['keywords'] == ['SYNTHETIC_TERM_DO_NOT_LOG']
+    assert provider.chat.completions.create.call_args.kwargs['model'] == 'gpt-6.1-sol'
+    captured = capsys.readouterr()
+    assert 'DO_NOT_LOG' not in captured.out + captured.err
+    assert str(tmp_path) not in captured.out + captured.err
+
+
+def test_undocumented_model_is_sanitized_before_any_provider_call(tmp_path, capsys):
+    assert main(['--pipeline', '--input', str(tmp_path), '--model', 'SYNTHETIC_INVALID_DO_NOT_LOG']) == 1
+    assert 'DO_NOT_LOG' not in capsys.readouterr().out
+
+
+def test_unrecognized_arguments_do_not_echo_private_values(capsys):
+    with pytest.raises(SystemExit) as error:
+        main(['--pipeline', '--input', 'unused', '--unknown', '/tmp/DO_NOT_LOG_SYNTHETIC_FILE.wav'])
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert 'DO_NOT_LOG_SYNTHETIC_FILE' not in captured.out + captured.err

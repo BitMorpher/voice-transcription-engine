@@ -8,11 +8,27 @@ from pathlib import Path
 
 if __package__:
     from .media import AUDIO_EXTENSIONS, MEDIA_EXTENSIONS, MediaError, require_ffmpeg
+    from .model_config import (
+        DEFAULT_ASR_MODEL,
+        DEFAULT_EDITING_MODEL,
+        EditingOptions,
+        ModelConfigurationError,
+        TranscriptionOptions,
+        load_hints,
+    )
     from .pipeline import Pipeline, PipelineError
     from .private_output import OutputError, output_directory, write_private
     from .transcriber import ConfigurationError, Transcriber, TranscriptionError
 else:
     from media import AUDIO_EXTENSIONS, MEDIA_EXTENSIONS, MediaError, require_ffmpeg
+    from model_config import (
+        DEFAULT_ASR_MODEL,
+        DEFAULT_EDITING_MODEL,
+        EditingOptions,
+        ModelConfigurationError,
+        TranscriptionOptions,
+        load_hints,
+    )
     from pipeline import Pipeline, PipelineError
     from private_output import OutputError, output_directory, write_private
     from transcriber import ConfigurationError, Transcriber, TranscriptionError
@@ -21,6 +37,14 @@ else:
 def _report(**details):
     # Only fixed messages, item indices, opaque IDs, counts, and stage statuses.
     print(json.dumps(details, sort_keys=True))
+
+
+class PrivateArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse ordinarily echoes unknown arguments, including personal paths.
+        if message.startswith('unrecognized arguments:'):
+            message = 'Unrecognized command-line options; see --help.'
+        super().error(message)
 
 
 def _positive_timeout(value):
@@ -47,19 +71,21 @@ def _legacy_process(source, output, transcriber, args):
     stages = {'transcription': 'complete'}
     if args.enhance_for_reading:
         write_private(output / f'{source.stem}_enhanced.txt',
-                      'AI readability derivative; verify against the original transcript.\n\n'
+                      'AI readability derivative; verify against the original transcript.\n'
+                      'Speaker identities and turn boundaries are unverified; no roles are inferred.\n\n'
                       + transcriber.enhance_transcription(text))
         stages['enhancement'] = 'complete'
     if args.format_as_interview:
         write_private(output / f'{source.stem}_enhanced_interview.txt',
-                      'AI dialogue-formatting derivative; verify against the original transcript.\n\n'
+                      'AI dialogue-layout derivative; verify against the original transcript.\n'
+                      'Speaker identities and turn boundaries are unverified; no roles are inferred.\n\n'
                       + transcriber.enhance_as_interview(text))
         stages['dialogue_formatting'] = 'complete'
     return stages
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Convert local media and transcribe audio using OpenAI.')
+    parser = PrivateArgumentParser(description='Convert local media and transcribe audio using OpenAI.')
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--input', help='Local media file or folder (pipeline mode).')
     inputs.add_argument('--input_folder', '--input-folder', help='Folder of audio files; also accepted in pipeline mode.')
@@ -70,10 +96,19 @@ def main(argv=None):
     parser.add_argument('--resume', action='store_true', help='Verify manifest checksums and skip complete pipeline stages.')
     parser.add_argument('--media-timeout', type=_positive_timeout, default=3600,
                         help='Maximum seconds per FFmpeg operation (default: 3600).')
+    parser.add_argument('--model', default=DEFAULT_ASR_MODEL, help='ASR model (default: gpt-transcribe).')
+    parser.add_argument('--editing-model', default=DEFAULT_EDITING_MODEL,
+                        help='Opt-in faithful editing model (default: gpt-6-astra).')
+    parser.add_argument('--context-file', help='Private UTF-8 file of user-supplied recording context.')
+    parser.add_argument('--glossary-file', help='Private UTF-8 glossary, one expected term per line (gpt-transcribe).')
+    parser.add_argument('--language', action='append', default=[],
+                        help='Expected lowercase ISO 639 language code; repeat for multilingual gpt-transcribe input.')
+    parser.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300,
+                        help='Local audio request duration cap, 1–600 seconds (default: 300).')
     parser.add_argument('--enhance_for_reading', '--enhance-for-reading', action='store_true',
                         help='Opt in to an additional AI readability derivative; may be inaccurate.')
     parser.add_argument('--format_as_interview', action='store_true',
-                        help='Legacy audio-only dialogue derivative; no invented speaker turns requested.')
+                        help='Legacy audio-only faithful layout alias; never assigns speaker roles.')
     args = parser.parse_args(argv)
     pipeline_mode = args.pipeline or args.extract_only
     if args.input and not pipeline_mode:
@@ -84,8 +119,14 @@ def main(argv=None):
         parser.error('--format_as_interview is available only in legacy audio mode.')
     if args.extract_only and args.enhance_for_reading:
         parser.error('--extract-only cannot request enhancement.')
+    if args.extract_only and (args.context_file or args.glossary_file or args.language):
+        parser.error('--extract-only cannot request transcription hints; supply them when transcribing.')
 
     try:
+        context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)
+        options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
+                                       languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
+        editing_options = EditingOptions(model=args.editing_model)
         source = Path(args.input or args.input_folder)
         if source.is_symlink() or not source.exists():
             raise PipelineError('Input is missing or is a symlink; choose an accessible local file or folder.')
@@ -103,10 +144,12 @@ def main(argv=None):
             raise PipelineError('No supported media files were found (folders are scanned nonrecursively).')
         require_ffmpeg()
         output = output_directory(args.output_folder)
-        transcriber = None if args.extract_only else Transcriber(media_timeout=args.media_timeout)
-        pipeline = Pipeline(output, resume=args.resume, media_timeout=args.media_timeout) if pipeline_mode else None
+        transcriber = None if args.extract_only else Transcriber(media_timeout=args.media_timeout,
+                                                                options=options, editing_options=editing_options)
+        pipeline = Pipeline(output, resume=args.resume, media_timeout=args.media_timeout,
+                            options=options, editing_options=editing_options) if pipeline_mode else None
     except (MediaError, PipelineError, ConfigurationError, OSError, ValueError) as error:
-        message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError) else 'Cannot access local input/output; check permissions and free space.'
+        message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError) else 'Cannot access local input/output; check permissions and free space.'
         _report(status='failed', message=message)
         return 1
 

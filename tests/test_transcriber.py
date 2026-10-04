@@ -42,7 +42,7 @@ def test_audio_compatibility(extension, synthetic_media, provider):
     assert transcriber.transcribe(str(source)) == 'Synthetic transcript.'
     call = provider.audio.transcriptions.create.call_args.kwargs
     assert call['file'][0] == 'audio.wav'
-    assert call['model'] == 'whisper-1'
+    assert call['model'] == 'gpt-transcribe'
 
 
 def test_exact_chunk_sizes_order_and_final_tail(tmp_path, provider):
@@ -108,7 +108,7 @@ def test_enhancement_refuses_truncation(provider):
 def test_interview_opt_in_does_not_request_invention(provider):
     Transcriber(client=provider).enhance_as_interview('Synthetic monologue.')
     instructions = provider.chat.completions.create.call_args.kwargs['messages'][0]['content']
-    assert 'Never invent questions' in instructions
+    assert 'invent questions' in instructions
     assert 'monologue' in instructions
 
 
@@ -125,3 +125,41 @@ def test_provider_child_debug_logs_are_suppressed(tmp_path, provider, capsys):
     captured = capsys.readouterr()
     assert 'PRIVATE_PROVIDER_PAYLOAD' not in captured.out + captured.err
     assert logger.disabled
+
+
+def test_new_asr_parameters_and_generic_filename(tmp_path, provider):
+    from src.model_config import TranscriptionOptions
+    source = write_wave(tmp_path / 'synthetic.wav')
+    options = TranscriptionOptions(context='Synthetic context.', keywords=('SyntheticTerm',), languages=('en', 'fr'))
+    Transcriber(client=provider, options=options).transcribe(str(source), prepared=True)
+    request = provider.audio.transcriptions.create.call_args.kwargs
+    assert request['model'] == 'gpt-transcribe'
+    assert request['response_format'] == 'json'
+    assert request['prompt'] == 'Synthetic context.'
+    assert request['extra_body'] == {'keywords': ['SyntheticTerm'], 'languages': ['en', 'fr']}
+    assert request['file'][0] == 'audio.wav'
+    assert 'timestamp_granularities' not in request and 'chunking_strategy' not in request
+
+
+def test_duration_cap_covers_every_frame(tmp_path, provider):
+    from src.model_config import TranscriptionOptions
+    source = write_wave(tmp_path / 'synthetic.wav', frames=32001)
+    transcriber = Transcriber(client=provider, options=TranscriptionOptions(chunk_seconds=1))
+    counts = []
+    def create(**kwargs):
+        with wave.open(kwargs['file'][1], 'rb') as chunk:
+            counts.append(chunk.getnframes())
+        return SimpleNamespace(text=f'Synthetic part {len(counts)}')
+    provider.audio.transcriptions.create.side_effect = create
+    text = transcriber.transcribe(str(source), prepared=True)
+    assert counts == [16000, 16000, 1]
+    assert text.endswith('Synthetic part 3')
+
+
+def test_model_error_never_falls_back_to_deprecated_asr(tmp_path, provider):
+    source = write_wave(tmp_path / 'synthetic.wav')
+    provider.audio.transcriptions.create.side_effect = RuntimeError('PRIVATE_API_ERROR')
+    with pytest.raises(TranscriptionError):
+        Transcriber(client=provider).transcribe(str(source), prepared=True)
+    assert provider.audio.transcriptions.create.call_count == 1
+    assert provider.audio.transcriptions.create.call_args.kwargs['model'] == 'gpt-transcribe'
