@@ -42,7 +42,7 @@ class ConfigurationError(EnvironmentError):
 
 def _suppress_provider_logging():
     """Suppress SDK/network loggers, including already configured child loggers."""
-    roots = ('openai', 'httpx', 'httpcore')
+    roots = ('openai', 'httpx', 'httpcore', 'httpx2', 'httpcore2')
     names = set(roots) | set(logging.Logger.manager.loggerDict)
     for name in names:
         if any(name == root or name.startswith(root + '.') for root in roots):
