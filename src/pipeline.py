@@ -7,10 +7,12 @@ from pathlib import Path
 
 if __package__:
     from .media import MEDIA_EXTENSIONS, MediaError, prepare_audio
+    from .model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from .private_output import digest, output_directory, write_private
     from .transcriber import TranscriptionError
 else:
     from media import MEDIA_EXTENSIONS, MediaError, prepare_audio
+    from model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from private_output import digest, output_directory, write_private
     from transcriber import TranscriptionError
 
@@ -24,18 +26,22 @@ class PipelineError(RuntimeError):
 
 
 class Pipeline:
-    def __init__(self, output, *, resume=False, media_timeout=3600, model='whisper-1'):
+    def __init__(self, output, *, resume=False, media_timeout=3600, model=DEFAULT_ASR_MODEL,
+                 options=None, editing_options=None):
         self.output = output_directory(output)
         self.resume = resume
         self.media_timeout = media_timeout
-        self.model = model
+        self.options = options or TranscriptionOptions(model=model)
+        self.editing_options = editing_options or EditingOptions()
+        self.model = self.options.model
 
     @staticmethod
-    def _verified(job, state, stage, filename):
+    def _verified(job, state, stage, filename, configuration=None):
         record = state['stages'].get(stage)
         target = job / filename
         return (
             isinstance(record, dict) and record.get('status') == 'complete'
+            and (configuration is None or record.get('configuration_sha256') == configuration)
             and target.is_file() and not target.is_symlink()
             and record.get('sha256') == digest(target)
         )
@@ -49,8 +55,10 @@ class Pipeline:
         source = Path(source)
         if not source.is_file() or source.is_symlink() or source.suffix.lower() not in MEDIA_EXTENSIONS:
             raise PipelineError('Input must be a supported local regular media file.')
-        if transcriber is not None and transcriber.model_name != self.model:
-            raise PipelineError('Transcriber model must match the pipeline model recorded in the manifest.')
+        if transcriber is not None and transcriber.options.fingerprint != self.options.fingerprint:
+            raise PipelineError('Transcriber model and hints must match the pipeline configuration recorded in the manifest.')
+        if transcriber is not None and enhance and transcriber.editing_options.fingerprint != self.editing_options.fingerprint:
+            raise PipelineError('Editing model must match the pipeline editing configuration.')
         source_hash = digest(source)
         # Include basename bytes to distinguish identical files with different names,
         # but never persist the name itself. Full paths are not part of the ID.
@@ -68,7 +76,8 @@ class Pipeline:
         except FileExistsError:
             raise PipelineError('Job is locked; wait for its running process or remove a stale lock after checking.') from None
         try:
-            state = {'version': 1, 'source_sha256': source_hash, 'model': self.model, 'stages': {}}
+            state = {'version': 2, 'source_sha256': source_hash, 'model': self.model,
+                     'transcription_configuration_sha256': self.options.fingerprint, 'stages': {}}
             if os.path.lexists(manifest):
                 if not self.resume:
                     raise PipelineError('Job already exists; use --resume to verify and skip completed stages.')
@@ -76,9 +85,20 @@ class Pipeline:
                     if manifest.is_symlink():
                         raise ValueError()
                     state = json.loads(manifest.read_text(encoding='utf-8'))
-                    if (state.get('version') != 1 or state.get('source_sha256') != source_hash
-                            or state.get('model') != self.model or not isinstance(state.get('stages'), dict)):
+                    if (state.get('version') != 2 or state.get('source_sha256') != source_hash
+                            or not isinstance(state.get('stages'), dict)):
                         raise ValueError()
+                    configuration_changed = (state.get('model') != self.model
+                        or state.get('transcription_configuration_sha256') != self.options.fingerprint)
+                    if configuration_changed:
+                        record = state['stages'].get('transcription', {})
+                        if (not isinstance(record, dict) or record.get('status') == 'complete'
+                                or os.path.lexists(job / 'transcription.txt')):
+                            raise ValueError()
+                        # Extraction has no ASR configuration. A fresh/failed ASR
+                        # stage may use newly supplied model/hints without replacing raw text.
+                        state['model'] = self.model
+                        state['transcription_configuration_sha256'] = self.options.fingerprint
                 except (ValueError, AttributeError, OSError):
                     raise PipelineError('Resume manifest is invalid or configuration changed; use a new output folder.') from None
 
@@ -92,12 +112,15 @@ class Pipeline:
                 if enhance:
                     stages.append(('enhancement', 'derivative_readability.txt', lambda: write_private(
                         job / 'derivative_readability.txt',
-                        'AI readability derivative; verify against transcription.txt.\n\n'
+                        'AI readability derivative; verify against transcription.txt.\n'
+                        'Speaker identities and turn boundaries are unverified; no roles are inferred.\n\n'
                         + transcriber.enhance_transcription((job / 'transcription.txt').read_text(encoding='utf-8')))))
 
             summary = {stage: 'pending' for stage, _, _ in stages}
             for stage, filename, operation in stages:
-                if self.resume and self._verified(job, state, stage, filename):
+                configuration = {'transcription': self.options.fingerprint,
+                                 'enhancement': self.editing_options.fingerprint}.get(stage)
+                if self.resume and self._verified(job, state, stage, filename, configuration):
                     summary[stage] = 'skipped'
                     continue
                 if os.path.lexists(job / filename):
@@ -109,6 +132,8 @@ class Pipeline:
                     if stage == 'conversion' and digest(source) != source_hash:
                         raise PipelineError('Source changed during conversion; use a stable source and a new output folder.')
                     state['stages'][stage] = {'status': 'complete', 'sha256': digest(job / filename)}
+                    if configuration:
+                        state['stages'][stage]['configuration_sha256'] = configuration
                 except Exception as error:
                     state['stages'][stage] = {'status': 'failed'}
                     self._save(manifest, state)

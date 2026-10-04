@@ -1,6 +1,6 @@
 # Voice Transcription Engine
 
-Convert video to audio locally, then transcribe it with OpenAI's hosted Whisper API using one CLI. The default output is the original API transcription, with no AI rewriting. Existing WAV, MP3, and M4A folder commands and output naming remain supported.
+Convert video to audio locally, then transcribe it with OpenAI's hosted Transcriptions API using one CLI. The default output is the original API transcription, with no AI rewriting. Existing WAV, MP3, and M4A folder commands and output naming remain supported.
 
 ## Requirements and setup
 
@@ -67,7 +67,7 @@ Pipeline output is stored under an opaque job ID:
 private/output/<job-id>/
   audio.wav                     # local intermediate
   transcription.txt             # original API transcript
-  manifest.json                 # version, source checksum, model, stage checksums/status
+  manifest.json                 # version, source/configuration hashes, model, stage status/checksums
   derivative_readability.txt    # only with explicit enhancement
 ```
 
@@ -76,10 +76,10 @@ Job IDs hash the source basename and entire file contents; they contain no plain
 The default output directory is ignored `private/output`. In a Git checkout, the CLI refuses output locations outside `private/` or `data/`. These trees are ignored in this repository. Keep artifacts in those trees or outside **all** repositories; an unrelated checkout may have different ignore rules. Original inputs and common generated formats are also ignored as a second layer. Gitignore is not access control, and forced staging can bypass it.
 
 - Runs never overwrite an existing audio/transcript artifact. A repeat run requires `--resume`.
-- Resume checks the manifest version, source checksum, model, and SHA-256 of each complete artifact. Missing artifacts can be regenerated; existing artifacts with a missing, invalid, or mismatched record are conflicts. Use a fresh output folder for conflicting/tampered artifacts or changed processing configuration.
+- Resume checks manifest version 2, the source checksum, ASR model/hint/chunk fingerprints, editing configuration, and SHA-256 of each complete artifact. Missing artifacts can be regenerated; existing artifacts with a missing, invalid, or mismatched record are conflicts. Use a fresh output folder for conflicting/tampered artifacts or changed processing configuration. Version 1 manifests from the earlier pipeline revision require a fresh output folder; retain their original transcripts. Completed raw transcripts cannot be replaced by changing model or hints. If only extraction or a failed ASR stage exists, new hints/model can be supplied with `--resume` without redoing verified conversion.
 - Completed conversion and transcription stages are skipped separately. A failed enhancement can resume without retranscribing. A failed transcription retains the prepared audio and retries transcription. **API chunks are not checkpointed**: retrying a failed transcription stage can repeat successful chunk requests and charges.
 - Text is published atomically only after every chunk succeeds. Any failed or malformed chunk fails the whole transcription stage; there is no full-file fallback, error text in the transcript, or silent successful partial transcript.
-- The original audio is streamed into exact PCM frame chunks of at most 20 MiB each, below the documented 25 MB upload limit. Every frame, including the final short tail, is processed in order. Fixed boundaries can split speech mid-sentence and affect recognition quality; check the transcript against the recording.
+- The original audio is streamed into exact PCM frame chunks capped at both 20 MiB and five minutes by default, below the documented 25 MB upload limit. The duration cap is an application choice, configurable with `--audio-chunk-seconds` from 1 to 600 seconds, rather than a claim about the model's duration limit. Every frame, including the final short tail, is processed in order. Fixed boundaries can split speech mid-sentence and affect recognition quality; check the transcript against the recording.
 - A private lock prevents concurrent processing of the same job. If a process is killed, verify that it has stopped before manually deleting its job's `.lock`. A crash between publishing an artifact and recording its checksum produces a safe conflict; use a fresh output directory.
 - JSON progress reports show item indices, opaque IDs, stage statuses, and sanitized guidance. Errors report a nonzero exit status and processing continues for other files. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
 
@@ -91,19 +91,50 @@ python src/cli.py --input_folder private/input --output_folder private/audio-tra
 
 This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` names. Video files remain skipped unless you select pipeline mode. Existing output files, including same-stem collisions, fail rather than overwrite. Resume manifests apply only to pipeline mode.
 
-Legacy `--enhance_for_reading` and `--format_as_interview` remain explicit opt-ins. The interview flag is limited to legacy audio mode; it requests formatting existing dialogue, without fabricated questions or inferred identities. It may still produce inaccurate content and requires human verification.
+## Models and user-supplied transcription hints
 
-Pipeline mode supports an optional readability derivative:
+The quality-first default is **`gpt-transcribe`**, the model recommended by current OpenAI documentation for general-purpose file transcription. Optional faithful editing defaults to **`gpt-6-astra`** with high reasoning, because OpenAI currently identifies it as its most capable model and quality is the priority here. This is a documentation-based selection, not an empirical quality claim or benchmark on your recordings. No real audio or paid calls were used to evaluate these models.
+
+```bash
+voice-transcribe --pipeline --input private/input/synthetic.mp4 --model gpt-transcribe
+# Optional known context and literal terms, supplied by you:
+voice-transcribe --pipeline --input private/input/synthetic.mp4 \
+  --context-file private/hints/context.txt --glossary-file private/hints/glossary.txt \
+  --language en --language fr
+```
+
+The context file is UTF-8 text about the actual recording. The glossary is UTF-8, one literal expected term per nonblank line; duplicate terms are removed. Include only terms you have reason to expect. Language hints use lowercase ISO 639 codes; repeat `--language` for multilingual/code-switched audio. Current docs support ISO 639-1 and selected ISO 639-3 codes; syntax is checked locally and unsupported codes can be rejected by the API. No glossary, language, context, speaker identity, or previous-chunk prompt is invented or inferred from filenames. With no hint flags, none are sent.
+
+For `gpt-transcribe`, context maps to `prompt`, and `keywords`/`languages` use the documented Python `extra_body` fields. The CLI requests JSON text output; it does not send Whisper timestamp parameters, subtitles, diarization options, or assume speaker labels. The source API text remains unchanged inside the ordered raw transcript. Exact frame coverage does not prove the model recognized every word; review ASR omissions/errors against the recording.
+
+Application safety limits: context ≤8192 UTF-8 bytes, at most 100 glossary terms of ≤256 bytes each, at most 16 language hints, and hint files ≤64 KiB. Store real hints under ignored `private/hints/` or outside all repositories. Hints are sent to OpenAI, so they may contain sensitive information. Only a configuration hash, not their text or file paths, is persisted in the private manifest or reported in logs.
+
+`--model` also accepts `whisper-1`, `gpt-4o-transcribe`, and `gpt-4o-mini-transcribe` for explicit legacy compatibility. These support context plus one ISO 639-1 `language`; this CLI rejects glossary and multiple-language options for them instead of sending incompatible fields. OpenAI's [2026-08-26 deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-08-26-transcription-models) schedules removal of those legacy transcription models on **February 26, 2027**. There is no automatic fallback to a deprecated model when the new model is inaccessible. Model/account access and limits must be checked by the user.
+
+## Optional faithful text editing
 
 ```bash
 voice-transcribe --pipeline --input private/input/synthetic.mp4 --enhance-for-reading
+# Explicit alternative from the current documented model family:
+voice-transcribe --pipeline --input private/input/synthetic.mp4 \
+  --enhance-for-reading --editing-model gpt-6.1-sol
 ```
 
-Enhancement sends the transcript to `gpt-4.1-mini` as an additional paid request. Derivatives carry an AI label and never replace the original transcription. Incomplete responses (including token-limit truncation) fail; the complete original remains saved. Long transcripts may exceed the enhancement limit; retain the original rather than accepting a truncated derivative. The CLI does not claim that AI rewriting is faithful or that Whisper recognition is error-free.
+`--editing-model` accepts `gpt-6-astra` (default) or `gpt-6.1-sol`. Editing remains opt-in and sends transcript chunks as additional paid Chat Completions requests. Both use high reasoning, structured JSON output, no unsupported temperature setting, an input-sized completion budget of 16,384–32,768 tokens including reasoning, and `store=false`. This retention setting does not waive OpenAI's other data-processing controls.
+
+Editing permits **punctuation, capitalization, and paragraph layout only**. It must preserve repetitions, disfluencies, numbers, uncertainty markers, and every word in its original order. The code checks each output and the final reassembly against the source's case-insensitive Unicode word sequence. Added questions, answers, speaker labels/roles, paraphrases, omissions, or reordered words fail the editing stage even if the provider reports successful completion. A mechanical word check is conservative and cannot prove semantic equivalence: punctuation can change interpretation, and tokenization can reject otherwise reasonable changes in some scripts. Human verification remains necessary.
+
+Long transcripts are partitioned into contiguous chunks of at most 6000 UTF-8 bytes, preferring whitespace boundaries and preserving every character in the source partition. Each response must return the expected chunk index, text, and a boolean speaker-uncertainty flag. Chunks are reassembled in order with boundary whitespace restored; there is no overlap, deduplication, summarization, or successful partial derivative. Refusals, malformed JSON, wrong chunk indices, non-stop completion reasons (including token exhaustion), or a later chunk failure fail the entire derivative. There is no automatic rewriting retry or silent 2048-token cutoff. Editing chunks are not checkpointed, so a failed stage may repeat paid editing requests on retry.
+
+Derivatives carry an AI label, explicitly mark speaker identities/turn boundaries as unverified, and flag chunks where the editor reports attribution uncertainty. No speaker identity or turn is inferred. The raw `transcription.txt` is never overwritten by the pipeline. An editing failure leaves the raw transcript intact. Changing editing model cannot overwrite an existing derivative; use a fresh output folder.
+
+Legacy `--enhance_for_reading` remains supported. `--format_as_interview` is retained only as a legacy audio-mode alias for the same faithful layout operation and existing filename; it no longer asks for interview reconstruction or speaker-role assignment. It does not turn a monologue into an interview.
+
+Official selection/compatibility references: [GPT-Transcribe](https://developers.openai.com/api/docs/models/gpt-transcribe), [ASR context and languages](https://developers.openai.com/api/docs/guides/speech-to-text), [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), and [GPT-6 migration parameters](https://developers.openai.com/api/docs/guides/latest-model).
 
 ## Privacy boundaries
 
-Conversion runs on your machine. Transcription sends the **normalized audio** to OpenAI; this can contain voices, names, and other sensitive spoken content even after container metadata is stripped. The multipart filename is generic `audio.wav`. Optional enhancement separately sends transcript text. Review your authorization to process the material and OpenAI's current data controls before using real recordings. This tool makes no zero-retention promise and cannot prevent disclosures present in the audio or transcript itself. It does not download from Drive, publish artifacts, or upload to GitHub.
+Conversion runs on your machine. Transcription sends the **normalized audio** to OpenAI; this can contain voices, names, and other sensitive spoken content even after container metadata is stripped. The multipart filename is generic `audio.wav`. Optional context/glossary/language hints are also sent; faithful editing separately sends transcript text. Review your authorization to process the material and OpenAI's current data controls before using real recordings. This tool makes no zero-retention promise and cannot prevent disclosures present in the audio or transcript itself. It does not download from Drive, publish artifacts, or upload to GitHub.
 
 Keep API keys and source/output folders private; delete retained media, transcripts, manifests, and backups according to your own retention policy. Temporary normalization files are removed on normal completion/error; abrupt termination can leave private temporary directories. SDK/network debug logging is suppressed by the transcriber to avoid accidental credential/payload logging. No real recordings, personal transcripts, keys, or identifying fixtures belong in this public repository.
 
@@ -115,6 +146,6 @@ Official references: [OpenAI transcription formats and limits](https://developer
 python -m pytest tests/ -q
 ```
 
-Tests generate synthetic tones and color video in temporary folders, mock all provider responses, and block Python network connections. Coverage includes actual FFmpeg conversion, metadata removal, WAV/MP3/M4A compatibility, exact chunk coverage, failed chunks, missing tools/key, corrupt/no-audio input, privacy of logs, output conflicts, and resume checks. FFmpeg-dependent tests skip if binaries are absent; no tests use real media or make paid OpenAI calls.
+Tests generate synthetic tones and color video in temporary folders, mock all provider responses, and block Python network connections. Coverage includes actual FFmpeg conversion, metadata removal, WAV/MP3/M4A compatibility, exact byte/duration chunk coverage, model selection/capability gates, user-supplied hints, long-text reassembly, faithfulness checks, failed chunks, truncation/refusal handling, missing tools/key, corrupt/no-audio input, privacy of logs, output conflicts, and configuration-aware resume checks. FFmpeg-dependent tests skip if binaries are absent; no tests use real media or make paid OpenAI calls.
 
-Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, and `src/private_output.py` writes private artifacts. Packaging now exposes the existing flat modules through `voice-transcribe`; this feature does not migrate the legacy project to a new package layout.
+Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, and `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Packaging now exposes the existing flat modules through `voice-transcribe`; this feature does not migrate the legacy project to a new package layout.

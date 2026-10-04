@@ -83,12 +83,12 @@ def test_changed_source_gets_new_identity(synthetic_media, tmp_path):
     assert first_id != second_id
 
 
-def test_model_change_refuses_resume(synthetic_media, tmp_path):
+def test_model_change_refuses_resume(synthetic_media, tmp_path, provider):
     source = synthetic_media()
     output = tmp_path / 'output'
-    Pipeline(output).process(source, extract_only=True)
+    Pipeline(output).process(source, transcriber=Transcriber(client=provider))
     with pytest.raises(PipelineError, match='configuration changed'):
-        Pipeline(output, resume=True, model='other').process(source, extract_only=True)
+        Pipeline(output, resume=True, model='whisper-1').process(source, extract_only=True)
 
 
 def test_locked_job_cannot_run(synthetic_media, tmp_path):
@@ -153,6 +153,74 @@ def test_invalid_manifest_and_symlink_artifact_fail_closed(synthetic_media, tmp_
 def test_mismatched_transcriber_model_is_rejected(tmp_path, provider):
     source = tmp_path / 'synthetic.wav'
     source.touch()
-    with pytest.raises(PipelineError, match='model must match'):
-        Pipeline(tmp_path / 'output').process(source, transcriber=Transcriber(model_name='different', client=provider))
+    with pytest.raises(PipelineError, match='must match'):
+        Pipeline(tmp_path / 'output').process(source, transcriber=Transcriber(model_name='whisper-1', client=provider))
     provider.audio.transcriptions.create.assert_not_called()
+
+
+def test_context_change_preserves_existing_raw_transcript(synthetic_media, tmp_path, provider):
+    from src.model_config import TranscriptionOptions
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    original = TranscriptionOptions(keywords=('SyntheticFirst',))
+    identity, _ = Pipeline(output, options=original).process(source, transcriber=Transcriber(client=provider, options=original))
+    raw = output / identity / 'transcription.txt'
+    before = raw.read_bytes()
+    changed = TranscriptionOptions(keywords=('SyntheticSecond',))
+    with pytest.raises(PipelineError, match='configuration changed'):
+        Pipeline(output, resume=True, options=changed).process(source, transcriber=Transcriber(client=provider, options=changed))
+    assert raw.read_bytes() == before
+    assert provider.audio.transcriptions.create.call_count == 1
+    manifest = (output / identity / 'manifest.json').read_text()
+    assert 'SyntheticFirst' not in manifest and 'SyntheticSecond' not in manifest
+
+
+def test_hints_can_be_added_after_extract_only(synthetic_media, tmp_path, provider):
+    from src.model_config import TranscriptionOptions
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    Pipeline(output).process(source, extract_only=True)
+    options = TranscriptionOptions(keywords=('SyntheticTerm',), languages=('en', 'fr'))
+    _, stages = Pipeline(output, resume=True, options=options).process(source, transcriber=Transcriber(client=provider, options=options))
+    assert stages == {'conversion': 'skipped', 'transcription': 'complete'}
+
+
+def test_unfaithful_editor_never_publishes_or_modifies_raw(synthetic_media, tmp_path, provider):
+    output = tmp_path / 'output'
+    provider.chat.completions.create.return_value.choices[0].message.content = json.dumps({
+        'chunk_index': 1, 'text': 'Interviewer: Invented question.', 'speaker_uncertain': False,
+    })
+    with pytest.raises(PipelineError, match='invented'):
+        Pipeline(output).process(synthetic_media(), transcriber=Transcriber(client=provider), enhance=True)
+    job = next(output.iterdir())
+    assert (job / 'transcription.txt').read_text() == 'Synthetic transcript.'
+    assert not (job / 'derivative_readability.txt').exists()
+
+
+def test_editing_model_change_cannot_overwrite_derivative(synthetic_media, tmp_path, provider):
+    from src.model_config import EditingOptions
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    identity, _ = Pipeline(output).process(source, transcriber=Transcriber(client=provider), enhance=True)
+    derivative = output / identity / 'derivative_readability.txt'
+    before = derivative.read_bytes()
+    editor = EditingOptions(model='gpt-6.1-sol')
+    with pytest.raises(PipelineError, match='Unverified output'):
+        Pipeline(output, resume=True, editing_options=editor).process(
+            source, transcriber=Transcriber(client=provider, editing_options=editor), enhance=True)
+    assert derivative.read_bytes() == before
+    assert provider.audio.transcriptions.create.call_count == 1
+
+
+def test_version_one_manifest_fails_without_overwriting(synthetic_media, tmp_path):
+    output = tmp_path / 'output'
+    source = synthetic_media()
+    identity, _ = Pipeline(output).process(source, extract_only=True)
+    manifest = output / identity / 'manifest.json'
+    state = json.loads(manifest.read_text())
+    state['version'] = 1
+    manifest.write_text(json.dumps(state))
+    before = manifest.read_bytes()
+    with pytest.raises(PipelineError, match='configuration changed'):
+        Pipeline(output, resume=True).process(source, extract_only=True)
+    assert manifest.read_bytes() == before

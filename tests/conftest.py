@@ -1,5 +1,6 @@
 """Only synthetic local media and mocked providers are allowed in tests."""
 
+import json
 import shutil
 import socket
 import subprocess
@@ -22,8 +23,19 @@ def provider():
     client = MagicMock()
     client.audio.transcriptions.create.return_value = SimpleNamespace(text='Synthetic transcript.')
     client.chat.completions.create.return_value = SimpleNamespace(choices=[
-        SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content='Synthetic derivative.'))
+        SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content=None, refusal=None))
     ])
+    def edit(**kwargs):
+        supplied = json.loads(kwargs['messages'][-1]['content'])
+        base = client.chat.completions.create.return_value.choices[0]
+        content = base.message.content
+        if content is None:
+            content = json.dumps({'chunk_index': supplied['chunk_index'], 'text': supplied['text'],
+                                  'speaker_uncertain': True}, ensure_ascii=False)
+        return SimpleNamespace(choices=[SimpleNamespace(
+            finish_reason=base.finish_reason,
+            message=SimpleNamespace(content=content, refusal=base.message.refusal))])
+    client.chat.completions.create.side_effect = edit
     return client
 
 
