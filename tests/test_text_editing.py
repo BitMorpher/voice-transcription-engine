@@ -3,7 +3,7 @@ import json
 import pytest
 
 from src.model_config import EditingOptions
-from src.text_editing import split_text, validate_edit, words
+from src.text_editing import EditingError, split_text, validate_edit, words
 from src.transcriber import Transcriber, TranscriptionError
 
 
@@ -97,3 +97,63 @@ def test_failed_later_edit_chunk_never_returns_partial(provider):
 def test_empty_transcript_never_calls_editor(provider):
     assert Transcriber(client=provider).enhance_transcription(' \n') == ' \n'
     provider.chat.completions.create.assert_not_called()
+
+
+CHANGED_UNICODE_WORDS = [
+    ('दिन', 'दीन'),                  # Devanagari vowel signs.
+    ('கி', 'கீ'),                    # Tamil spacing vowel marks.
+    ('عَلَم', 'عِلْم'),              # Arabic vowel marks.
+    ('שָׁם', 'שֵׁם'),                 # Hebrew vowel marks.
+    ('cafe\u0301', 'cafe'),          # Dropped Latin combining accent.
+    ('क्\u200dष', 'क्\u200cष'),      # Meaningful joining controls.
+    ('a\u20dd', 'a'),               # Enclosing combining mark.
+    ('synthetic \u0301', 'synthetic'),  # A detached mark must not be discarded.
+]
+
+
+@pytest.mark.parametrize('source,edited', CHANGED_UNICODE_WORDS)
+def test_chunk_validation_rejects_changed_unicode_marks(source, edited):
+    with pytest.raises(EditingError, match='changed, invented'):
+        validate_edit(json.dumps({
+            'chunk_index': 1, 'text': edited, 'speaker_uncertain': False,
+        }), source, 1)
+
+
+@pytest.mark.parametrize('source,edited', CHANGED_UNICODE_WORDS)
+def test_final_validation_independently_rejects_changed_unicode_marks(
+        monkeypatch, provider, source, edited):
+    # Exercise the independent whole-output guard even if a future chunk guard regresses.
+    monkeypatch.setattr('src.transcriber.validate_edit', lambda *args: (edited, False))
+    with pytest.raises(TranscriptionError, match='Reassembled editing changed'):
+        Transcriber(client=provider).enhance_transcription(source)
+
+
+@pytest.mark.parametrize('source,edited', [
+    ('café', 'CAFE\u0301'),
+    ('क़', 'क\u093c'),
+    ('가', '\u1100\u1161'),
+    ('ΐ', 'ι\u0308\u0301'),
+    ('a\u0301\u0323', 'a\u0323\u0301'),
+    ('café क़ 가 ΐ', 'CAFE\u0301 क\u093c \u1100\u1161 ι\u0308\u0301'),
+])
+def test_canonical_unicode_equivalence_passes_chunk_and_final_checks(provider, source, edited):
+    assert words(source) == words(edited)
+    result, _ = validate_edit(json.dumps({
+        'chunk_index': 1, 'text': edited, 'speaker_uncertain': False,
+    }), source, 1)
+    assert result == edited
+    provider.chat.completions.create.return_value.choices[0].message.content = json.dumps({
+        'chunk_index': 1, 'text': edited, 'speaker_uncertain': False,
+    })
+    assert Transcriber(client=provider).enhance_transcription(source) == edited
+
+
+def test_compatibility_substitution_is_not_canonical_equivalence():
+    assert words('①') != words('1')
+
+
+def test_unicode_marks_survive_many_byte_bounded_chunks(provider):
+    source = 'दिन café क़ 가 ΐ\n' * 50
+    result = Transcriber(client=provider, editing_options=EditingOptions(chunk_bytes=64)).enhance_transcription(source)
+    assert result.split('\n\n', 1)[1] == source
+    assert provider.chat.completions.create.call_count > 1

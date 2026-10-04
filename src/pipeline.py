@@ -36,15 +36,37 @@ class Pipeline:
         self.model = self.options.model
 
     @staticmethod
-    def _verified(job, state, stage, filename, configuration=None):
+    def _verified(job, state, stage, filename, configuration=None, transcription_sha256=None):
         record = state['stages'].get(stage)
         target = job / filename
         return (
             isinstance(record, dict) and record.get('status') == 'complete'
             and (configuration is None or record.get('configuration_sha256') == configuration)
+            and (transcription_sha256 is None
+                 or record.get('transcription_sha256') == transcription_sha256)
             and target.is_file() and not target.is_symlink()
             and record.get('sha256') == digest(target)
         )
+
+    def _enhancement_fingerprint(self, transcription_sha256):
+        """Bind the editing contract and settings to the exact raw transcript."""
+        binding = {'contract': 1, 'editing_configuration_sha256': self.editing_options.fingerprint,
+                   'transcription_sha256': transcription_sha256}
+        return hashlib.sha256(json.dumps(binding, sort_keys=True).encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _write_derivative(job, transcriber, expected_sha256):
+        raw = job / 'transcription.txt'
+        snapshot = raw.read_bytes()
+        if raw.is_symlink() or hashlib.sha256(snapshot).hexdigest() != expected_sha256:
+            raise PipelineError('Raw transcript changed before editing; use a stable transcript and a new output folder.')
+        edited = transcriber.enhance_transcription(snapshot.decode('utf-8'))
+        if raw.is_symlink() or digest(raw) != expected_sha256:
+            raise PipelineError('Raw transcript changed during editing; no derivative was saved. Use a new output folder.')
+        write_private(job / 'derivative_readability.txt',
+                      'AI readability derivative; verify against transcription.txt.\n'
+                      'Speaker identities and turn boundaries are unverified; no roles are inferred.\n\n'
+                      + edited)
 
     def process(self, source, *, transcriber=None, extract_only=False, enhance=False):
         """Return per-stage statuses. Resume requires a matching, verified manifest.
@@ -110,17 +132,20 @@ class Pipeline:
                 stages.append(('transcription', 'transcription.txt', lambda: write_private(
                     job / 'transcription.txt', transcriber.transcribe(str(audio), prepared=True))))
                 if enhance:
-                    stages.append(('enhancement', 'derivative_readability.txt', lambda: write_private(
-                        job / 'derivative_readability.txt',
-                        'AI readability derivative; verify against transcription.txt.\n'
-                        'Speaker identities and turn boundaries are unverified; no roles are inferred.\n\n'
-                        + transcriber.enhance_transcription((job / 'transcription.txt').read_text(encoding='utf-8')))))
+                    stages.append(('enhancement', 'derivative_readability.txt', lambda: self._write_derivative(
+                        job, transcriber, state['stages']['transcription']['sha256'])))
 
             summary = {stage: 'pending' for stage, _, _ in stages}
             for stage, filename, operation in stages:
-                configuration = {'transcription': self.options.fingerprint,
-                                 'enhancement': self.editing_options.fingerprint}.get(stage)
-                if self.resume and self._verified(job, state, stage, filename, configuration):
+                configuration = self.options.fingerprint if stage == 'transcription' else None
+                transcription_sha256 = None
+                if stage == 'enhancement':
+                    transcription_sha256 = digest(job / 'transcription.txt')
+                    if transcription_sha256 != state['stages']['transcription']['sha256']:
+                        summary[stage] = 'failed'
+                        raise PipelineError('Raw transcript changed before editing; use a new output folder.', stages=summary)
+                    configuration = self._enhancement_fingerprint(transcription_sha256)
+                if self.resume and self._verified(job, state, stage, filename, configuration, transcription_sha256):
                     summary[stage] = 'skipped'
                     continue
                 if os.path.lexists(job / filename):
@@ -134,6 +159,8 @@ class Pipeline:
                     state['stages'][stage] = {'status': 'complete', 'sha256': digest(job / filename)}
                     if configuration:
                         state['stages'][stage]['configuration_sha256'] = configuration
+                    if transcription_sha256:
+                        state['stages'][stage]['transcription_sha256'] = transcription_sha256
                 except Exception as error:
                     state['stages'][stage] = {'status': 'failed'}
                     self._save(manifest, state)

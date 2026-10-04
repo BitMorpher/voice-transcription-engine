@@ -41,9 +41,30 @@ def _report(**details):
 
 class PrivateArgumentParser(argparse.ArgumentParser):
     def error(self, message):
-        # argparse ordinarily echoes unknown arguments, including personal paths.
+        # Never forward argparse's diagnostic: recognized flags, invalid values,
+        # ambiguous options and unknown arguments can all contain supplied text.
+        guidance = 'Invalid command-line arguments; see --help.'
         if message.startswith('unrecognized arguments:'):
-            message = 'Unrecognized command-line options; see --help.'
+            guidance = 'Unrecognized command-line options; see --help.'
+        for action in self._actions:
+            name = '/'.join(action.option_strings)
+            prefix = f'argument {name}: '
+            if not name or not message.startswith(prefix):
+                continue
+            diagnostic = message[len(prefix):]
+            if diagnostic.startswith('ignored explicit argument'):
+                guidance = f'Option {name} does not accept a value; see --help.'
+            elif diagnostic == 'expected one argument':
+                guidance = f'Option {name} requires a value; see --help.'
+            elif action.type is _positive_timeout:
+                guidance = f'Option {name} requires a positive finite number; see --help.'
+            else:
+                guidance = f'Invalid or conflicting use of option {name}; see --help.'
+            break
+        super().error(guidance)
+
+    def usage_error(self, message):
+        """Report only fixed application guidance, never argument-derived text."""
         super().error(message)
 
 
@@ -85,7 +106,8 @@ def _legacy_process(source, output, transcriber, args):
 
 
 def main(argv=None):
-    parser = PrivateArgumentParser(description='Convert local media and transcribe audio using OpenAI.')
+    parser = PrivateArgumentParser(prog='voice-transcribe', color=False,
+                                   description='Convert local media and transcribe audio using OpenAI.')
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--input', help='Local media file or folder (pipeline mode).')
     inputs.add_argument('--input_folder', '--input-folder', help='Folder of audio files; also accepted in pipeline mode.')
@@ -112,15 +134,15 @@ def main(argv=None):
     args = parser.parse_args(argv)
     pipeline_mode = args.pipeline or args.extract_only
     if args.input and not pipeline_mode:
-        parser.error('--input requires --pipeline or --extract-only.')
+        parser.usage_error('--input requires --pipeline or --extract-only.')
     if args.resume and not pipeline_mode:
-        parser.error('--resume requires --pipeline or --extract-only.')
+        parser.usage_error('--resume requires --pipeline or --extract-only.')
     if args.format_as_interview and pipeline_mode:
-        parser.error('--format_as_interview is available only in legacy audio mode.')
+        parser.usage_error('--format_as_interview is available only in legacy audio mode.')
     if args.extract_only and args.enhance_for_reading:
-        parser.error('--extract-only cannot request enhancement.')
+        parser.usage_error('--extract-only cannot request enhancement.')
     if args.extract_only and (args.context_file or args.glossary_file or args.language):
-        parser.error('--extract-only cannot request transcription hints; supply them when transcribing.')
+        parser.usage_error('--extract-only cannot request transcription hints; supply them when transcribing.')
 
     try:
         context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)

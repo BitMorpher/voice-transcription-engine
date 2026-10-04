@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from src.pipeline import Pipeline, PipelineError
+from src.private_output import digest
 from src.transcriber import Transcriber
 
 
@@ -224,3 +226,123 @@ def test_version_one_manifest_fails_without_overwriting(synthetic_media, tmp_pat
     with pytest.raises(PipelineError, match='configuration changed'):
         Pipeline(output, resume=True).process(source, extract_only=True)
     assert manifest.read_bytes() == before
+
+
+@pytest.mark.parametrize('replacement', [
+    'Synthetic replacement.', 'Synthetic transcript! ', 'synthetic transcript.',
+])
+def test_regenerated_raw_cannot_reuse_derivative_of_different_bytes(
+        synthetic_media, tmp_path, provider, replacement):
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    transcriber = Transcriber(client=provider)
+    identity, _ = Pipeline(output).process(source, transcriber=transcriber, enhance=True)
+    job = output / identity
+    derivative = job / 'derivative_readability.txt'
+    original_derivative = derivative.read_bytes()
+    (job / 'transcription.txt').unlink()
+    provider.audio.transcriptions.create.return_value = SimpleNamespace(text=replacement)
+    with pytest.raises(PipelineError, match='Unverified output') as failure:
+        Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+    assert failure.value.stages == {
+        'conversion': 'skipped', 'transcription': 'complete', 'enhancement': 'failed',
+    }
+    assert (job / 'transcription.txt').read_text() == replacement
+    assert derivative.read_bytes() == original_derivative
+    assert provider.chat.completions.create.call_count == 1
+    state = json.loads((job / 'manifest.json').read_text())
+    assert state['stages']['enhancement']['transcription_sha256'] != digest(job / 'transcription.txt')
+
+
+def test_identical_regenerated_raw_can_reuse_bound_derivative(synthetic_media, tmp_path, provider):
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    transcriber = Transcriber(client=provider)
+    identity, _ = Pipeline(output).process(source, transcriber=transcriber, enhance=True)
+    job = output / identity
+    original = (job / 'derivative_readability.txt').read_bytes()
+    (job / 'transcription.txt').unlink()
+    _, stages = Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+    assert stages == {'conversion': 'skipped', 'transcription': 'complete', 'enhancement': 'skipped'}
+    assert (job / 'derivative_readability.txt').read_bytes() == original
+    assert provider.audio.transcriptions.create.call_count == 2
+    assert provider.chat.completions.create.call_count == 1
+    state = json.loads((job / 'manifest.json').read_text())
+    assert state['stages']['enhancement']['transcription_sha256'] == digest(job / 'transcription.txt')
+
+
+@pytest.mark.parametrize('derivative_present', [True, False])
+def test_unbound_legacy_enhancement_is_not_reused(
+        synthetic_media, tmp_path, provider, derivative_present):
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    transcriber = Transcriber(client=provider)
+    identity, _ = Pipeline(output).process(source, transcriber=transcriber, enhance=True)
+    job = output / identity
+    target = job / 'derivative_readability.txt'
+    original = target.read_bytes()
+    manifest = job / 'manifest.json'
+    state = json.loads(manifest.read_text())
+    # Match the pre-binding version-2 record: only editor options and output checksum.
+    state['stages']['enhancement'].pop('transcription_sha256', None)
+    state['stages']['enhancement']['configuration_sha256'] = transcriber.editing_options.fingerprint
+    manifest.write_text(json.dumps(state))
+    if derivative_present:
+        before = manifest.read_bytes()
+        with pytest.raises(PipelineError, match='Unverified output'):
+            Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+        assert target.read_bytes() == original
+        assert manifest.read_bytes() == before
+        assert provider.chat.completions.create.call_count == 1
+    else:
+        target.unlink()
+        _, stages = Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+        assert stages['enhancement'] == 'complete'
+        state = json.loads(manifest.read_text())
+        assert state['stages']['enhancement']['transcription_sha256'] == digest(job / 'transcription.txt')
+    assert provider.audio.transcriptions.create.call_count == 1
+
+
+def test_raw_change_during_editing_cannot_publish_derivative(synthetic_media, tmp_path, provider):
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    transcriber = Transcriber(client=provider)
+    identity, _ = Pipeline(output).process(source, transcriber=transcriber)
+    job = output / identity
+    default_edit = provider.chat.completions.create.side_effect
+
+    def change_raw(**kwargs):
+        (job / 'transcription.txt').write_text('Synthetic changed while editing.')
+        return default_edit(**kwargs)
+
+    provider.chat.completions.create.side_effect = change_raw
+    with pytest.raises(PipelineError, match='transcript changed'):
+        Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+    assert not (job / 'derivative_readability.txt').exists()
+
+
+def test_raw_change_between_stage_checks_cannot_skip_derivative(
+        monkeypatch, synthetic_media, tmp_path, provider):
+    source = synthetic_media()
+    output = tmp_path / 'output'
+    transcriber = Transcriber(client=provider)
+    identity, _ = Pipeline(output).process(source, transcriber=transcriber, enhance=True)
+    raw = output / identity / 'transcription.txt'
+    derivative = output / identity / 'derivative_readability.txt'
+    original = derivative.read_bytes()
+    changed = False
+
+    def change_after_verification(path):
+        nonlocal changed
+        checksum = digest(path)
+        if path == raw and not changed:
+            changed = True
+            raw.write_text('Synthetic changed between stages.')
+        return checksum
+
+    monkeypatch.setattr('src.pipeline.digest', change_after_verification)
+    with pytest.raises(PipelineError, match='transcript changed') as failure:
+        Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
+    assert failure.value.stages['enhancement'] == 'failed'
+    assert derivative.read_bytes() == original
+    assert provider.chat.completions.create.call_count == 1

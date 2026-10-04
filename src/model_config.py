@@ -92,7 +92,7 @@ class EditingOptions:
 
     @property
     def fingerprint(self):
-        return _fingerprint({'faithful_editing_contract': 1, **asdict(self)})
+        return _fingerprint({'faithful_editing_contract': 2, **asdict(self)})
 
 
 def _read_hint_file(path):

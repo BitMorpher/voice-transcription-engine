@@ -143,3 +143,53 @@ def test_unrecognized_arguments_do_not_echo_private_values(capsys):
     assert error.value.code == 2
     captured = capsys.readouterr()
     assert 'DO_NOT_LOG_SYNTHETIC_FILE' not in captured.out + captured.err
+
+
+@pytest.mark.parametrize('option', [
+    '--pipeline', '--extract-only', '--resume', '--enhance_for_reading',
+    '--enhance-for-reading', '--format_as_interview', '--help',
+])
+def test_boolean_parser_errors_do_not_echo_private_values(option, capsys):
+    value = '/tmp/DO_NOT_LOG_SYNTHETIC_VALUE.wav'
+    with pytest.raises(SystemExit) as error:
+        main(['--input', 'unused', f'{option}={value}'])
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert value not in output.out + output.err
+    assert 'DO_NOT_LOG' not in output.out + output.err
+    assert 'does not accept a value' in output.err
+    assert option in output.err and '--help' in output.err
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--pipeline', '--input', 'unused', '--media-timeout=DO_NOT_LOG_SYNTHETIC_VALUE'],
+    ['--pipeline', '--input', 'unused', '--audio-chunk-seconds=DO_NOT_LOG_SYNTHETIC_VALUE'],
+    ['--pipeline', '--input', 'DO_NOT_LOG_SYNTHETIC_VALUE', '--input-folder', 'unused'],
+    ['--pipeline', '--input'],
+    ['--pipeline', '--input', 'unused', '--in=DO_NOT_LOG_SYNTHETIC_VALUE'],
+    [],
+])
+def test_other_parser_errors_keep_private_values_out(arguments, capsys):
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert 'DO_NOT_LOG' not in captured.out + captured.err
+    assert '--help' in captured.err
+
+
+def test_parser_usage_does_not_echo_caller_program_name(monkeypatch, capsys):
+    monkeypatch.setattr('sys.argv', ['/tmp/DO_NOT_LOG_SYNTHETIC_PROGRAM.py'])
+    with pytest.raises(SystemExit):
+        main([])
+    captured = capsys.readouterr()
+    assert 'DO_NOT_LOG' not in captured.out + captured.err
+    assert 'voice-transcribe' in captured.err
+
+
+def test_command_mode_error_retains_fixed_guidance(capsys):
+    with pytest.raises(SystemExit):
+        main(['--input', 'DO_NOT_LOG_SYNTHETIC_VALUE'])
+    captured = capsys.readouterr()
+    assert 'DO_NOT_LOG' not in captured.out + captured.err
+    assert '--input requires --pipeline or --extract-only' in captured.err
