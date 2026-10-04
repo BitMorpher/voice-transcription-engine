@@ -13,7 +13,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
-dependencies = ["openai>=3.24,<4"]
+dependencies = [
+    "openai>=3.24,<4",
+    "openpyxl>=3.1,<4",
+]
 
 [project.urls]
 Repository = "https://github.com/BitMorpher/voice-transcription-engine"
@@ -35,9 +38,14 @@ dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17"]
 [tool.setuptools]
 py-modules = [
     "cli", "transcriber", "media", "pipeline", "private_output", "model_config",
-    "text_editing", "logger", "utils",
+    "text_editing", "logger", "utils", "author_review", "author_workflow",
+    "chapters", "review_export",
 ]
+packages = ["prompts"]
 package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+prompts = ["*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
