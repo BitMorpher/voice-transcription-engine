@@ -1,7 +1,7 @@
 """Bounded faithful editing: exact source chunks, strict output, and word checks."""
 
 import json
-import re
+import unicodedata
 
 
 class EditingError(RuntimeError):
@@ -30,7 +30,25 @@ def split_text(text, max_bytes):
 
 
 def words(text):
-    return re.findall(r'[^\W_]+', text.casefold(), flags=re.UNICODE)
+    """Compare case-insensitively without discarding meaningful Unicode marks.
+
+    NFC treats canonical spellings as equivalent; compatibility normalization
+    could hide substitutions. Normalize again after casefolding because it can
+    introduce decomposed characters. Preserve all mark categories and joining
+    controls, including when a chunk begins with a detached combining mark.
+    """
+    normalized = unicodedata.normalize('NFC', unicodedata.normalize('NFC', text).casefold())
+    tokens, current = [], []
+    for character in normalized:
+        if (character.isalnum() or unicodedata.category(character).startswith('M')
+                or character in ('\u200c', '\u200d')):
+            current.append(character)
+        elif current:
+            tokens.append(''.join(current))
+            current = []
+    if current:
+        tokens.append(''.join(current))
+    return tokens
 
 
 def schema(index):
