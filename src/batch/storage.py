@@ -9,6 +9,7 @@ import shutil
 from ..ordered_interview import _local, _read_json
 from ..private_output import digest, output_directory, write_private
 from .plan import BatchError, encode, require, snapshot
+from .probe import probe_video, suffix_from_probe
 
 
 @contextmanager
@@ -47,7 +48,7 @@ def read_snapshot(root):
     return _read_json(root / 'batch-plan.json')
 
 
-def stage(root, item, *, hydration=False, progress):
+def stage(root, item, *, hydration=False, progress, timeout=3600):
     require(item['status'] == 'ready', 'Entry is blocked in the private plan.')
     parts = item['manifest']['parts']
     # Check every source before creating a partial copy or hydrating an offline file.
@@ -64,22 +65,34 @@ def stage(root, item, *, hydration=False, progress):
     for index, part in enumerate(parts, 1):
         progress('staging', 'running', part=index, parts=len(parts))
         source = Path(part['path'])
+        extensionless = not source.suffix
         name = f'part-{index:04d}{source.suffix.lower()}'
-        destination = inputs / name
+        destination = inputs / (f'.part-{index:04d}.pending' if extensionless else name)
         before = digest(source)
         with source.open('rb') as original, destination.open('xb') as copy:
             os.chmod(destination, 0o600)
             shutil.copyfileobj(original, copy, 1024 * 1024)
         require(snapshot(source) == part['snapshot'] and digest(source) == before
                 and digest(destination) == before, 'Source changed or staging copy verification failed.')
+        probe = None
+        if extensionless:
+            require(part['media_type'] == 'video', 'Extensionless media requires explicit video type.')
+            probe = probe_video(destination, timeout)
+            require(snapshot(source) == part['snapshot'] and digest(destination) == before,
+                    'Source changed or staging copy verification failed.')
+            name = f'part-{index:04d}{suffix_from_probe(probe)}'
+            os.link(destination, inputs / name)
+            destination.unlink()
         staged_parts.append({'id': part['id'], 'path': name, 'media_type': part['media_type']})
-        ledger.append({'path': name, 'sha256': before, 'bytes': part['snapshot']['bytes']})
+        ledger.append({'path': name, 'sha256': before, 'bytes': part['snapshot']['bytes'],
+                       **({'probe': probe} if probe is not None else {})})
         progress('staging', 'complete', part=index, parts=len(parts))
     require(all(snapshot(Path(part['path'])) == part['snapshot'] for part in parts),
             'Source metadata changed during staging.')
     manifest = {'version': 1, 'interview_id': item['manifest']['interview_id'], 'parts': staged_parts}
     write_private(inputs / 'interview.json', encode(manifest))
-    state = {'manifest': manifest, 'parts': ledger}
+    state = {'manifest': manifest, 'parts': ledger,
+             **({'version': 2} if any('probe' in record for record in ledger) else {})}
     write_private(directory / 'staging.json', encode(state))
     # Bind staged records to the immutable batch snapshot, including original source metadata.
     write_private(directory / 'staging.sha256', digest(directory / 'staging.json'))
@@ -96,13 +109,23 @@ def verify(root, item):
     require(digest(directory / 'staging.json') == (directory / 'staging.sha256').read_text(),
             'Staging ledger changed.')
     manifest = _read_json(directory / 'input/interview.json')
+    version = state.get('version', 1)
+    require(type(version) is int and version in (1, 2)
+            and set(state) == ({'manifest', 'parts'} if version == 1 else {'version', 'manifest', 'parts'}),
+            'Staging ledger changed.')
     expected = item['manifest']
-    require(state['manifest'] == manifest and manifest['version'] == 1
+    require(state['manifest'] == manifest and type(manifest['version']) is int and manifest['version'] == 1
             and manifest['interview_id'] == expected['interview_id']
             and len(manifest['parts']) == len(expected['parts']) == len(state['parts']),
             'Staged manifest changed.')
     for index, (part, record, original) in enumerate(zip(manifest['parts'], state['parts'], expected['parts']), 1):
-        name = f'part-{index:04d}{Path(original["path"]).suffix.lower()}'
+        suffix = Path(original['path']).suffix.lower()
+        if not suffix:
+            require(version == 2 and original['media_type'] == 'video', 'Staging ledger changed.')
+            suffix = suffix_from_probe(record['probe'])
+        require(set(record) == ({'path', 'sha256', 'bytes', 'probe'} if not Path(original['path']).suffix
+                                else {'path', 'sha256', 'bytes'}), 'Staging ledger changed.')
+        name = f'part-{index:04d}{suffix}'
         source = directory / 'input' / name
         require(part == {'id': original['id'], 'path': name, 'media_type': original['media_type']}
                 and record['path'] == name and source.stat().st_size == record['bytes']

@@ -55,6 +55,8 @@ def _suppress_provider_logging():
             logger.setLevel(logging.CRITICAL + 1)
 
 
+DEFAULT_UPLOAD_BYTES = 20 * 1024 * 1024
+
 class Transcriber:
     def __init__(self, model_name=DEFAULT_ASR_MODEL, *, client=None, media_timeout=3600,
                  options=None, editing_options=None, provider_timeout=120, provider_retries=2):
@@ -64,7 +66,7 @@ class Transcriber:
         self.options = options or TranscriptionOptions(model=model_name)
         self.editing_options = editing_options or EditingOptions()
         self.model_name = self.options.model
-        self.max_bytes = 20 * 1024 * 1024  # Safely below the API's 25 MB limit.
+        self.max_bytes = DEFAULT_UPLOAD_BYTES  # Safely below the API's 25 MB limit.
         self.media_timeout = media_timeout
         if client is None:
             if not os.getenv('OPENAI_API_KEY', '').strip():

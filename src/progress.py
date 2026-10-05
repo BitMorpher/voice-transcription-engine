@@ -31,6 +31,10 @@ GUIDANCE = ('Check local input permissions, media validity, output space and cac
             'Chapter runs require complete review and explicit human approval.')
 
 SAFE_GUIDANCE = {
+    'Speaker options require run --interview.',
+    'Invalid private speaker configuration; use version 1, known entry IDs, optional display names and scoped confirmed mappings.',
+    'Staged video could not be validated; retain partial staging and use a fresh batch after correcting the input.',
+    'Attributed stages require matching complete raw and chapters require an intact reviewed bundle without high findings.',
     'Provider calls require --send-to-openai.',
     'Chapters require --human-reviewed and explicit --select IDs.',
     'Staging reads/copies sources; supply --copy-local-files and a fresh --batch.',

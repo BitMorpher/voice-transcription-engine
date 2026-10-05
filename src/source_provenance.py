@@ -141,7 +141,7 @@ def validate_provenance(raw, provenance):
         raise ValueError()
     if 'attribution' in provenance:
         attribution = provenance['attribution']
-        if attribution['contract'] not in (1, 2) or attribution['names_are_not_voice_evidence'] is not True:
+        if attribution['contract'] not in (1, 2, 3) or attribution['names_are_not_voice_evidence'] is not True:
             raise ValueError()
         previous = 0
         for turn in attribution['turns']:

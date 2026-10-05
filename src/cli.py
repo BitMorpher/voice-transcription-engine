@@ -124,7 +124,8 @@ def _legacy_process(source, output, transcriber, args):
     return stages
 
 
-def main(argv=None, *, approved_review=None):
+def main(argv=None, *, approved_review=None, interview_options_override=None,
+         approved_attributed_review=None):
     parser = PrivateArgumentParser(prog='voice-transcribe', color=False, allow_abbrev=False,
                                    description='Convert local media and transcribe audio using OpenAI.')
     inputs = parser.add_mutually_exclusive_group(required=True)
@@ -231,8 +232,12 @@ def main(argv=None, *, approved_review=None):
         parser.usage_error('--extract-only cannot request transcription hints; supply them when transcribing.')
 
     try:
-        interview_options = InterviewOptions(args.interviewer_name, args.interviewee_name,
-            tuple(args.speaker_map), args.interview_model) if args.interview else None
+        if interview_options_override is not None and (type(interview_options_override) is not InterviewOptions
+                or not args.workflow or args.interview_manifest is None or args.interview
+                or supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model'}):
+            raise ModelConfigurationError('Internal batch interview settings require an ordered workflow without competing speaker flags.')
+        interview_options = interview_options_override or (InterviewOptions(args.interviewer_name, args.interviewee_name,
+            tuple(args.speaker_map), args.interview_model) if args.interview else None)
         selected_input = args.input if args.input is not None else args.input_folder
         if selected_input == '':
             raise PipelineError('Input path must not be empty; choose an accessible local file or folder.')
@@ -262,7 +267,8 @@ def main(argv=None, *, approved_review=None):
             transcriber = Transcriber(media_timeout=args.media_timeout, options=options,
                                       editing_options=editing_options,
                                       provider_timeout=args.provider_timeout, provider_retries=args.provider_retries)
-            identity, stages = interview.process(transcriber=transcriber, approved_review=approved_review)
+            identity, stages = interview.process(transcriber=transcriber, approved_review=approved_review,
+                                                  approved_attributed_review=approved_attributed_review)
             _report(job=identity, status='complete', stages=stages)
             _report(status='summary', processed=1, failed=0)
             return 0

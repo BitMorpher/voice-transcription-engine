@@ -36,8 +36,10 @@ See [ordered recording inputs](ordered-interviews.md) for the manifest contract.
 local display metadata and are not sent as voice hints to the provider. Name and
 mapping flags without `--interview`, duplicate or malformed mappings, unsupported
 models, extraction mode, and multiple language hints fail before provider setup.
-`--interview` is a `voice-transcribe` option; `voice-batch` retains its existing
-CLI and explicit provider/human-review gates.
+`voice-batch run --interview` also supports a private per-entry speaker configuration
+and unidentified voices when names are absent. The direct `voice-transcribe` CLI
+still requires both names. See [batch media and attribution](batch-media-attribution.md)
+for batch opt-in, configuration and independent human-review gates.
 
 ## Diarization versus mapping
 
@@ -150,7 +152,9 @@ Attributed output contract v2 uses `attributed-interview-v2` manifests and binds
 version 2 into the names/mappings family fingerprint and provenance. Existing v1
 families and their review/chapter artifacts remain untouched; a v2 run creates a
 new family and can reuse verified provider caches. Author artifacts bind the new
-provenance, so old reviews and rendered chapters are not reused for v2. The shared
+provenance, so old reviews and rendered chapters are not reused for v2. Batch attribution uses contract v3 (`attributed-interview-v3`) to support absent
+display names and checksum-bound family approvals. It creates a separate namespace
+and preserves direct-CLI v2 families unchanged. The shared
 recording-part provenance schema and provider-cache contract remain version 1.
 
 Failure summaries preserve completed or skipped attributed raw/polish/review

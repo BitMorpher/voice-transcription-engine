@@ -213,3 +213,107 @@ assert before == (original / 'transcription.txt').read_bytes()
     assert result.returncode == 2
     assert 'SYNTHETIC_PRIVATE_' not in result.stdout + result.stderr
     assert 'Traceback' not in result.stdout + result.stderr
+
+
+def test_wheel_native_batch_extensionless_and_unnamed_attribution(wheel_environment):
+    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+        pytest.skip('FFmpeg/ffprobe required for synthetic installed staging.')
+    work, python, environment, _ = wheel_environment
+    work = work / 'batch-new-features'
+    work.mkdir()
+    script = work / 'batch-attribution.py'
+    script.write_text('''
+import contextlib, hashlib, io, json, runpy, socket, subprocess, sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+import voice_transcription_engine.cli as engine
+from voice_transcription_engine.transcriber import Transcriber
+
+def blocked(*a, **kw):
+    raise AssertionError('No real network permitted.')
+socket.socket.connect = blocked
+source = Path('synthetic.mp4')
+subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-n',
+    '-f', 'lavfi', '-i', 'color=c=blue:s=64x64:r=10:d=1.125',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000:duration=1.125',
+    '-c:v', 'mpeg4', str(source)], check=True, capture_output=True, timeout=30)
+source = source.rename('SYNTHETIC_PRIVATE_FILENAME')
+expected = hashlib.sha256(source.read_bytes()).hexdigest()
+Path('interview.json').write_text(json.dumps({'version': 1, 'interview_id': 'SYNTHETIC_PRIVATE_SESSION',
+    'parts': [{'id': 'recording', 'path': str(source), 'media_type': 'video'}]}))
+Path('plan.json').write_text(json.dumps({'version': 1, 'interviews': [
+    {'id': 'SYNTHETIC_PRIVATE_ENTRY', 'manifest': 'interview.json'}]}))
+Path('speakers.json').write_text(json.dumps({'version': 1, 'interviews': [
+    {'id': 'SYNTHETIC_PRIVATE_ENTRY', 'interviewee_name': 'SYNTHETIC_PRIVATE_GUEST',
+     'speaker_map': ['1:1:B=interviewee']}]}))
+client = MagicMock()
+def audio(**kw):
+    if kw['model'] != 'gpt-4o-transcribe-diarize':
+        return SimpleNamespace(text='SYNTHETIC_PRIVATE_RAW.\\r\\nExact words.')
+    return {'text': 'A: A question?\\nB: An answer.', 'segments': [
+        {'speaker': 'A', 'text': 'A question?', 'start': 0.0, 'end': 0.5},
+        {'speaker': 'B', 'text': 'An answer.', 'start': 0.5, 'end': 1.0}]}
+def chat(**kw):
+    p = json.loads(kw['messages'][-1]['content'])
+    name = kw['response_format']['json_schema']['name']
+    if name == 'faithful_transcript_edit':
+        body = dict(chunk_index=p['chunk_index'], text=p['text'], speaker_uncertain=False)
+    elif name == 'source_grounded_author_review':
+        body = dict(chunk_index=p['chunk_index'], fully_reviewed=True,
+            reviewed_start=p['core_start'], reviewed_end=p['core_end'], findings=[])
+    else:
+        raise AssertionError('Deterministic interview chapters need no arrangement call.')
+    return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+        message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+client.audio.transcriptions.create.side_effect = audio
+client.chat.completions.create.side_effect = chat
+engine.Transcriber = lambda **kw: Transcriber(client=client, **kw)
+logs = []
+executable = Path(sys.executable).parent / ('voice-batch.exe' if sys.platform == 'win32' else 'voice-batch')
+def invoke(*args):
+    sys.argv = ['voice-batch', *args]
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        if sys.platform == 'win32':
+            from voice_transcription_engine.batch.cli import main
+            assert main(list(args)) == 0
+        try:
+            if sys.platform != 'win32':
+                runpy.run_path(str(executable), run_name='__main__')
+        except SystemExit as error:
+            assert error.code == 0
+    logs.append(output.getvalue())
+original_open = Path.open
+def guarded(path, *a, **kw):
+    if path.absolute() == source.absolute():
+        raise AssertionError('Metadata must not open video.')
+    return original_open(path, *a, **kw)
+Path.open = guarded
+invoke('inventory', '--plan', 'plan.json')
+invoke('check', '--plan', 'plan.json')
+Path.open = original_open
+invoke('prepare', '--plan', 'plan.json', '--batch', 'batch', '--copy-local-files')
+invoke('verify', '--batch', 'batch')
+flags = ['--batch', 'batch', '--send-to-openai', '--interview', '--speaker-config', 'speakers.json']
+invoke('run', *flags, '--phase', 'raw')
+assert client.audio.transcriptions.create.call_count == 2
+invoke('run', *flags, '--phase', 'review')
+reviews = {p: p.read_bytes() for p in Path('batch').rglob('review_report.*')}
+invoke('run', *flags, '--phase', 'chapters', '--select', 'SYNTHETIC_PRIVATE_ENTRY',
+       '--human-reviewed', '--chapters', 'interview')
+assert client.audio.transcriptions.create.call_count == 2
+assert all(p.read_bytes() == data for p, data in reviews.items())
+assert len(list(Path('batch').rglob('chapter_drafts.json'))) == 2
+provenance = json.loads(next(Path('batch/item-0001/output/attributed').rglob('provenance.json')).read_bytes())
+assert [t['role'] for t in provenance['attribution']['turns']] == [None, 'interviewee']
+assert hashlib.sha256(source.read_bytes()).hexdigest() == expected
+assert not source.with_suffix('.mp4').exists()
+joined = ''.join(logs)
+assert 'SYNTHETIC_PRIVATE' not in joined and str(Path.cwd()) not in joined
+assert 'A question?' not in joined
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, 'Installed native batch staging/attribution smoke failed.'
+    assert result.stderr == ''

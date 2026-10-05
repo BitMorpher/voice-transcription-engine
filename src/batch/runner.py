@@ -1,11 +1,17 @@
 """Serial failure isolation and separate review/chapter gates."""
 
+from dataclasses import replace
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 from ..author_review import ReviewOptions
+from ..chapters import ChapterOptions
 from ..author_workflow import AuthorOptions, _load_bound_report, _verified_bundle
-from ..model_config import TranscriptionOptions, load_hints
+from ..model_config import TranscriptionOptions, EditingOptions, load_hints
+from ..ordered_interview import OrderedInterview, _read_json
+from ..interview_attribution import AttributedInterview, input_record
+from ..transcriber import DEFAULT_UPLOAD_BYTES
 from ..source_provenance import author_binding, validate_provenance
 
 from ..cli import main as engine_main
@@ -68,13 +74,51 @@ def gate(root, item, phase, options, author_options):
     raise BatchError('Review needs completed raw; chapters need intact complete review without high findings.')
 
 
+def gate_attribution(root, item, phase, options, author_options, interview_options, args):
+    if phase == 'raw' or interview_options is None:
+        return None
+    try:
+        directory = target(root, item)
+        editing = EditingOptions(model=args.editing_model)
+        ordered = OrderedInterview(directory / 'input/interview.json', directory / 'output',
+            options=options, editing_options=editing, author_options=author_options, resume=True)
+        inputs = [input_record(part['order'], folder / identity,
+                               _read_json(folder / identity / 'manifest.json'))
+                  for part, folder, identity in ordered.parts]
+        selected_author = author_options
+        if phase == 'chapters':
+            styles = ('interview', 'narrative') if args.chapters == 'both' else (args.chapters,)
+            selected_author = replace(author_options, chapter_options=ChapterOptions(
+                model=args.author_model, styles=styles, person=args.narrative_person))
+        family = AttributedInterview(directory / 'output', inputs, interview_options,
+            resume=True, enhance=True, author_options=selected_author)
+        state, provenance = family.verified_raw(SimpleNamespace(options=options, editing_options=editing,
+                                                                max_bytes=DEFAULT_UPLOAD_BYTES))
+        if phase == 'review':
+            return None
+        raw_hash = state['stages']['transcription']['sha256']
+        record = state['stages'].get('author_review', {})
+        fingerprint = author_binding(author_options.fingerprint('author_review', raw_hash), provenance)
+        require(_verified_bundle(family.job, record, fingerprint, raw_hash,
+                                 {'review_report.json', 'review_report.xlsx'}), 'Attributed review gate failed.')
+        raw = (family.job / 'transcription.txt').read_bytes().decode('utf-8')
+        report, checksum = _load_bound_report(family.job, record, raw, author_options.review_options,
+                                             provenance=provenance)
+        require(not any(f['severity'] == 'high' for f in report['findings']), 'Attributed review gate failed.')
+        return ApprovedReview.capture(family.job, state, checksum)
+    except Exception:
+        raise BatchError('Attributed stages require matching complete raw and chapters require an intact reviewed bundle without high findings.') from None
+
+
 def run_one(root, item, args):
     directory = verify(root, item)
     context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)
     options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                    languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
     author_options = AuthorOptions(review=True, review_options=ReviewOptions(model=args.author_model))
+    interview_options = getattr(args, 'interview_options_by_id', {}).get(item['id'])
     approved_review = gate(root, item, args.phase, options, author_options)
+    approved_attributed_review = gate_attribution(root, item, args.phase, options, author_options, interview_options, args)
     command = ['--workflow', '--interview-manifest', str(directory / 'input/interview.json'),
                '--output-folder', str(directory / 'output'), '--resume', '--stages',
                'raw' if args.phase == 'raw' else 'raw,polish,review',
@@ -96,7 +140,9 @@ def run_one(root, item, args):
     reporter.context = {**context, 'scope': 'interview'}
     try:
         code = engine_main(command + ['--heartbeat-seconds', str(interval)],
-                           approved_review=approved_review)
+                           approved_review=approved_review,
+                           interview_options_override=interview_options,
+                           approved_attributed_review=approved_attributed_review)
     finally:
         reporter.context = context
     require(code == 0, 'Pipeline failed; completed caches remain available for resume.')

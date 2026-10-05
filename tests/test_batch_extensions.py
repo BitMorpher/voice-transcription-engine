@@ -1,0 +1,422 @@
+"""Synthetic extensionless staging, scoped identity and independent approval gates."""
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.batch.cli import main
+from src.batch.plan import BatchError, load_plan
+from src.batch.probe import probe_video
+from src.batch.storage import read_snapshot, save_snapshot, stage, target, verify
+from src.private_output import digest
+from src.transcriber import Transcriber
+
+
+def config(tmp_path, sources, *, kind='auto'):
+    rows = []
+    for index, source in enumerate(sources, 1):
+        manifest = tmp_path / f'manifest-{index}.json'
+        manifest.write_text(json.dumps({'version': 1, 'interview_id': f'session-{index}',
+            'parts': [{'id': 'recording', 'path': str(source), 'media_type': kind}]}))
+        rows.append({'id': f'entry-{index}', 'manifest': manifest.name})
+    plan = tmp_path / 'plan.json'
+    plan.write_text(json.dumps({'version': 1, 'interviews': rows}))
+    return plan
+
+
+def frozen(plan_path, tmp_path):
+    plan = load_plan(plan_path)
+    root = save_snapshot(tmp_path / 'batch', plan, plan['interviews'])
+    return root, plan['interviews'][0]
+
+
+@pytest.mark.parametrize('suffix', ['.mp4', '.mkv', '.avi'])
+def test_probed_suffix_preserves_original_and_exact_bytes(synthetic_media, tmp_path, suffix):
+    source = synthetic_media('synthetic' + suffix)
+    original = source.with_suffix('')
+    source.rename(original)
+    expected = digest(original)
+    plan_path = config(tmp_path, [original], kind='video')
+    root, item = frozen(plan_path, tmp_path)
+    stage(root, item, progress=lambda *a, **kw: None)
+    directory = verify(root, item)
+    state = json.loads((directory / 'staging.json').read_bytes())
+    assert state['version'] == 2
+    copy = directory / 'input' / state['parts'][0]['path']
+    assert copy.suffix == suffix
+    assert digest(copy) == expected == digest(original)
+    assert copy.stat().st_ino != original.stat().st_ino
+    assert original.exists() and not original.with_suffix(suffix).exists()
+    assert state['parts'][0]['probe']['has_video'] is True
+    assert not list((directory / 'input').glob('*.pending'))
+    assert read_snapshot(root)['plan']['interviews'][0]['manifest']['parts'][0]['path'] == str(original)
+
+
+def test_extensionless_inventory_check_never_opens_or_probes(tmp_path, monkeypatch, capsys):
+    source = tmp_path / 'SYNTHETIC_PRIVATE_VIDEO'
+    source.write_bytes(b'not codec validated')
+    plan = config(tmp_path, [source], kind='video')
+    original = Path.open
+    def guarded(path, *args, **kwargs):
+        if path == source:
+            pytest.fail('Metadata actions must never read the source.')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', guarded)
+    monkeypatch.setattr('src.batch.storage.probe_video', lambda *a: pytest.fail('No content probe.'))
+    monkeypatch.setattr('src.batch.cli.shutil.which', lambda _: 'synthetic')
+    assert main(['inventory', '--plan', str(plan)]) == 0
+    assert main(['check', '--plan', str(plan)]) == 0
+    logs = capsys.readouterr().out
+    assert source.name not in logs and str(tmp_path) not in logs
+
+
+@pytest.mark.parametrize('kind', ['auto', 'audio'])
+def test_extensionless_requires_explicit_video(tmp_path, kind):
+    source = tmp_path / 'synthetic'
+    source.write_bytes(b'opaque')
+    with pytest.raises(BatchError):
+        load_plan(config(tmp_path, [source], kind=kind))
+
+
+@pytest.mark.parametrize('failure', ['no_audio', 'audio_only', 'invalid', 'playlist'])
+def test_bad_extensionless_never_publishes_accepted_staging(synthetic_media, tmp_path, failure, capsys):
+    if failure == 'no_audio':
+        source = synthetic_media('synthetic.mp4', audio=False)
+    elif failure == 'audio_only':
+        source = synthetic_media('synthetic.wav')
+    else:
+        source = tmp_path / 'synthetic.txt'
+        source.write_text('PRIVATE_DIAGNOSTIC\n' if failure == 'invalid'
+                          else '#EXTM3U\nhttps://example.invalid/private-stream\n')
+    original = source.with_suffix('')
+    source.rename(original)
+    before = original.read_bytes()
+    plan = config(tmp_path, [original], kind='video')
+    root = tmp_path / 'batch'
+    assert main(['prepare', '--plan', str(plan), '--batch', str(root), '--copy-local-files']) == 1
+    assert not list(root.rglob('staging.json'))
+    assert not list(root.rglob('interview.json'))
+    assert before == original.read_bytes()
+    assert original.name not in capsys.readouterr().out
+
+
+def test_probe_only_receives_copied_file_and_detects_mutation(synthetic_media, tmp_path, monkeypatch):
+    source = synthetic_media('synthetic.mp4').with_suffix('')
+    source.with_suffix('.mp4').rename(source)
+    root, item = frozen(config(tmp_path, [source], kind='video'), tmp_path)
+    def probe(path, timeout):
+        assert path != source and path.parent == target(root, item) / 'input'
+        assert path.suffix == '.pending' and path.read_bytes() == source.read_bytes()
+        result = probe_video(path, timeout)
+        path.write_bytes(b'changed during probe')
+        return result
+    monkeypatch.setattr('src.batch.storage.probe_video', probe)
+    with pytest.raises(BatchError):
+        stage(root, item, progress=lambda *a, **kw: None)
+    assert not (target(root, item) / 'staging.json').exists()
+
+
+def test_hydration_gate_precedes_copy_and_probe(synthetic_media, tmp_path, monkeypatch):
+    source = synthetic_media('synthetic.mp4').with_suffix('')
+    source.with_suffix('.mp4').rename(source)
+    root, item = frozen(config(tmp_path, [source], kind='video'), tmp_path)
+    item['manifest']['parts'][0]['dataless'] = True
+    monkeypatch.setattr('src.batch.storage.probe_video', lambda *a: pytest.fail('No hydration approval.'))
+    with pytest.raises(BatchError):
+        stage(root, item, progress=lambda *a, **kw: None)
+    assert not target(root, item).exists()
+
+
+@pytest.mark.parametrize('change', ['suffix', 'family', 'video', 'unknown_field', 'version', 'bytes'])
+def test_probe_ledger_cannot_rewrite_suffix_or_contract(synthetic_media, tmp_path, change):
+    source = synthetic_media('synthetic.mp4').with_suffix('')
+    source.with_suffix('.mp4').rename(source)
+    root, item = frozen(config(tmp_path, [source], kind='video'), tmp_path)
+    stage(root, item, progress=lambda *a, **kw: None)
+    directory = target(root, item)
+    state = json.loads((directory / 'staging.json').read_bytes())
+    record = state['parts'][0]
+    if change == 'suffix':
+        record['probe']['staged_suffix'] = '.wav'
+    elif change == 'family':
+        record['probe']['container_family'] = 'playlist'
+    elif change == 'video':
+        record['probe']['has_video'] = False
+    elif change == 'unknown_field':
+        record['probe']['original_path'] = '/synthetic/private'
+    elif change == 'bytes':
+        record['bytes'] += 1
+    else:
+        state['version'] = 1
+    (directory / 'staging.json').write_text(json.dumps(state))
+    (directory / 'staging.sha256').write_text(digest(directory / 'staging.json'))
+    with pytest.raises((BatchError, KeyError)):
+        verify(root, item)
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'oversize', 'malformed', 'attached_picture'])
+def test_probe_is_bounded_and_diagnostics_private(tmp_path, monkeypatch, failure):
+    import subprocess
+    def run(command, **kwargs):
+        assert kwargs['timeout'] == 30 and kwargs['stderr'] == subprocess.DEVNULL
+        assert kwargs['stdin'] == subprocess.DEVNULL
+        assert command[command.index('-protocol_whitelist') + 1] == 'file'
+        assert '-format_whitelist' in command
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(command, 30, stderr=b'PRIVATE_DIAGNOSTIC')
+        if failure == 'oversize':
+            kwargs['stdout'].write(b' ' * 65537)
+        elif failure == 'malformed':
+            kwargs['stdout'].write(b'PRIVATE_DIAGNOSTIC')
+        else:
+            kwargs['stdout'].write(json.dumps({'format': {'format_name': 'mov,mp4,m4a,3gp,3g2,mj2'},
+                'streams': [{'codec_type': 'audio'}, {'codec_type': 'video', 'disposition': {'attached_pic': 1}}]}).encode())
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr('src.batch.probe.subprocess.run', run)
+    with pytest.raises(BatchError) as caught:
+        probe_video(tmp_path / 'private-input', 300)
+    assert 'PRIVATE_DIAGNOSTIC' not in str(caught.value) and str(tmp_path) not in str(caught.value)
+
+
+@pytest.fixture
+def interview_client():
+    client = MagicMock()
+    client.high_family = None
+    def audio(**kw):
+        if kw['model'] != 'gpt-4o-transcribe-diarize':
+            return SimpleNamespace(text='Original exact testimony.\r\nNext line.')
+        return {'text': 'A: A café question?\r\nB: An answer.\nC: Third voice.', 'segments': [
+            {'speaker': 'A', 'start': 0.0, 'end': 0.4, 'text': 'A café question?'},
+            {'speaker': 'B', 'start': 0.3, 'end': 0.8, 'text': 'An answer.'},
+            {'speaker': 'C', 'start': 0.8, 'end': 1.0, 'text': 'Third voice.'}]}
+    def chat(**kw):
+        supplied = json.loads(kw['messages'][-1]['content'])
+        name = kw['response_format']['json_schema']['name']
+        if name == 'faithful_transcript_edit':
+            body = dict(chunk_index=supplied['chunk_index'], text=supplied['text'], speaker_uncertain=False)
+        elif name == 'source_grounded_author_review':
+            attributed = 'unidentified' in supplied['text'] or 'user_confirmed_mapping' in supplied['text']
+            high = client.high_family == ('attributed' if attributed else 'original')
+            findings = [dict(category='allegation', severity='high', reason_code='serious_allegation',
+                excerpt=supplied['text'], start=0, end=len(supplied['text']))] if high else []
+            body = dict(chunk_index=supplied['chunk_index'], fully_reviewed=True,
+                reviewed_start=supplied['core_start'], reviewed_end=supplied['core_end'], findings=findings)
+        else:
+            body = dict(chunk_index=supplied['chunk_index'], passages=[dict(unit_ids=[u['unit_id']],
+                text=u['text'].strip(), kind='verbatim_excerpt') for u in supplied['source_units']], coverage_omissions=[])
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+            message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+    client.audio.transcriptions.create.side_effect = audio
+    client.chat.completions.create.side_effect = chat
+    return client
+
+
+@pytest.fixture
+def interview_batch(synthetic_media, tmp_path, monkeypatch, interview_client):
+    sources = [synthetic_media('session-one.wav'), synthetic_media('session-two.wav')]
+    plan = config(tmp_path, sources)
+    root = tmp_path / 'batch'
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_client, **kw))
+    assert main(['prepare', '--plan', str(plan), '--batch', str(root), '--copy-local-files']) == 0
+    return root
+
+
+def run(root, phase='raw', *flags):
+    return main(['run', '--batch', str(root), '--phase', phase, '--send-to-openai', '--interview', *flags])
+
+
+def family(root, item=1):
+    return next(p.parent for p in (root / f'item-{item:04d}/output/attributed').rglob('transcription.txt'))
+
+
+def settings(tmp_path, rows):
+    path = tmp_path / 'speakers.json'
+    path.write_text(json.dumps({'version': 1, 'interviews': rows}))
+    return path
+
+
+def test_unknown_names_all_families_resume_and_exact_approved_review(interview_batch, interview_client, capsys):
+    root = interview_batch
+    assert run(root) == 0
+    assert interview_client.audio.transcriptions.create.call_count == 4
+    for index in (1, 2):
+        job = family(root, index)
+        state = json.loads((job / 'manifest.json').read_bytes())
+        provenance = json.loads((job / 'provenance.json').read_bytes())
+        assert state['version'] == 'attributed-interview-v3'
+        assert all(t['role'] is None and t['identity_evidence'] == 'unidentified' for t in provenance['attribution']['turns'])
+        assert 'Speaker A' in (job / 'transcription.txt').read_text()
+    assert run(root, 'review') == 0
+    before = {p: p.read_bytes() for p in root.rglob('review_report.*')}
+    calls = interview_client.audio.transcriptions.create.call_count
+    reviews = sum(c.kwargs['response_format']['json_schema']['name'] == 'source_grounded_author_review'
+                  for c in interview_client.chat.completions.create.call_args_list)
+    flags = ('--select', 'entry-1', '--human-reviewed', '--chapters', 'interview')
+    assert run(root, 'chapters', *flags) == 0
+    assert len(list(root.rglob('chapter_drafts.json'))) == 2
+    assert all(p.read_bytes() == data for p, data in before.items())
+    assert interview_client.audio.transcriptions.create.call_count == calls
+    assert sum(c.kwargs['response_format']['json_schema']['name'] == 'source_grounded_author_review'
+               for c in interview_client.chat.completions.create.call_args_list) == reviews
+    chats = interview_client.chat.completions.create.call_count
+    assert run(root, 'chapters', *flags) == 0
+    assert interview_client.chat.completions.create.call_count == chats
+    assert str(root) not in capsys.readouterr().out
+
+
+def test_per_entry_mapping_changes_reuse_asr_but_require_new_attributed_raw(interview_batch, interview_client, tmp_path, capsys):
+    root = interview_batch
+    path = settings(tmp_path, [{'id': 'entry-1', 'interviewer_name': 'Synthetic Host',
+        'speaker_map': ['1:1:A=interviewer']}, {'id': 'entry-2', 'enabled': False}])
+    flags = ('--speaker-config', str(path))
+    assert run(root, 'raw', *flags) == 0
+    assert not (root / 'item-0002/output/attributed').exists()
+    assert 'Synthetic Host' in (family(root) / 'transcription.txt').read_text()
+    assert 'Speaker B' in (family(root) / 'transcription.txt').read_text()
+    calls = interview_client.audio.transcriptions.create.call_count
+    old = family(root)
+    before = {p: p.read_bytes() for p in old.rglob('*') if p.is_file()}
+    path.write_text(json.dumps({'version': 1, 'interviews': [{'id': 'entry-1',
+        'interviewee_name': 'Synthetic Guest', 'speaker_map': ['1:1:B=interviewee']}, {'id': 'entry-2', 'enabled': False}]}))
+    assert run(root, 'review', *flags) == 1  # Never buy another raw pass in review.
+    assert interview_client.audio.transcriptions.create.call_count == calls
+    assert run(root, 'raw', *flags) == 0
+    assert interview_client.audio.transcriptions.create.call_count == calls
+    assert before == {p: p.read_bytes() for p in old.rglob('*') if p.is_file()}
+    assert len(list((root / 'item-0001/output/attributed').rglob('transcription.txt'))) == 2
+    logs = capsys.readouterr().out
+    assert 'Synthetic Host' not in logs and 'Synthetic Guest' not in logs and str(path) not in logs
+
+
+@pytest.mark.parametrize('row', [
+    {'id': 'unknown'}, {'id': 'entry-1', 'interviewer_name': ''},
+    {'id': 'entry-1', 'speaker_map': ['1:1:A=interviewer']},
+    {'id': 'entry-1', 'interviewer_name': 'Host', 'speaker_map': ['A=interviewer']},
+    {'id': 'entry-1', 'enabled': 'yes'}, {'id': 'entry-1', 'reference_audio': '/synthetic/private'},
+    {'id': 'entry-1', 'interviewer_name': 'Same', 'interviewee_name': 'same'},
+    {'id': 'entry-1', 'enabled': False, 'interviewer_name': 'Host'}])
+def test_invalid_settings_fail_before_provider(interview_batch, interview_client, tmp_path, row):
+    path = settings(tmp_path, [row])
+    assert run(interview_batch, 'raw', '--speaker-config', str(path)) == 1
+    assert interview_client.audio.transcriptions.create.call_count == 0
+
+
+@pytest.mark.parametrize('flag', ['--speaker-config', '--interview-model'])
+def test_speaker_flags_require_opt_in(interview_batch, interview_client, flag):
+    assert main(['run', '--batch', str(interview_batch), '--send-to-openai', flag, 'synthetic']) == 1
+    assert interview_client.audio.transcriptions.create.call_count == 0
+
+
+@pytest.mark.parametrize('high_family', ['original', 'attributed'])
+def test_each_familys_high_gate_stops_all_chapter_calls(interview_batch, interview_client, high_family):
+    interview_client.high_family = high_family
+    assert run(interview_batch) == 0
+    assert run(interview_batch, 'review') == 0
+    calls = interview_client.chat.completions.create.call_count
+    assert run(interview_batch, 'chapters', '--human-reviewed', '--select', 'entry-1') == 1
+    assert interview_client.chat.completions.create.call_count == calls
+    assert not list(interview_batch.rglob('chapter_drafts.json'))
+
+
+@pytest.mark.parametrize('artifact', ['transcription.txt', 'provenance.json', 'review_report.json', 'review_report.xlsx', 'manifest.json'])
+def test_changed_attributed_approval_stops_original_chapter_calls(interview_batch, interview_client, monkeypatch, artifact):
+    from src.batch import runner
+    root = interview_batch
+    assert run(root) == 0
+    assert run(root, 'review') == 0
+    gate = runner.gate_attribution
+    def changed(*a, **kw):
+        approval = gate(*a, **kw)
+        path = next(approval.job.rglob(artifact)) if artifact.startswith('review_') else approval.job / artifact
+        path.write_bytes(b'SYNTHETIC_PRIVATE_TAMPERING')
+        return approval
+    monkeypatch.setattr(runner, 'gate_attribution', changed)
+    calls = interview_client.chat.completions.create.call_count
+    assert run(root, 'chapters', '--human-reviewed', '--select', 'entry-1') == 1
+    assert interview_client.chat.completions.create.call_count == calls
+    assert not list(root.rglob('chapter_drafts.json'))
+
+
+def test_unknown_mode_requires_provider_consent_and_action(interview_batch, interview_client):
+    assert main(['run', '--batch', str(interview_batch), '--interview']) == 1
+    assert main(['status', '--batch', str(interview_batch), '--interview']) == 1
+    assert run(interview_batch, 'raw', '--interview-model', 'whisper-1') == 1
+    assert interview_client.audio.transcriptions.create.call_count == 0
+
+
+def test_confirmed_guest_never_assigns_unknown_interviewer(interview_batch, interview_client, tmp_path):
+    cfg = settings(tmp_path, [{'id': 'entry-1', 'interviewee_name': 'Synthetic Guest',
+                            'speaker_map': ['1:1:B=interviewee']}])
+    assert run(interview_batch, 'raw', '--speaker-config', str(cfg), '--select', 'entry-1') == 0
+    provenance = json.loads((family(interview_batch) / 'provenance.json').read_bytes())
+    turns = provenance['attribution']['turns']
+    assert [t['role'] for t in turns] == [None, 'interviewee', None]
+    assert turns[0]['display_name'] == 'Speaker A'
+    assert turns[1]['display_name'] == 'Synthetic Guest'
+
+
+def test_duplicate_config_ids_and_json_keys_fail_before_requests(interview_batch, interview_client, tmp_path):
+    cfg = settings(tmp_path, [{'id': 'entry-1'}, {'id': 'entry-1'}])
+    assert run(interview_batch, 'raw', '--speaker-config', str(cfg)) == 1
+    cfg.write_text('{"version":1,"version":1,"interviews":[]}')
+    assert run(interview_batch, 'raw', '--speaker-config', str(cfg)) == 1
+    assert interview_client.audio.transcriptions.create.call_count == 0
+
+
+def test_missing_attributed_review_and_mapping_change_never_buy_chapters(interview_batch, interview_client, tmp_path):
+    root = interview_batch
+    assert run(root) == 0
+    # Original-only review cannot approve the attributed family.
+    assert main(['run', '--batch', str(root), '--phase', 'review', '--send-to-openai']) == 0
+    calls = interview_client.chat.completions.create.call_count
+    assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed') == 1
+    assert interview_client.chat.completions.create.call_count == calls
+    assert run(root, 'review') == 0
+    cfg = settings(tmp_path, [{'id': 'entry-1', 'interviewee_name': 'Synthetic Guest',
+                             'speaker_map': ['1:1:B=interviewee']}])
+    calls = interview_client.chat.completions.create.call_count
+    assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--speaker-config', str(cfg)) == 1
+    assert interview_client.chat.completions.create.call_count == calls
+    assert not list(root.rglob('chapter_drafts.json'))
+
+
+def test_changed_complete_attributed_chapter_settings_fail_before_new_requests(interview_batch, interview_client):
+    root = interview_batch
+    assert run(root) == 0
+    assert run(root, 'review') == 0
+    assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--chapters', 'interview') == 0
+    calls = interview_client.chat.completions.create.call_count
+    assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--chapters', 'narrative') == 1
+    assert interview_client.chat.completions.create.call_count == calls
+
+
+def test_original_approval_cannot_be_substituted_for_attributed_family(interview_batch, interview_client, monkeypatch):
+    from src.batch import runner
+    root = interview_batch
+    assert run(root) == 0
+    assert run(root, 'review') == 0
+    def swapped(root, item, phase, options, author_options, *args):
+        return runner.gate(root, item, phase, options, author_options)
+    monkeypatch.setattr(runner, 'gate_attribution', swapped)
+    calls = interview_client.chat.completions.create.call_count
+    assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed') == 1
+    assert interview_client.chat.completions.create.call_count == calls
+    assert not list(root.rglob('chapter_drafts.json'))
+
+
+def test_batch_v3_provenance_checksum_is_required_on_raw_resume(interview_batch, interview_client):
+    root = interview_batch
+    assert run(root) == 0
+    job = family(root)
+    path = job / 'manifest.json'
+    state = json.loads(path.read_bytes())
+    state['provenance_sha256'] = '0' * 64
+    path.write_text(json.dumps(state))
+    before = path.read_bytes()
+    calls = interview_client.audio.transcriptions.create.call_count
+    assert run(root, 'raw', '--select', 'entry-1') == 1
+    assert interview_client.audio.transcriptions.create.call_count == calls
+    assert path.read_bytes() == before

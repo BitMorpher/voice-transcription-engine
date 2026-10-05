@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
+    from .review_reuse import reuse_approved_review
     from .author_review import source_segments
     from .author_workflow import AuthorWorkflowError, run_author_stages, _verified_bundle, _load_bound_report
     from .model_config import ModelConfigurationError, _fingerprint
@@ -27,6 +28,7 @@ if __package__:
     from .text_editing import words
     from .transcriber import TranscriptionError, _suppress_provider_logging
 else:
+    from review_reuse import reuse_approved_review
     from author_review import source_segments
     from author_workflow import AuthorWorkflowError, run_author_stages, _verified_bundle, _load_bound_report
     from model_config import ModelConfigurationError, _fingerprint
@@ -57,18 +59,23 @@ class AttributionError(TranscriptionError):
 
 @dataclass(frozen=True)
 class InterviewOptions:
-    interviewer: str
-    interviewee: str
+    interviewer: str | None
+    interviewee: str | None
     speaker_map: tuple[str, ...] = ()
     model: str = DIARIZATION_MODEL
+    allow_unnamed: bool = False
 
     def __post_init__(self):
+        if type(self.allow_unnamed) is not bool:
+            raise ModelConfigurationError("Invalid unnamed-speaker setting.")
         for name in (self.interviewer, self.interviewee):
+            if name is None and self.allow_unnamed:
+                continue
             if (not isinstance(name, str) or not name.strip() or name != name.strip()
                     or len(name.encode('utf-8')) > 256
                     or any(unicodedata.category(c).startswith('C') or c in '[]|\u2028\u2029' for c in name)):
                 raise ModelConfigurationError('Interview mode requires two nonempty names, at most 256 UTF-8 bytes, without control or label-delimiter characters.')
-        if self.interviewer.casefold() == self.interviewee.casefold():
+        if self.interviewer is not None and self.interviewee is not None and self.interviewer.casefold() == self.interviewee.casefold():
             raise ModelConfigurationError('Use distinct interviewer and interviewee display names.')
         if self.model != DIARIZATION_MODEL:
             raise ModelConfigurationError('Interview diarization requires gpt-4o-transcribe-diarize and diarized_json; the original ASR model stays separate.')
@@ -83,6 +90,8 @@ class InterviewOptions:
             if not match:
                 raise ModelConfigurationError('Use --speaker-map PART:REQUEST:LABEL=interviewer or =interviewee after checking the recording; indices start at 1.')
             part, request, label, role = match.groups()
+            if getattr(self, role) is None:
+                raise ModelConfigurationError('A mapped role requires its supplied display name; otherwise retain an unidentified speaker.')
             key = (int(part), int(request), label)
             if key in result:
                 raise ModelConfigurationError('Each scoped speaker may be mapped only once.')
@@ -90,8 +99,12 @@ class InterviewOptions:
         return result
 
     @property
+    def contract(self):
+        return 3 if self.allow_unnamed else ATTRIBUTION_CONTRACT
+
+    @property
     def fingerprint(self):
-        return _fingerprint({'contract': ATTRIBUTION_CONTRACT, 'interviewer': self.interviewer,
+        return _fingerprint({'contract': self.contract, 'interviewer': self.interviewer,
                              'interviewee': self.interviewee, 'model': self.model,
                              'mapping': sorted(self.speaker_map)})
 
@@ -218,6 +231,46 @@ class AttributedInterview:
                                            for part in inputs])
         self.job = self.output / self.source_binding / options.fingerprint
 
+    @property
+    def manifest_version(self):
+        return f'attributed-interview-v{self.options.contract}'
+
+    def verified_raw(self, transcriber):
+        """Read-only family preflight for batch review/chapter gates; no ASR client."""
+        self._sources_unchanged()
+        configuration = diarization_configuration(transcriber, self.options.model)
+        binding = _fingerprint({'source': self.source_binding, 'names': self.options.fingerprint,
+                                'diarization': configuration})
+        state = _read_json(self.job / 'manifest.json')
+        names = {'transcription.txt', 'provenance.json', 'diarization_transcription.txt',
+                 'attribution_notice.txt',
+                 *(f'part-{part["order"]:06d}_transcription.txt' for part in self.inputs)}
+        if (state['version'] != self.manifest_version or state['binding_sha256'] != binding
+                or set(state['raw_artifacts']) != names):
+            raise ValueError()
+        for name, checksum in state['raw_artifacts'].items():
+            if (self.job / name).is_symlink() or digest(self.job / name) != checksum:
+                raise ValueError()
+        payloads = []
+        for part in self.inputs:
+            cache = _fingerprint({'source': part['source_sha256'], 'audio': part['audio_sha256'],
+                                  'configuration': configuration})
+            if not (self.output / 'diarization-cache' / cache).is_dir():
+                raise ValueError()
+            payloads.append((part, *self._cache(part, transcriber, configuration)))
+        raw, provenance, provider_text = self._assemble(payloads)
+        if (_read_json(self.job / 'provenance.json') != provenance
+                or (self.job / 'transcription.txt').read_bytes() != raw.encode()
+                or (self.job / 'diarization_transcription.txt').read_bytes() != provider_text.encode()
+                or any((self.job / f'{part["id"]}_transcription.txt').read_bytes()
+                       != raw[part['start']:part['end']].encode() for part in provenance['parts'])
+                or state['stages']['transcription']['sha256'] != provenance['raw_sha256']
+                or state.get('provenance_sha256') != digest(self.job / 'provenance.json')):
+            raise ValueError()
+        self._preflight_derivatives(state, transcriber)
+        self._sources_unchanged()
+        return state, provenance
+
     def _sources_unchanged(self):
         for part in self.inputs:
             for key, hash_key in (('audio', 'audio_sha256'), ('original_raw', 'original_raw_sha256')):
@@ -342,7 +395,7 @@ class AttributedInterview:
                       'recording_time': 'Part-local audio seconds only; no global timeline across recordings.',
                       'separator': '\n\n', 'parts': parts, 'spans': spans,
                       'raw_sha256': hashlib.sha256(raw.encode()).hexdigest(),
-                      'attribution': {'contract': ATTRIBUTION_CONTRACT,
+                      'attribution': {'contract': self.options.contract,
                                       'part_artifact_reference_base': 'output_directory', 'notice': NOTICE, 'model': self.options.model,
                                       'turns': turns, 'names_are_not_voice_evidence': True}}
         return raw, provenance, '\n\n'.join(provider_text)
@@ -384,7 +437,7 @@ class AttributedInterview:
                 path = next(self.job / name for name in record['artifacts'] if name.endswith('/chapter_drafts.json'))
                 validate_chapter_binding(_read_json(path), provenance)
 
-    def process(self, transcriber):
+    def process(self, transcriber, *, approved_review=None):
         summary = {'attribution': 'pending'}
         active_stage = 'attribution'
         raw_names = {'transcription.txt', 'provenance.json', 'diarization_transcription.txt',
@@ -414,14 +467,16 @@ class AttributedInterview:
                 if not self.resume or self.job.is_symlink():
                     raise ValueError()
                 state = _read_json(self.job / 'manifest.json')
-                if state['version'] != MANIFEST_VERSION or state['binding_sha256'] != binding:
+                if state['version'] != self.manifest_version or state['binding_sha256'] != binding:
                     raise ValueError()
                 for name, expected in state['raw_artifacts'].items():
                     if name not in raw_names:
                         raise ValueError()
                     if (self.job / name).is_symlink() or digest(self.job / name) != expected:
                         raise ValueError()
-                if set(state['raw_artifacts']) != raw_names:
+                if (set(state['raw_artifacts']) != raw_names
+                        or self.options.allow_unnamed and state.get('provenance_sha256')
+                        != digest(self.job / 'provenance.json')):
                     raise ValueError()
                 self._preflight_derivatives(state, transcriber)
             # Validate ALL existing caches before the first paid request.
@@ -441,7 +496,9 @@ class AttributedInterview:
                          'diarization_transcription.txt': provider_text, 'attribution_notice.txt': NOTICE,
                          **{f'{part["id"]}_transcription.txt': raw[part['start']:part['end']]
                             for part in provenance['parts']}}
-                state = {'version': MANIFEST_VERSION, 'binding_sha256': binding,
+                state = {'version': self.manifest_version, 'binding_sha256': binding,
+                         **({'provenance_sha256': hashlib.sha256(files['provenance.json'].encode()).hexdigest()}
+                            if self.options.allow_unnamed else {}),
                          'human_review_required': True, 'raw_artifacts': {
                              name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()},
                          'stages': {'transcription': {'status': 'complete', 'sha256': provenance['raw_sha256']}}}
@@ -488,6 +545,8 @@ class AttributedInterview:
                     summary['enhancement'] = 'complete'
                 self.progress('enhancement', summary['enhancement'])
             active_stage = None
+            if approved_review is not None:
+                reuse_approved_review(approved_review, self.job, state, self.author_options, provenance, save)
             if self.author_options is not None:
                 run_author_stages(self.job, state, transcriber, self.author_options,
                                   resume=self.resume, save=save, summary=summary,

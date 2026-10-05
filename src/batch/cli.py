@@ -10,6 +10,7 @@ from ..cli import PrivateArgumentParser, _positive_timeout
 from ..progress import CURRENT, Reporter, emit_progress, interruptions, LogError
 from .plan import BatchError, load_plan, require, select
 from .runner import run_one
+from .speakers import configurations
 from .storage import (lock, read_snapshot, save_snapshot, stage, summaries, verify, write_summary)
 
 
@@ -24,8 +25,15 @@ def parser():
     value.add_argument('--copy-local-files', action='store_true')
     value.add_argument('--allow-hydration', action='store_true')
     value.add_argument('--send-to-openai', action='store_true')
-    value.add_argument('--human-reviewed', action='store_true')
+    value.add_argument('--human-reviewed', action='store_true',
+                       help='Confirm human review of every requested output family before selected chapters.')
     value.add_argument('--phase', choices=('raw', 'review', 'chapters'), default='raw')
+    value.add_argument('--interview', action='store_true',
+                       help='Run original and separate attributed families; missing names keep scoped unidentified speakers.')
+    value.add_argument('--speaker-config', type=Path,
+                       help='Optional private per-entry names and confirmed mappings; requires run --interview.')
+    value.add_argument('--interview-model',
+                       help='Additional diarization model, gpt-4o-transcribe-diarize; requires run --interview.')
     value.add_argument('--model', default='gpt-transcribe')
     value.add_argument('--editing-model', default='gpt-6-astra')
     value.add_argument('--author-model', default='gpt-6-astra')
@@ -44,6 +52,9 @@ def parser():
 
 
 def execute(args, reporter):
+    require((args.action == 'run' or not args.interview)
+            and (args.interview or (args.speaker_config is None and args.interview_model is None)),
+            'Speaker options require run --interview.')
     root = args.batch.absolute() if args.batch else None
     existing = args.action in {'verify', 'run', 'status'}
     require((existing and root is not None and args.plan is None)
@@ -56,6 +67,8 @@ def execute(args, reporter):
     else:
         plan = load_plan(args.plan)
         include = args.select
+    args.interview_options_by_id = (configurations(args.speaker_config, plan,
+        args.interview_model or 'gpt-4o-transcribe-diarize') if args.interview else {})
     items = select(plan, include, args.exclude)
     phase = args.phase if args.action == 'run' else args.action
     reporter.context = {'scope': 'batch', 'phase': phase, 'selected': len(items)}
@@ -88,7 +101,7 @@ def execute(args, reporter):
             else:
                 try:
                     if args.action == 'prepare':
-                        stage(root, item, hydration=args.allow_hydration, progress=emit_progress)
+                        stage(root, item, hydration=args.allow_hydration, progress=emit_progress, timeout=args.media_timeout)
                         status = 'staged'
                     elif args.action == 'verify':
                         verify(root, item)
