@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 
 if __package__:
+    from .provider_errors import classify
     from .progress import emit_progress
     from . import prompts
     from .author_review import CATEGORIES, source_segments
@@ -18,6 +19,7 @@ if __package__:
     from .text_editing import split_text, words
     from .transcriber import _suppress_provider_logging
 else:
+    from provider_errors import classify
     from progress import emit_progress
     import prompts
     from author_review import CATEGORIES, source_segments
@@ -300,7 +302,8 @@ def _narrative(raw, segments, findings, client, options):
                             'max_completion_tokens': min(32768, max(16384,
                                 sum(len(u['text'].encode()) for u in chunk) * 3 + 8192)),
                             'store': False})
-        except Exception:
+        except Exception as error:
+            emit_progress('chapters', 'failed', chunk=index, **classify(error))
             raise ChapterError('Chapter generation failed; check API/model access, quota, and connectivity. Raw transcript and review report are retained.') from None
         try:
             invalid_count = not isinstance(response.choices, list) or len(response.choices) != 1

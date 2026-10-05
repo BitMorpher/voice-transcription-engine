@@ -19,7 +19,7 @@ uv run --locked voice-batch --help
 
 ## Regression evidence
 
-The new tests cover metadata-only inventory, original plan order and exclusions, strict schemas/duplicate keys/source identities, explicit copy/provider/chapter gates, offline hydration opt-in, original source changes, independent serial failures, exclusive staging and locks, snapshot/manifest/media tampering, symlinks, automatic source/settings-bound resume, completed-review chapter success, changed-ASR gates and tampered review/raw/provenance protection. Tests also check chunk starts/completions, counters, verified reuse, heartbeats and elapsed waits, concurrent event ordering, arbitrary-value redaction, private file modes, closed-console durability, local log failure, timeout/retry bounds and interruption cleanup with retained summaries.
+The new tests cover metadata-only inventory, original plan order and exclusions, strict schemas/duplicate keys/source identities, explicit copy/provider/chapter gates, offline hydration opt-in, original source changes, independent serial failures, exclusive staging and locks, snapshot/manifest/media tampering, symlinks, automatic source/settings-bound resume, completed-review chapter success, changed-ASR gates and tampered review/raw/provenance protection. Tests also check chunk starts/completions, counters, verified reuse, heartbeats and elapsed waits, concurrent event ordering, arbitrary-value redaction, private file modes, closed-console durability, local log failure, timeout/retry bounds, safe SDK HTTP/category classification, systemic early review termination with explicit unattempted coverage, transient failure continuation, and interruption cleanup with retained summaries.
 
 `tests/test_installation.py` builds wheel/source archives offline, installs the wheel into a fresh environment without editable project imports, invokes both console scripts from a separate directory, and runs synthetic raw→polish/review→chapters→resume through the installed coordinator and packaged prompts. Dependencies are taken from the locked test environment. The new module namespace is asserted to come from the fresh wheel environment. `tests/test_documentation.py` checks local Markdown links and documented CLI flags/examples against declared arguments.
 
@@ -31,8 +31,8 @@ No actual ASR accuracy, provider response latency, recording verification or pub
 
 ## Validation results for this change
 
-- Full notebook-extra suite: **520 passed**.
-- Separate default dependency environment: **519 passed, 1 expected optional-notebook skip**.
+- Full notebook-extra suite: **541 passed**.
+- Separate default dependency environment: **540 passed, 1 expected optional-notebook skip**.
 - Ruff, whitespace diff check, offline lock consistency, installed dependency compatibility, both installed help commands, wheel/source builds, installed-wheel synthetic workflow/resume, and Markdown link/CLI example checks passed.
 - Outgoing source and generated archive-content scans found no private setup paths, private source references or credential patterns; notebook outputs remain clear. New commit metadata uses a generic contributor identity. Generated distributions and detailed local logs remain ignored and are not published.
 

@@ -11,6 +11,11 @@ import threading
 import time
 import uuid
 
+if __package__:
+    from .provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE
+else:
+    from provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE
+
 CURRENT = ContextVar('execution_reporter', default=None)
 STAGES = {'conversion', 'transcription', 'enhancement', 'author_review', 'chapters',
           'part_transcription', 'staging', 'preflight', 'verification', 'combined_raw'}
@@ -98,6 +103,11 @@ class Reporter:
                 elif key in {'status', 'stage_status'} and isinstance(value, str) and value in STATUSES:
                     event[key] = value
                 elif key == 'stage' and isinstance(value, str) and value in STAGES:
+                    event[key] = value
+                elif key == 'error_category' and isinstance(value, str) and value in CATEGORIES:
+                    event[key] = value
+                    event['guidance'] = ERROR_GUIDANCE[value]
+                elif key == 'http_status' and type(value) is int and 100 <= value <= 599:
                     event[key] = value
                 elif key == 'scope' and isinstance(value, str) and value in {'batch', 'interview'}:
                     event[key] = value

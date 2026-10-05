@@ -10,12 +10,14 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 
 if __package__:
+    from .provider_errors import classify, SYSTEMIC
     from .progress import emit_progress
     from . import prompts
     from .model_config import EDITING_MODELS
     from .text_editing import split_text
     from .transcriber import _suppress_provider_logging
 else:
+    from provider_errors import classify, SYSTEMIC
     from progress import emit_progress
     import prompts
     from model_config import EDITING_MODELS
@@ -331,14 +333,31 @@ def review_transcript(raw, client, options=None):
                 if previous is None or ranks[finding['severity']] > ranks[previous['severity']]:
                     findings[key] = finding
             chunks.append({**chunk, 'status': 'complete'})
-        except ReviewError:
+        except ReviewError as error:
+            category = 'completion' if str(error) in {
+                'Author-review returned an invalid completion.',
+                'Author-review output was refused or incomplete.'} else 'validation'
             # Never echo an arbitrary ReviewError raised by an injected client.
             chunks.append({**chunk, 'status': 'failed',
-                           'error': 'Author-review output failed completion, schema, coverage, or exact-source validation.'})
-        except Exception:
+                           'error': 'Author-review output failed completion, schema, coverage, or exact-source validation.',
+                           'error_category': category})
+        except Exception as error:
+            failure = classify(error)
             chunks.append({**chunk, 'status': 'failed',
-                           'error': 'Author-review provider request failed; check access and retry.'})
-        emit_progress('author_review', chunks[-1]['status'], chunk=chunk['chunk_index'], chunks=len(requests))
+                           'error': 'Author-review provider request failed; check access and retry.',
+                           **failure})
+        failure = {key: chunks[-1][key] for key in ('error_category', 'http_status') if key in chunks[-1]}
+        emit_progress('author_review', chunks[-1]['status'], chunk=chunk['chunk_index'], chunks=len(requests), **failure)
+        if failure.get('error_category') in SYSTEMIC:
+            # Preserve full attempted/unattempted coverage without charging more
+            # chunks for a definite global configuration/account failure.
+            for remaining in requests[len(chunks):]:
+                chunks.append({**remaining, 'status': 'failed', 'attempted': False,
+                               'error_category': 'not_attempted',
+                               'error': 'Not requested after a systemic provider failure.'})
+                emit_progress('author_review', 'blocked', chunk=remaining['chunk_index'],
+                              chunks=len(requests), error_category='not_attempted')
+            break
     completed = sum(chunk['status'] == 'complete' for chunk in chunks)
     status = 'complete' if completed == len(chunks) else ('incomplete' if completed else 'failed')
     output_findings = []

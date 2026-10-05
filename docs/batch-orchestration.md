@@ -126,4 +126,23 @@ Safe failures include fixed actionable setup/gate guidance; stage/item counters 
 
 If a console pipe closes, durable logs continue. If local logging fails (disk full, permissions), the run fails safely rather than reporting unlogged success; completed caches remain. Missing-key guidance points to `OPENAI_API_KEY` without logging its value. Provider failures use fixed access/quota/connectivity guidance; payload/traceback forwarding and unsafe debug output are unavailable. Long elapsed time alone does not establish a hung provider. Inspect stage/chunk events, transport bounds and network availability, then deliberately interrupt/resume if needed.
 
-Implementation is split into `src/batch/plan.py` (schema/metadata/selection), `storage.py` (copies/verification/locking), `runner.py` (engine invocation and phase gates), `cli.py` (commands/counters), and `src/progress.py` (event allowlist/logs/heartbeats). Tests use only synthetic media and mocked providers.
+Implementation is split into `src/batch/plan.py` (schema/metadata/selection), `storage.py` (copies/verification/locking), `runner.py` (engine invocation and phase gates), `cli.py` (commands/counters), and `src/progress.py` (event allowlist/logs/heartbeats), and `src/provider_errors.py` (safe SDK metadata categories). Tests use only synthetic media and mocked providers.
+
+### Distinguishing failures before a retry
+
+New execution events and failed private review chunk records include `error_category` and, for recognized SDK HTTP failures, an integer `http_status`. Categories distinguish authentication, permission, model access, invalid requests, definite quota exhaustion, transient rate limits, connection failures, timeouts, service failures, completion/refusal/truncation, schema/source validation, and unknown failures. Arbitrary exception messages, response bodies, request URLs/headers and request IDs remain excluded. A quota category requires a known SDK quota code; HTTP 429 alone is a rate limit, not proof of exhausted billing quota.
+
+A definite authentication/permission/model/request/quota error stops further chunks **in that interview review**. Remaining coverage cores are retained as failed with `attempted: false` and `not_attempted`; they were not sent to the provider. Review remains failed/incomplete and chapters remain gated. Ordinary transient or validation failures preserve the existing later-chunk attempts and findings. Independent batch interviews retain failure isolation. The SDK may already have retried a request before returning the error.
+
+Before retrying a failed review:
+
+1. Inspect only the safe execution categories/status/counters first. Old generic failure records cannot establish the original HTTP status or timeout cause.
+2. Verify retained staging (`voice-batch verify`) and source/configuration-bound caches; keep failed outputs and human notes intact. Run the offline installation/progress tests below to check the software without provider requests.
+3. Correct known account/model/configuration issues locally. A repeated unknown failure needs investigation before a paid rerun; elapsed time alone is insufficient evidence.
+4. If a new attempt is deliberately authorized, select one interview and preserve matching ASR settings. `--provider-retries 0 --provider-timeout 30` lowers per-request retry/read budgets, but **does not establish a total wall-clock deadline or limit review to one chunk**. Do not represent this command as a fully bounded paid diagnostic. A whole-run supervisor or a separately designed single-request diagnostic is outside this change.
+
+```bash
+uv run --locked pytest -q tests/test_provider_errors.py tests/test_progress.py tests/test_installation.py
+uv run --locked voice-batch verify --batch private/batches/demo-001
+uv run --locked voice-batch status --batch private/batches/demo-001
+```
