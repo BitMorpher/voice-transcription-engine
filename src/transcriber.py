@@ -58,7 +58,7 @@ def _suppress_provider_logging():
 class Transcriber:
     def __init__(self, model_name=DEFAULT_ASR_MODEL, *, client=None, media_timeout=3600,
                  options=None, editing_options=None, provider_timeout=120, provider_retries=2):
-        if (not isinstance(provider_timeout, (int, float)) or not 0 < provider_timeout < float('inf')
+        if (type(provider_timeout) not in (int, float) or not 0 < provider_timeout < float('inf')
                 or type(provider_retries) is not int or not 0 <= provider_retries <= 5):
             raise ConfigurationError('Use a positive finite provider timeout and retries from 0 to 5.')
         self.options = options or TranscriptionOptions(model=model_name)

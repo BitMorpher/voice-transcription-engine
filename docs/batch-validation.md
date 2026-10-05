@@ -31,9 +31,20 @@ No actual ASR accuracy, provider response latency, recording verification or pub
 
 ## Validation results for this change
 
-- Full notebook-extra suite: **541 passed**.
-- Separate default dependency environment: **540 passed, 1 expected optional-notebook skip**.
+- Full notebook-extra suite: **555 passed**.
+- Separate default dependency environment: **554 passed, 1 expected optional-notebook skip**.
 - Ruff, whitespace diff check, offline lock consistency, installed dependency compatibility, both installed help commands, wheel/source builds, installed-wheel synthetic workflow/resume, and Markdown link/CLI example checks passed.
 - Outgoing source and generated archive-content scans found no private setup paths, private source references or credential patterns; notebook outputs remain clear. New commit metadata uses a generic contributor identity. Generated distributions and detailed local logs remain ignored and are not published.
 
 GitHub Actions results belong to the exact pushed commit and are reported separately in the draft PR handoff. No real media, paid provider requests, merge, or deployment occurred.
+
+
+## Copilot review follow-up
+
+All three findings were applicable and addressed:
+
+- Chapter generations reuse the exact review JSON/XLSX bundle accepted by the human gate, revalidated under the interview lock. Tests forbid fresh review calls, compare both bundle files byte for byte, verify chapter review hashes, and reject approval changes/conflicting target reviews without provider requests. The installed-wheel smoke also asserts review reuse.
+- Chapter response property/count/refusal/truncation failures now emit terminal `completion` events, and schema/coverage failures emit `validation` events. Synthetic events retain the chunk index and omit payload/error text.
+- `Transcriber` accepts exact numeric timeout types and rejects `True`/`False`; both values have regressions.
+
+CLI syntax and stacked base history remain unchanged. No review replies or thread resolutions are posted by these implementation fixes.

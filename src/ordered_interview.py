@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 if __package__:
+    from .review_reuse import reuse_approved_review
     from .progress import emit_progress
     from . import transcriber as asr_engine
     from .author_review import source_segments
@@ -23,6 +24,7 @@ if __package__:
     from .private_output import digest, output_directory, write_private
     from .source_provenance import author_binding, validate_chapter_binding
 else:
+    from review_reuse import reuse_approved_review
     from progress import emit_progress
     import transcriber as asr_engine
     from author_review import source_segments
@@ -390,7 +392,7 @@ class OrderedInterview:
                     self.job, record, raw, self.author_options.review_options, provenance=provenance
                 )
 
-    def process(self, *, transcriber):
+    def process(self, *, transcriber, approved_review=None):
         """Publish combined raw only after every part succeeds, then run author stages."""
         original_resume = self.resume
         lock = self.output / ".interview.lock"
@@ -447,6 +449,12 @@ class OrderedInterview:
             def save():
                 Pipeline._save(self.job / "manifest.json", state)
 
+            if approved_review is not None:
+                try:
+                    reuse_approved_review(approved_review, self.job, state, self.author_options,
+                                          provenance, save)
+                except AuthorWorkflowError as error:
+                    raise PipelineError(str(error)) from None
             if self.enhance:
                 raw_hash = state["stages"]["transcription"]["sha256"]
                 pipeline = Pipeline(

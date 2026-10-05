@@ -89,3 +89,6 @@ uv run --locked voice-batch run --batch private/batches/demo-001 \
   --select entry-a --phase review --send-to-openai
 uv run --locked voice-batch status --batch private/batches/demo-001
 ```
+
+
+When the batch chapter coordinator creates a new chapter generation, it transfers the exact gate-approved review JSON/XLSX bytes after locked source/bundle checks and skips the provider review request. Conflicting or changed approved reviews fail closed. This batch approval transfer is distinct from the direct workflow's generation behavior described above; see [the human-approved batch chapter gate](batch-orchestration.md#raw-review-and-human-approved-chapters).

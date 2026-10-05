@@ -107,12 +107,18 @@ assert batch(['prepare', '--plan', 'plan.json', '--batch', 'batch', '--copy-loca
 for phase in ('raw', 'review', 'chapters'):
     args = ['run', '--batch', 'batch', '--phase', phase, '--send-to-openai']
     if phase == 'chapters':
+        reviewed_reports = {path.read_bytes() for path in Path('batch').rglob('review_report.json')}
+        reviewed_workbooks = {path.read_bytes() for path in Path('batch').rglob('review_report.xlsx')}
         args += ['--select', 'entry-a', '--human-reviewed']
     assert batch(args) == 0
 calls = client.chat.completions.create.call_count
 assert batch(args) == 0
 assert client.chat.completions.create.call_count == calls
 assert client.audio.transcriptions.create.call_count == 1
+assert sum(call.kwargs['response_format']['json_schema']['name'] == 'source_grounded_author_review'
+           for call in client.chat.completions.create.call_args_list) == 1
+assert {path.read_bytes() for path in Path('batch').rglob('review_report.json')} == reviewed_reports
+assert {path.read_bytes() for path in Path('batch').rglob('review_report.xlsx')} == reviewed_workbooks
 assert len(list(Path('batch').rglob('chapter_drafts.json'))) == 1
 ''')
     result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
