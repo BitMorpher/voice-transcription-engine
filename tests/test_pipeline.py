@@ -387,3 +387,36 @@ def test_symbol_preservation_contract_invalidates_bound_legacy_derivative(
         assert '€100' in target.read_text() and '$100' not in target.read_text()
         assert provider.chat.completions.create.call_count == 2
     assert provider.audio.transcriptions.create.call_count == 1
+
+
+def test_expected_source_hash_refuses_new_job_before_conversion(
+        synthetic_media, tmp_path, provider, monkeypatch):
+    from unittest.mock import MagicMock
+    source = synthetic_media()
+    expected = digest(source)
+    source.write_bytes(source.read_bytes() + b'synthetic changed trailer')
+    conversion = MagicMock(side_effect=AssertionError('Must not convert changed part'))
+    monkeypatch.setattr('src.pipeline.prepare_audio', conversion)
+    output = tmp_path / 'output'
+    with pytest.raises(PipelineError, match='changed after validation'):
+        Pipeline(output).process(source, transcriber=Transcriber(client=provider),
+                                 expected_source_sha256=expected)
+    conversion.assert_not_called()
+    provider.audio.transcriptions.create.assert_not_called()
+    assert list(output.iterdir()) == []
+
+
+def test_source_rechecked_immediately_before_asr(synthetic_media, tmp_path, provider):
+    source = synthetic_media()
+    expected = digest(source)
+    output = tmp_path / 'output'
+    identity, _ = Pipeline(output).process(source, extract_only=True,
+                                          expected_source_sha256=expected)
+    def change_before_asr(stage, status):
+        if (stage, status) == ('transcription', 'running'):
+            source.write_bytes(source.read_bytes() + b'synthetic changed trailer')
+    with pytest.raises(PipelineError, match='changed after validation'):
+        Pipeline(output, resume=True, progress=change_before_asr).process(
+            source, transcriber=Transcriber(client=provider), expected_source_sha256=expected)
+    provider.audio.transcriptions.create.assert_not_called()
+    assert not (output / identity / 'transcription.txt').exists()

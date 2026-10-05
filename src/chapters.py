@@ -11,12 +11,16 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 
 if __package__:
+    from .provider_errors import classify
+    from .progress import emit_progress
     from . import prompts
     from .author_review import CATEGORIES, source_segments
     from .model_config import EDITING_MODELS, ModelConfigurationError
     from .text_editing import split_text, words
     from .transcriber import _suppress_provider_logging
 else:
+    from provider_errors import classify
+    from progress import emit_progress
     import prompts
     from author_review import CATEGORIES, source_segments
     from model_config import EDITING_MODELS, ModelConfigurationError
@@ -283,6 +287,7 @@ def _narrative(raw, segments, findings, client, options):
     passages, omissions = [], []
     for index, chunk in enumerate(_chunks(_units(raw, segments, options.chunk_bytes),
                                          options.chunk_bytes), start=1):
+        emit_progress('chapters', 'running', chunk=index)
         try:
             # Match the existing client path; never expose provider payloads in exceptions.
             _suppress_provider_logging()
@@ -297,7 +302,8 @@ def _narrative(raw, segments, findings, client, options):
                             'max_completion_tokens': min(32768, max(16384,
                                 sum(len(u['text'].encode()) for u in chunk) * 3 + 8192)),
                             'store': False})
-        except Exception:
+        except Exception as error:
+            emit_progress('chapters', 'failed', chunk=index, **classify(error))
             raise ChapterError('Chapter generation failed; check API/model access, quota, and connectivity. Raw transcript and review report are retained.') from None
         try:
             invalid_count = not isinstance(response.choices, list) or len(response.choices) != 1
@@ -306,12 +312,20 @@ def _narrative(raw, segments, findings, client, options):
                 incomplete = choice.finish_reason != 'stop' or bool(getattr(choice.message, 'refusal', None))
                 content = choice.message.content
         except Exception:
+            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
             raise ChapterError('Chapter provider response could not be read; no draft was saved.') from None
         if invalid_count:
+            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
             raise ChapterError('Chapter provider response has an invalid completion count; no draft was saved.')
         if incomplete:
+            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
             raise ChapterError('Chapter output was incomplete or refused; raw transcript and review report are retained.')
-        parts, missing = _validate_response(content, chunk, index, options.person, findings)
+        try:
+            parts, missing = _validate_response(content, chunk, index, options.person, findings)
+        except ChapterError:
+            emit_progress('chapters', 'failed', chunk=index, error_category='validation')
+            raise
+        emit_progress('chapters', 'complete', chunk=index)
         passages.extend(parts)
         omissions.extend(missing)
     return passages, omissions
@@ -405,6 +419,13 @@ def render_chapter(document, style):
     for passage in chapter['passages']:
         lines.append(f'[{passage["passage_id"]}; raw characters {passage["start"]}:{passage["end"]}; '
                      f'segments {", ".join(passage["segment_ids"])}]')
+        for reference in passage.get('recording_refs', []):
+            if reference['kind'] == 'recording':
+                lines.append(f'Recording part {reference["order"]} ({reference["part_id"]}); '
+                             f'local text characters {reference["local_start"]}:{reference["local_end"]}; '
+                             f'local segments {", ".join(reference["local_segment_ids"])}.')
+            else:
+                lines.append('Explicit recording separator; no recording time or content inferred.')
         lines.append('Review flags: ' + (', '.join(passage['finding_ids']) or 'None linked; not a publication clearance.'))
         if style == 'narrative' and chapter['person'] == 'third':
             lines.append('The source testimony states (speaker identity requires verification):')

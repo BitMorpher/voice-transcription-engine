@@ -200,3 +200,26 @@ The workflow extends the existing small modules rather than introducing a servic
 | `src/prompts/*_v1.txt` | Packaged, versioned review and chapter contracts, including untrusted-source instructions. |
 
 Run the [offline verification commands](../README.md#offline-verification). Provider responses are mocked; synthetic media exercises FFmpeg without using personal content. Relevant regression coverage includes audio/video and stage selections, complete/empty/incomplete/failed review, long-source boundaries and duplicate findings, bad references/invented excerpts, refusals/truncation, embedded transcript instructions, high-priority gating and explicit override, chapter coverage/wording, resume/settings/source integrity, and Excel roundtrip/literal-cell handling. Tests establish implemented contracts under those cases; they do not benchmark recognition accuracy, issue detection quality, factual judgment, or publication readiness on real testimony.
+
+## Continuations recorded in separate files
+
+Folder batch mode creates independent jobs. For several recordings from one interview, supply [an ordered interview manifest](ordered-interviews.md) with `--workflow --interview-manifest`. It retains raw parts, combines them without rewriting in explicit order, and runs these author stages once on the combined interview, with recording-level text provenance in JSON/XLSX and chapter citations.
+
+
+## Batch selection and execution monitoring
+
+For serial independent interviews, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands now emit flushed safe stage/part/chunk events and elapsed idle heartbeats, with exclusive local JSONL logs. Source paths, user IDs, hints and transcript/provider text are excluded. Use the engine's matching source/settings with `--resume`; the batch coordinator adds resume automatically. No failed-stage API chunk checkpoint is claimed.
+
+```bash
+uv run --locked voice-transcribe --workflow \
+  --interview-manifest private/input/interview_manifest.json --stages raw \
+  --output-folder private/ordered-output --resume \
+  --heartbeat-seconds 30 --provider-timeout 120 --provider-retries 2
+uv run --locked voice-batch verify --batch private/batches/demo-001
+uv run --locked voice-batch run --batch private/batches/demo-001 \
+  --select entry-a --phase review --send-to-openai
+uv run --locked voice-batch status --batch private/batches/demo-001
+```
+
+
+For batch chapters, the explicit human gate now binds the exact approved review bundle used for drafting. `src/review_reuse.py` verifies and transfers that bundle byte for byte into a chapter generation before author stages; a new chapter configuration does not request a fresh review after approval. Changed/conflicting bundles stop drafting. Narrative completion/property/refusal/truncation errors emit terminal safe `completion` events, while schema/source-coverage failures emit `validation` events for the failed chunk.

@@ -9,6 +9,8 @@ import wave
 from pathlib import Path
 
 if __package__:
+    from .provider_errors import classify
+    from .progress import emit_progress
     from .media import AUDIO_EXTENSIONS, prepare_audio
     from .model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from .text_editing import (
@@ -20,6 +22,8 @@ if __package__:
         words,
     )
 else:
+    from provider_errors import classify
+    from progress import emit_progress
     from media import AUDIO_EXTENSIONS, prepare_audio
     from model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from text_editing import (
@@ -53,7 +57,10 @@ def _suppress_provider_logging():
 
 class Transcriber:
     def __init__(self, model_name=DEFAULT_ASR_MODEL, *, client=None, media_timeout=3600,
-                 options=None, editing_options=None):
+                 options=None, editing_options=None, provider_timeout=120, provider_retries=2):
+        if (type(provider_timeout) not in (int, float) or not 0 < provider_timeout < float('inf')
+                or type(provider_retries) is not int or not 0 <= provider_retries <= 5):
+            raise ConfigurationError('Use a positive finite provider timeout and retries from 0 to 5.')
         self.options = options or TranscriptionOptions(model=model_name)
         self.editing_options = editing_options or EditingOptions()
         self.model_name = self.options.model
@@ -69,7 +76,7 @@ class Transcriber:
             # SDK/network debug logging can contain authorization headers or payloads.
             _suppress_provider_logging()
             try:
-                client = openai.OpenAI(timeout=120.0, max_retries=2)
+                client = openai.OpenAI(timeout=provider_timeout, max_retries=provider_retries)
             except Exception:
                 raise ConfigurationError('Cannot configure OpenAI; check your environment settings.') from None
         self.client = client
@@ -88,6 +95,7 @@ class Transcriber:
             if max_frames < 1 or audio.getnframes() < 1:
                 raise TranscriptionError('Audio is empty or chunk size is invalid.')
             remaining = audio.getnframes()
+            total_chunks = (remaining + max_frames - 1) // max_frames
             while remaining:
                 count = min(max_frames, remaining)
                 frames = audio.readframes(count)
@@ -100,6 +108,7 @@ class Transcriber:
                 if buffer.tell() > self.max_bytes:
                     raise TranscriptionError('Encoded chunk exceeds the upload limit.')
                 buffer.seek(0)
+                buffer.total_chunks = total_chunks
                 buffer.name = 'audio.wav'  # Never send the personal source filename.
                 yield buffer
                 remaining -= count
@@ -125,6 +134,7 @@ class Transcriber:
         parts = []
         try:
             for index, chunk in enumerate(self._wave_chunks(audio_path), start=1):
+                emit_progress('transcription', 'running', chunk=index, chunks=chunk.total_chunks)
                 try:
                     _suppress_provider_logging()
                     response = self.client.audio.transcriptions.create(
@@ -134,7 +144,9 @@ class Transcriber:
                     if not isinstance(text, str):
                         raise TranscriptionError('Provider returned an invalid transcription response.')
                     parts.append(text)
-                except Exception:
+                    emit_progress('transcription', 'complete', chunk=index, chunks=chunk.total_chunks)
+                except Exception as error:
+                    emit_progress('transcription', 'failed', chunk=index, chunks=chunk.total_chunks, **classify(error))
                     raise TranscriptionError(
                         f'Transcription failed on chunk {index}; no complete transcript was saved. '
                         'Check API access, quota, and network connectivity before retrying.'
@@ -156,6 +168,7 @@ class Transcriber:
                 if not source.strip():
                     edited_parts.append(source)
                     continue
+                emit_progress('enhancement', 'running', chunk=index)
                 _suppress_provider_logging()
                 # Budget includes reasoning. Byte-bounded input leaves ample output
                 # headroom; length/content-filter/refusal still fail explicitly.
@@ -177,6 +190,7 @@ class Transcriber:
                     raise EditingError('Derivative output was incomplete or refused; retain the original transcript.')
                 edited, speaker_uncertain = validate_edit(choice.message.content, source, index)
                 edited_parts.append(edited)
+                emit_progress('enhancement', 'complete', chunk=index)
                 if speaker_uncertain:
                     uncertain.append(index)
             combined = ''.join(edited_parts)
@@ -186,8 +200,10 @@ class Transcriber:
                 combined = '[Speaker attribution uncertain in chunks: ' + ', '.join(map(str, uncertain)) + ']\n\n' + combined
             return combined
         except EditingError as error:
+            emit_progress('enhancement', 'failed', error_category='validation')
             raise TranscriptionError(str(error)) from None
-        except Exception:
+        except Exception as error:
+            emit_progress('enhancement', 'failed', **classify(error))
             raise TranscriptionError('Optional editing failed; check API/model access, quota, and network connectivity. The original transcript is retained.') from None
 
     def enhance_transcription(self, transcription: str) -> str:
