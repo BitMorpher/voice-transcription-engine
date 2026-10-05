@@ -6,12 +6,14 @@ import os
 from pathlib import Path
 
 if __package__:
+    from .interview_attribution import AttributedInterview, AttributionError, input_record
     from .author_workflow import AuthorWorkflowError, run_author_stages
     from .media import MEDIA_EXTENSIONS, MediaError, prepare_audio
     from .model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from .private_output import digest, output_directory, write_private
     from .transcriber import TranscriptionError
 else:
+    from interview_attribution import AttributedInterview, AttributionError, input_record
     from author_workflow import AuthorWorkflowError, run_author_stages
     from media import MEDIA_EXTENSIONS, MediaError, prepare_audio
     from model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
@@ -29,7 +31,8 @@ class PipelineError(RuntimeError):
 
 class Pipeline:
     def __init__(self, output, *, resume=False, media_timeout=3600, model=DEFAULT_ASR_MODEL,
-                 options=None, editing_options=None, author_options=None, progress=None):
+                 options=None, editing_options=None, author_options=None, progress=None,
+                 interview_options=None):
         self.output = output_directory(output)
         self.resume = resume
         self.media_timeout = media_timeout
@@ -37,6 +40,7 @@ class Pipeline:
         self.editing_options = editing_options or EditingOptions()
         self.model = self.options.model
         self.author_options = author_options
+        self.interview_options = interview_options
         self.progress = progress or (lambda stage, status: None)
 
     @staticmethod
@@ -187,6 +191,7 @@ class Pipeline:
                 self._save(manifest, state)
                 summary[stage] = 'complete'
                 self.progress(stage, 'complete')
+            author_error = None
             if not extract_only and self.author_options is not None:
                 try:
                     run_author_stages(job, state, transcriber, self.author_options,
@@ -194,7 +199,22 @@ class Pipeline:
                                       save=lambda: self._save(manifest, state), summary=summary,
                                       progress=self.progress)
                 except AuthorWorkflowError as error:
+                    author_error = str(error)
+            if not extract_only and self.interview_options is not None:
+                try:
+                    family = AttributedInterview(self.output, [input_record(1, job, state)],
+                        self.interview_options, resume=self.resume, enhance=enhance,
+                        author_options=self.author_options, progress=self.progress)
+                    attributed = family.process(transcriber)
+                    summary.update({'attributed_' + key: value for key, value in attributed.items()})
+                except AttributionError as error:
+                    summary.update({'attributed_' + key: value for key, value in error.stages.items()})
                     raise PipelineError(str(error), stages=summary) from None
+                except TranscriptionError as error:
+                    summary['attributed_attribution'] = 'failed'
+                    raise PipelineError(str(error), stages=summary) from None
+            if author_error:
+                raise PipelineError(author_error, stages=summary) from None
             return identity, summary
         finally:
             lock.unlink()

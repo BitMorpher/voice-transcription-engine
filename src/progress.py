@@ -19,6 +19,8 @@ else:
 CURRENT = ContextVar('execution_reporter', default=None)
 STAGES = {'conversion', 'transcription', 'enhancement', 'author_review', 'chapters',
           'part_transcription', 'staging', 'preflight', 'verification', 'combined_raw'}
+STAGES |= {'diarization', 'attribution', 'attributed_attribution', 'attributed_enhancement',
+           'attributed_author_review', 'attributed_chapters'}
 STATUSES = {'started', 'progress', 'running', 'complete', 'failed', 'summary', 'heartbeat',
             'skipped', 'interrupted', 'blocked', 'staged', 'verified', 'incomplete', 'pending'}
 COUNTERS = {'item', 'part', 'parts', 'chunk', 'chunks', 'processed', 'failed', 'selected',
@@ -112,6 +114,8 @@ class Reporter:
                 elif key == 'http_status' and type(value) is int and 100 <= value <= 599:
                     event[key] = value
                 elif key == 'scope' and isinstance(value, str) and value in {'batch', 'interview'}:
+                    event[key] = value
+                elif key == 'family' and isinstance(value, str) and value in {'original', 'attributed'}:
                     event[key] = value
                 elif key == 'phase' and isinstance(value, str) and value in {'raw', 'review', 'chapters', 'inventory', 'check', 'prepare', 'verify', 'status'}:
                     event[key] = value

@@ -228,3 +228,14 @@ Tests generate synthetic tones and color video in temporary folders, mock all pr
 Builds produce ignored `dist/` wheel and source archives using the pinned backend. The source archive includes the lock, Python pin and complete offline tests. Source archives may include operating-system ownership metadata; keep them private until inspected. Review archive contents before sharing; no generated media, transcripts, keys, local environment or personal paths belong in a distribution. A clean environment can be checked without disturbing `.venv` using `UV_PROJECT_ENVIRONMENT=private/clean-venv uv sync --locked`. The lock covers declared dependencies across supported Python versions; the validated runtime is CPython 3.14.8 on macOS arm64, not a full operating-system/Python matrix.
 
 Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Author stages use `src/author_workflow.py`, `src/author_review.py`, `src/review_export.py`, `src/chapters.py`, and packaged versioned prompts; see the [architecture table](docs/author-workflow.md#implementation-and-verification). The wheel packages these source modules under `voice_transcription_engine`; installed entrypoints use relative imports and packaged prompts. `src/batch/` separates plan validation, staging/integrity, phase gates and CLI orchestration; `src/progress.py` handles allowlisted execution logs and idle heartbeats.
+
+### Optional interview speaker attribution
+
+Use `--workflow --interview --interviewer-name "Example Host" --interviewee-name
+"Example Guest"` to add a separate diarized transcript family while retaining all
+current outputs. Names alone do not identify voices: unknown voices keep scoped
+speaker labels until you listen and provide explicit `--speaker-map` confirmations.
+Selected polish, review JSON/XLSX and chapter styles run independently for both
+families, with additional provider calls and the same review gates. See the
+[interview attribution guide](docs/interview-attribution.md) for commands, mapping,
+private output paths, costs and accuracy limitations.

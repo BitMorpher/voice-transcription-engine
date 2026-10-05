@@ -95,6 +95,7 @@ class Transcriber:
             if max_frames < 1 or audio.getnframes() < 1:
                 raise TranscriptionError('Audio is empty or chunk size is invalid.')
             remaining = audio.getnframes()
+            offset_frames = 0
             total_chunks = (remaining + max_frames - 1) // max_frames
             while remaining:
                 count = min(max_frames, remaining)
@@ -109,9 +110,12 @@ class Transcriber:
                     raise TranscriptionError('Encoded chunk exceeds the upload limit.')
                 buffer.seek(0)
                 buffer.total_chunks = total_chunks
+                buffer.offset_seconds = offset_frames / audio.getframerate()
+                buffer.duration_seconds = count / audio.getframerate()
                 buffer.name = 'audio.wav'  # Never send the personal source filename.
                 yield buffer
                 remaining -= count
+                offset_frames += count
 
     def transcribe(self, audio_path: str, *, prepared=False) -> str:
         """Transcribe WAV/MP3/M4A in order; any failed chunk fails the entire stage.

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 if __package__:
+    from .interview_attribution import InterviewOptions, DIARIZATION_MODEL
     from .progress import CURRENT, Reporter, interruptions, LogError
     from .author_review import ReviewError, ReviewOptions
     from .author_workflow import AuthorOptions, AuthorWorkflowError
@@ -25,6 +26,7 @@ if __package__:
     from .private_output import OutputError, output_directory, write_private
     from .transcriber import ConfigurationError, Transcriber, TranscriptionError
 else:
+    from interview_attribution import InterviewOptions, DIARIZATION_MODEL
     from progress import CURRENT, Reporter, interruptions, LogError
     from author_review import ReviewError, ReviewOptions
     from author_workflow import AuthorOptions, AuthorWorkflowError
@@ -151,6 +153,14 @@ def main(argv=None, *, approved_review=None):
                         help='Legacy audio-only faithful layout alias; never assigns speaker roles.')
     parser.add_argument('--workflow', action='store_true',
                         help='Author workflow: raw, optional polish, review, selectable chapter drafts.')
+    parser.add_argument('--interview', action='store_true',
+                        help='Add a separate diarized output family; requires --workflow and both names. Adds provider calls for selected stages.')
+    parser.add_argument('--interviewer-name', help='Local display name; does not identify a voice.')
+    parser.add_argument('--interviewee-name', help='Local display name; does not identify a voice.')
+    parser.add_argument('--speaker-map', action='append', default=[],
+                        help='User-confirmed mapping PART:REQUEST:LABEL=interviewer or =interviewee; repeat. Unmapped speakers remain unidentified.')
+    parser.add_argument('--interview-model', default=DIARIZATION_MODEL,
+                        help='Additional diarization model (gpt-4o-transcribe-diarize); --model still controls original transcription.')
     parser.add_argument('--media-type', choices=('auto', 'audio', 'video'), default='auto',
                         help='Workflow media type (default: auto by supported extension).')
     parser.add_argument('--stages', default='raw,polish,review',
@@ -171,6 +181,11 @@ def main(argv=None, *, approved_review=None):
     parser.add_argument('--provider-retries', type=int, choices=range(0, 6), default=2,
                         help='SDK retry limit 0–5 (default: 2). Retried requests may incur charges.')
     args = parser.parse_args(argv)
+    supplied_flags = {arg.split('=', 1)[0] for arg in (argv if argv is not None else sys.argv[1:])}
+    if args.interview and (not args.workflow or args.extract_only):
+        parser.usage_error('--interview requires --workflow and cannot use --extract-only.')
+    if not args.interview and supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model'}:
+        parser.usage_error('Speaker naming options require --interview.')
     reporter = CURRENT.get()
     if reporter is not None:
         reporter.heartbeat = args.heartbeat_seconds
@@ -216,12 +231,16 @@ def main(argv=None, *, approved_review=None):
         parser.usage_error('--extract-only cannot request transcription hints; supply them when transcribing.')
 
     try:
+        interview_options = InterviewOptions(args.interviewer_name, args.interviewee_name,
+            tuple(args.speaker_map), args.interview_model) if args.interview else None
         selected_input = args.input if args.input is not None else args.input_folder
         if selected_input == '':
             raise PipelineError('Input path must not be empty; choose an accessible local file or folder.')
         context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)
         options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                        languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
+        if interview_options and (len(args.language) > 1 or any(len(code) != 2 for code in args.language)):
+            raise ModelConfigurationError('Additional interview diarization accepts at most one ISO 639-1 language hint; omit hints for automatic detection.')
         editing_options = EditingOptions(model=args.editing_model)
         if args.workflow:
             author_options = AuthorOptions(
@@ -236,6 +255,7 @@ def main(argv=None, *, approved_review=None):
                 options=options, editing_options=editing_options, author_options=author_options,
                 resume=args.resume, media_timeout=args.media_timeout,
                 enhance=args.enhance_for_reading or 'polish' in requested,
+                interview_options=interview_options,
                 progress=lambda stage, status: _report(status='progress', stage=stage, stage_status=status))
             interview.preflight()
             require_ffmpeg()
@@ -273,11 +293,13 @@ def main(argv=None, *, approved_review=None):
         pipeline = Pipeline(output, resume=args.resume, media_timeout=args.media_timeout,
                             options=options, editing_options=editing_options,
                             author_options=author_options,
+                            interview_options=interview_options,
                             progress=(lambda stage, status: _report(item=index, status='progress',
                                 stage=stage, stage_status=status)) if CURRENT.get() is not None or args.workflow else None) if pipeline_mode else None
     except (MediaError, PipelineError, ConfigurationError, OSError, ValueError, AuthorWorkflowError, ReviewError, TranscriptionError) as error:
         message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError, AuthorWorkflowError, ReviewError) else 'Cannot access local input/output; check permissions and free space.'
-        _report(status='failed', message=message)
+        _report(status='failed', message=message,
+                **({'stages': error.stages} if type(error) is PipelineError and error.stages else {}))
         return 1
 
     failures = 0

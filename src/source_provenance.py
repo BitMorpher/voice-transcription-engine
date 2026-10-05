@@ -31,6 +31,15 @@ def references(provenance, start, end):
                     if segment["start"] < b - span["start"] and segment["end"] > a - span["start"]
                 ],
             )
+        if 'attribution' in provenance:
+            reference['speaker_turns'] = [
+                {key: turn[key] for key in ('turn_id', 'speaker_key', 'display_name', 'role',
+                    'identity_evidence', 'diarization_evidence', 'audio_start', 'audio_end',
+                    'overlap_detected', 'speech_start', 'speech_end', 'cache_binding_sha256',
+                    'provider_response_sha256')}
+                for turn in provenance['attribution']['turns']
+                if turn['start'] < b and turn['end'] > a
+            ]
         result.append(reference)
     return result
 
@@ -58,8 +67,14 @@ def bind_chapters(document, provenance):
     for finding in document["findings"]:
         finding["recording_refs"] = references(provenance, finding["start"], finding["end"])
     for chapter in document["chapters"].values():
+        if 'attribution' in provenance:
+            warning = provenance['attribution']['notice'].strip()
+            if warning not in chapter['warnings']:
+                chapter['warnings'].append(warning)
         for item in [*chapter["passages"], *chapter["coverage_omissions"]]:
             item["recording_refs"] = references(provenance, item["start"], item["end"])
+            if 'attribution' in provenance and 'passage_id' in item:
+                item['attribution'] = 'Source speaker metadata retained; names are user-confirmed mappings; diarization remains unverified.'
             if "quote_start" in item:
                 item["quote_recording_refs"] = references(
                     provenance, item["quote_start"], item["quote_end"]
@@ -124,6 +139,19 @@ def validate_provenance(raw, provenance):
         cursor = end
     if cursor != len(raw) or provenance["spans"] != expected:
         raise ValueError()
+    if 'attribution' in provenance:
+        attribution = provenance['attribution']
+        if attribution['contract'] not in (1, 2) or attribution['names_are_not_voice_evidence'] is not True:
+            raise ValueError()
+        previous = 0
+        for turn in attribution['turns']:
+            if (not previous <= turn['start'] < turn['speech_start'] <= turn['speech_end'] < turn['end'] <= len(raw)
+                    or turn['identity_evidence'] not in ('user_confirmed_mapping', 'unidentified')
+                    or turn['diarization_evidence'] != 'provider_automatic_unverified'
+                    or (turn['role'] is None) != (turn['identity_evidence'] == 'unidentified')
+                    or turn['speech_sha256'] != hashlib.sha256(raw[turn['speech_start']:turn['speech_end']].encode()).hexdigest()):
+                raise ValueError()
+            previous = turn['end']
 
 
 def validate_chapter_binding(document, provenance):
