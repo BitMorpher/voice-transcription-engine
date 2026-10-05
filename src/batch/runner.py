@@ -11,6 +11,7 @@ from ..source_provenance import author_binding, validate_provenance
 from ..cli import main as engine_main
 from ..private_output import digest
 from ..progress import CURRENT
+from ..review_reuse import ApprovedReview
 from .plan import BatchError, require
 from .storage import target, verify
 
@@ -60,10 +61,10 @@ def gate(root, item, phase, options, author_options):
         if not _verified_bundle(job, review, fingerprint, checksum,
                                 {'review_report.json', 'review_report.xlsx'}):
             continue
-        report, _ = _load_bound_report(job, review, raw, author_options.review_options,
+        report, report_hash = _load_bound_report(job, review, raw, author_options.review_options,
                                       provenance=provenance)
         if not any(finding['severity'] == 'high' for finding in report['findings']):
-            return
+            return ApprovedReview.capture(job, state, report_hash)
     raise BatchError('Review needs completed raw; chapters need intact complete review without high findings.')
 
 
@@ -73,7 +74,7 @@ def run_one(root, item, args):
     options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                    languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
     author_options = AuthorOptions(review=True, review_options=ReviewOptions(model=args.author_model))
-    gate(root, item, args.phase, options, author_options)
+    approved_review = gate(root, item, args.phase, options, author_options)
     command = ['--workflow', '--interview-manifest', str(directory / 'input/interview.json'),
                '--output-folder', str(directory / 'output'), '--resume', '--stages',
                'raw' if args.phase == 'raw' else 'raw,polish,review',
@@ -94,7 +95,8 @@ def run_one(root, item, args):
     context = reporter.context
     reporter.context = {**context, 'scope': 'interview'}
     try:
-        code = engine_main(command + ['--heartbeat-seconds', str(interval)])
+        code = engine_main(command + ['--heartbeat-seconds', str(interval)],
+                           approved_review=approved_review)
     finally:
         reporter.context = context
     require(code == 0, 'Pipeline failed; completed caches remain available for resume.')

@@ -45,6 +45,8 @@ SAFE_GUIDANCE = {
     'Cannot read batch plan metadata; check JSON schema and local source access.',
     'Local execution logging failed; check permissions and free space.',
     'Set OPENAI_API_KEY in your environment before transcribing.',
+    'Approved review changed, conflicts, or does not match this generation; '
+    'retain outputs and review the exact bundle again before drafting.',
 }
 
 

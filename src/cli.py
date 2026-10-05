@@ -122,7 +122,7 @@ def _legacy_process(source, output, transcriber, args):
     return stages
 
 
-def main(argv=None):
+def main(argv=None, *, approved_review=None):
     parser = PrivateArgumentParser(prog='voice-transcribe', color=False, allow_abbrev=False,
                                    description='Convert local media and transcribe audio using OpenAI.')
     inputs = parser.add_mutually_exclusive_group(required=True)
@@ -242,7 +242,7 @@ def main(argv=None):
             transcriber = Transcriber(media_timeout=args.media_timeout, options=options,
                                       editing_options=editing_options,
                                       provider_timeout=args.provider_timeout, provider_retries=args.provider_retries)
-            identity, stages = interview.process(transcriber=transcriber)
+            identity, stages = interview.process(transcriber=transcriber, approved_review=approved_review)
             _report(job=identity, status='complete', stages=stages)
             _report(status='summary', processed=1, failed=0)
             return 0

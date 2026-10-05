@@ -220,3 +220,6 @@ uv run --locked voice-batch run --batch private/batches/demo-001 \
   --select entry-a --phase review --send-to-openai
 uv run --locked voice-batch status --batch private/batches/demo-001
 ```
+
+
+For batch chapters, the explicit human gate now binds the exact approved review bundle used for drafting. `src/review_reuse.py` verifies and transfers that bundle byte for byte into a chapter generation before author stages; a new chapter configuration does not request a fresh review after approval. Changed/conflicting bundles stop drafting. Narrative completion/property/refusal/truncation errors emit terminal safe `completion` events, while schema/source-coverage failures emit `validation` events for the failed chunk.

@@ -306,3 +306,77 @@ def test_changed_asr_settings_gate_requires_new_raw(reviewed_batch):
     assert main(['run', '--batch', str(root), '--phase', 'review', '--send-to-openai',
                  '--audio-chunk-seconds', '60']) == 1
     assert provider.audio.transcriptions.create.call_count == calls
+
+
+def review_calls(provider):
+    return sum(call.kwargs['response_format']['json_schema']['name'] == 'source_grounded_author_review'
+               for call in provider.chat.completions.create.call_args_list)
+
+
+def test_chapters_use_exact_human_gated_bundle_without_fresh_review(reviewed_batch):
+    root, provider = reviewed_batch
+    original = next(root.rglob('review_report.json'))
+    approved_json, approved_xlsx = original.read_bytes(), original.with_suffix('.xlsx').read_bytes()
+    expected_calls = review_calls(provider)
+    respond = provider.chat.completions.create.side_effect
+    def forbid_fresh_review(**kwargs):
+        if kwargs['response_format']['json_schema']['name'] == 'source_grounded_author_review':
+            pytest.fail('Chapters must not request an unapproved review generation.')
+        return respond(**kwargs)
+    provider.chat.completions.create.side_effect = forbid_fresh_review
+    args = ['run', '--batch', str(root), '--phase', 'chapters', '--send-to-openai',
+            '--select', 'entry-a', '--human-reviewed']
+    assert main(args) == 0
+    assert review_calls(provider) == expected_calls == 1
+    reports = list(root.rglob('review_report.json'))
+    assert len(reports) == 2  # New chapter generation, same exact approved review bytes.
+    assert all(path.read_bytes() == approved_json for path in reports)
+    assert all(path.with_suffix('.xlsx').read_bytes() == approved_xlsx for path in reports)
+    chapter_manifest = next(root.rglob('chapter_drafts.json')).parent.parent / 'manifest.json'
+    state = json.loads(chapter_manifest.read_text())
+    import hashlib
+    assert state['stages']['chapters']['review_sha256'] == hashlib.sha256(approved_json).hexdigest()
+    # A second chapter style/person configuration also reuses this approved review.
+    assert main(args + ['--chapters', 'narrative', '--narrative-person', 'third']) == 0
+    assert review_calls(provider) == expected_calls
+
+
+@pytest.mark.parametrize('artifact', ['review_report.json', 'review_report.xlsx', 'provenance.json', 'manifest.json'])
+def test_approval_change_between_gate_and_execution_fails_before_requests(reviewed_batch, monkeypatch, artifact, capsys):
+    from src.batch import runner
+    root, provider = reviewed_batch
+    gate = runner.gate
+    def changed(*args, **kwargs):
+        approval = gate(*args, **kwargs)
+        path = (next(approval.job.rglob(artifact)) if artifact.startswith('review_')
+                else approval.job / artifact)
+        path.write_text('SYNTHETIC_SECRET tampered after approval')
+        return approval
+    monkeypatch.setattr(runner, 'gate', changed)
+    calls = provider.chat.completions.create.call_count
+    assert main(['run', '--batch', str(root), '--phase', 'chapters', '--send-to-openai',
+                 '--select', 'entry-a', '--human-reviewed']) == 1
+    assert provider.chat.completions.create.call_count == calls
+    assert not list(root.rglob('chapter_drafts.json'))
+    text = capsys.readouterr().out
+    assert 'Approved review changed' in text
+    assert 'SYNTHETIC_SECRET' not in text
+
+
+def test_existing_unapproved_target_review_is_never_replaced(reviewed_batch, monkeypatch):
+    from src import ordered_interview
+    root, provider = reviewed_batch
+    reuse = ordered_interview.reuse_approved_review
+    def seed_conflicting_review(approval, job, state, options, provenance, save):
+        state['stages']['author_review'] = {'status': 'failed'}
+        save()
+        return reuse(approval, job, state, options, provenance, save)
+    monkeypatch.setattr(ordered_interview, 'reuse_approved_review', seed_conflicting_review)
+    calls = provider.chat.completions.create.call_count
+    assert main(['run', '--batch', str(root), '--phase', 'chapters', '--send-to-openai',
+                 '--select', 'entry-a', '--human-reviewed']) == 1
+    assert provider.chat.completions.create.call_count == calls
+    assert not list(root.rglob('chapter_drafts.json'))
+    # The conflicting failed record is retained for inspection, never overwritten.
+    assert any(json.loads(path.read_text())['stages'].get('author_review') == {'status': 'failed'}
+               for path in root.rglob('manifest.json'))

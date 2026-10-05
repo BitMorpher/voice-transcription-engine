@@ -98,7 +98,7 @@ def test_sigterm_handler_restored():
     assert signal.getsignal(signal.SIGTERM) == before
 
 
-@pytest.mark.parametrize('timeout,retries', [(0, 2), (float('inf'), 2), (float('nan'), 2), (120, -1), (120, 6)])
+@pytest.mark.parametrize('timeout,retries', [(True, 2), (False, 2), (0, 2), (float('inf'), 2), (float('nan'), 2), (120, -1), (120, 6)])
 def test_transport_bounds(provider, timeout, retries):
     with pytest.raises(ConfigurationError):
         Transcriber(client=provider, provider_timeout=timeout, provider_retries=retries)
@@ -155,3 +155,43 @@ def test_review_per_chunk_events_and_privacy():
     assert [row['stage_status'] for row in rows] == ['running', 'complete'] * (len(rows) // 2)
     assert all(row['chunks'] == len(rows) // 2 for row in rows)
     assert 'testimony' not in stream.getvalue()
+
+
+@pytest.mark.parametrize('failure,category', [
+    ('properties', 'completion'), ('count', 'completion'), ('refused', 'completion'),
+    ('truncated', 'completion'), ('malformed', 'validation'), ('coverage', 'validation'),
+])
+def test_chapter_failures_emit_terminal_safe_chunk_event(failure, category):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from src.author_review import source_segments
+    from src.chapters import ChapterError, ChapterOptions, _narrative
+    raw = 'Synthetic private testimony.'
+    if failure == 'properties':
+        class Unreadable:
+            @property
+            def choices(self):
+                raise RuntimeError('SYNTHETIC_SECRET response property')
+        response = Unreadable()
+    elif failure == 'count':
+        response = SimpleNamespace(choices=[])
+    else:
+        body = {'chunk_index': 1, 'passages': [], 'coverage_omissions': []}
+        content = 'SYNTHETIC_SECRET malformed payload' if failure == 'malformed' else json.dumps(body)
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            finish_reason='length' if failure == 'truncated' else 'stop',
+            message=SimpleNamespace(content=content, refusal='SYNTHETIC_SECRET' if failure == 'refused' else None))])
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+    stream = io.StringIO()
+    reporter = Reporter(stream)
+    token = CURRENT.set(reporter)
+    try:
+        with pytest.raises(ChapterError):
+            _narrative(raw, source_segments(raw), [], client, ChapterOptions())
+    finally:
+        CURRENT.reset(token)
+    rows = events(stream)
+    assert [row['stage_status'] for row in rows] == ['running', 'failed']
+    assert rows[-1]['chunk'] == 1 and rows[-1]['error_category'] == category
+    assert 'SYNTHETIC_SECRET' not in stream.getvalue() and raw not in stream.getvalue()

@@ -312,12 +312,19 @@ def _narrative(raw, segments, findings, client, options):
                 incomplete = choice.finish_reason != 'stop' or bool(getattr(choice.message, 'refusal', None))
                 content = choice.message.content
         except Exception:
+            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
             raise ChapterError('Chapter provider response could not be read; no draft was saved.') from None
         if invalid_count:
+            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
             raise ChapterError('Chapter provider response has an invalid completion count; no draft was saved.')
         if incomplete:
+            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
             raise ChapterError('Chapter output was incomplete or refused; raw transcript and review report are retained.')
-        parts, missing = _validate_response(content, chunk, index, options.person, findings)
+        try:
+            parts, missing = _validate_response(content, chunk, index, options.person, findings)
+        except ChapterError:
+            emit_progress('chapters', 'failed', chunk=index, error_category='validation')
+            raise
         emit_progress('chapters', 'complete', chunk=index)
         passages.extend(parts)
         omissions.extend(missing)
