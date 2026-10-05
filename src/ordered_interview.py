@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 
 if __package__:
+    from .review_reuse import reuse_approved_review
+    from .progress import emit_progress
     from . import transcriber as asr_engine
     from .author_review import source_segments
     from .author_workflow import (
@@ -22,6 +24,8 @@ if __package__:
     from .private_output import digest, output_directory, write_private
     from .source_provenance import author_binding, validate_chapter_binding
 else:
+    from review_reuse import reuse_approved_review
+    from progress import emit_progress
     import transcriber as asr_engine
     from author_review import source_segments
     from author_workflow import (
@@ -388,7 +392,7 @@ class OrderedInterview:
                     self.job, record, raw, self.author_options.review_options, provenance=provenance
                 )
 
-    def process(self, *, transcriber):
+    def process(self, *, transcriber, approved_review=None):
         """Publish combined raw only after every part succeeds, then run author stages."""
         original_resume = self.resume
         lock = self.output / ".interview.lock"
@@ -410,20 +414,24 @@ class OrderedInterview:
                 raise PipelineError("Transcriber settings must match the interview configuration.")
             # Validate/decode ALL parts locally before ASR, including later recordings.
             for part, directory, identity in self.parts:
+                emit_progress('conversion', 'running', part=part['order'], parts=len(self.parts))
                 pipeline = Pipeline(
                     directory,
                     resume=self.resume,
                     media_timeout=self.media_timeout,
                     options=self.options,
+                    progress=self.progress,
                 )
                 pipeline.process(
                     part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
                 )
             self.preflight()
             for part, directory, identity in self.parts:
+                emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
                 self.progress("part_transcription", "running")
                 Pipeline(
-                    directory, resume=True, media_timeout=self.media_timeout, options=self.options
+                    directory, resume=True, media_timeout=self.media_timeout, options=self.options,
+                    progress=self.progress
                 ).process(
                     part["path"],
                     transcriber=transcriber,
@@ -441,6 +449,12 @@ class OrderedInterview:
             def save():
                 Pipeline._save(self.job / "manifest.json", state)
 
+            if approved_review is not None:
+                try:
+                    reuse_approved_review(approved_review, self.job, state, self.author_options,
+                                          provenance, save)
+                except AuthorWorkflowError as error:
+                    raise PipelineError(str(error)) from None
             if self.enhance:
                 raw_hash = state["stages"]["transcription"]["sha256"]
                 pipeline = Pipeline(
@@ -451,7 +465,9 @@ class OrderedInterview:
                     self.job, state, "enhancement", "derivative_readability.txt", config, raw_hash
                 ):
                     summary["enhancement"] = "skipped"
+                    self.progress("enhancement", "skipped")
                 else:
+                    self.progress("enhancement", "running")
                     Pipeline._write_derivative(self.job, transcriber, raw_hash)
                     state["stages"]["enhancement"] = {
                         "status": "complete",
@@ -461,6 +477,7 @@ class OrderedInterview:
                     }
                     save()
                     summary["enhancement"] = "complete"
+                    self.progress("enhancement", "complete")
             try:
                 run_author_stages(
                     self.job,

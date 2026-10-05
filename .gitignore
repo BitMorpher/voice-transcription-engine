@@ -56,3 +56,11 @@ chapter_narrative*.txt
 provenance.json
 part_boundaries.txt
 interview_manifest*.json
+
+# Private batch configuration, immutable staging ledgers and execution logs
+batch-plan*.json
+batch-plan.sha256
+staging.json
+staging.sha256
+summary-*.json
+execution-*.jsonl

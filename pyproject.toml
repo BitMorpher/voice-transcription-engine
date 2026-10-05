@@ -22,7 +22,8 @@ dependencies = [
 Repository = "https://github.com/BitMorpher/voice-transcription-engine"
 
 [project.scripts]
-voice-transcribe = "cli:main"
+voice-transcribe = "voice_transcription_engine.cli:entrypoint"
+voice-batch = "voice_transcription_engine.batch.cli:main"
 
 [project.optional-dependencies]
 notebook = [
@@ -36,16 +37,11 @@ notebook = [
 dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17"]
 
 [tool.setuptools]
-py-modules = [
-    "cli", "transcriber", "media", "pipeline", "private_output", "model_config",
-    "text_editing", "logger", "utils", "author_review", "author_workflow",
-    "chapters", "review_export", "ordered_interview", "source_provenance",
-]
-packages = ["prompts"]
-package-dir = {"" = "src"}
+packages = ["voice_transcription_engine", "voice_transcription_engine.prompts", "voice_transcription_engine.batch"]
+package-dir = {"voice_transcription_engine" = "src"}
 
 [tool.setuptools.package-data]
-prompts = ["*.txt"]
+"voice_transcription_engine.prompts" = ["*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
