@@ -73,3 +73,19 @@ A failed part leaves completed parts intact for `--resume`. No combined intervie
 Within the same generation, adding optional stages can reuse raw text. Selected chapter settings and the high-priority override are included in generation identity. This means changing chapter selection/override may write a new combined/review generation while reusing part ASR. Tampered, deleted complete artifacts, incompatible cache manifests and unexpected outputs fail closed; use a fresh output directory to recover without overwriting anything. No automatic cache migration or cleanup occurs. Interrupted ASR requests are retried at the part level (completed API chunks within a failed part are not checkpointed), so retries may incur charges.
 
 One output-root lock serializes multipart invocations, and existing per-part locks remain in force. A stale lock must be inspected locally before manual removal. Fresh outputs use owner-only permissions and repository-local outputs are restricted to ignored `private/` or `data/` trees. No real interview data or paid API calls are needed for the synthetic test suite.
+
+
+## Batch selection and execution monitoring
+
+For serial independent interviews, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands now emit flushed safe stage/part/chunk events and elapsed idle heartbeats, with exclusive local JSONL logs. Source paths, user IDs, hints and transcript/provider text are excluded. Use the engine's matching source/settings with `--resume`; the batch coordinator adds resume automatically. No failed-stage API chunk checkpoint is claimed.
+
+```bash
+uv run --locked voice-transcribe --workflow \
+  --interview-manifest private/input/interview_manifest.json --stages raw \
+  --output-folder private/ordered-output --resume \
+  --heartbeat-seconds 30 --provider-timeout 120 --provider-retries 2
+uv run --locked voice-batch verify --batch private/batches/demo-001
+uv run --locked voice-batch run --batch private/batches/demo-001 \
+  --select entry-a --phase review --send-to-openai
+uv run --locked voice-batch status --batch private/batches/demo-001
+```

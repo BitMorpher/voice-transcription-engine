@@ -23,3 +23,18 @@ All recordings and provider responses used for validation were synthetic. Tests 
 Raw ASR is automated and unverified and still needs listening. Recording references are local Unicode text offsets and segments, not audio timestamps; no continuous timeline across pauses is fabricated. Review coverage is model acknowledgement, not proof of exhaustive detection. Editorial wording contracts do not verify truth, ASR accuracy or publication suitability. Workbook decisions are not imported as approval.
 
 Temporary environments, test/build logs, wheel smoke script and generated distributions remain ignored under `private/` or `dist/`. There are no remaining implementation blockers. User/provider/model accuracy testing on actual interviews is outside this offline validation.
+
+
+## Subsequent portable orchestration
+
+This document records the historical feature validation above. Current installed commands, serial selection/staging, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
+
+```bash
+uv lock --check
+uv run --locked pytest -q
+uv run --locked --extra notebook pytest -q
+uv run --locked ruff check .
+uv build
+uv run --locked voice-transcribe --help
+uv run --locked voice-batch --help
+```

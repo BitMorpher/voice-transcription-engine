@@ -11,12 +11,14 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 
 if __package__:
+    from .progress import emit_progress
     from . import prompts
     from .author_review import CATEGORIES, source_segments
     from .model_config import EDITING_MODELS, ModelConfigurationError
     from .text_editing import split_text, words
     from .transcriber import _suppress_provider_logging
 else:
+    from progress import emit_progress
     import prompts
     from author_review import CATEGORIES, source_segments
     from model_config import EDITING_MODELS, ModelConfigurationError
@@ -283,6 +285,7 @@ def _narrative(raw, segments, findings, client, options):
     passages, omissions = [], []
     for index, chunk in enumerate(_chunks(_units(raw, segments, options.chunk_bytes),
                                          options.chunk_bytes), start=1):
+        emit_progress('chapters', 'running', chunk=index)
         try:
             # Match the existing client path; never expose provider payloads in exceptions.
             _suppress_provider_logging()
@@ -312,6 +315,7 @@ def _narrative(raw, segments, findings, client, options):
         if incomplete:
             raise ChapterError('Chapter output was incomplete or refused; raw transcript and review report are retained.')
         parts, missing = _validate_response(content, chunk, index, options.person, findings)
+        emit_progress('chapters', 'complete', chunk=index)
         passages.extend(parts)
         omissions.extend(missing)
     return passages, omissions
