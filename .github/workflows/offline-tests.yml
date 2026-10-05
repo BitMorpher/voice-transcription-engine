@@ -1,0 +1,34 @@
+name: Offline synthetic validation
+on:
+  pull_request:
+  push:
+    branches: [main, feature/portable-batch-progress]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.12.23'
+      - name: Install FFmpeg
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          else
+            brew install ffmpeg
+          fi
+      - run: uv sync --locked --extra notebook
+      - run: uv lock --check
+      - run: uv run --locked --extra notebook pytest -q
+      - run: uv run --locked ruff check .
+      - run: uv build
+      - run: uv run --locked voice-transcribe --help
+      - run: uv run --locked voice-batch --help

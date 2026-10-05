@@ -15,6 +15,7 @@ From the checkout root:
 uv python install 3.14.8
 uv sync --locked
 uv run --locked voice-transcribe --help
+uv run --locked voice-batch --help
 ```
 
 `uv sync --locked` creates the ignored `.venv`, installs the editable CLI, runtime dependencies and the default `dev` group using committed `uv.lock`. The Python pin selects the standard CPython runtime, not a free-threaded build. Setup may download Python and packages; it never installs FFmpeg or configures credentials. Once synced, use `uv run --locked` for commands without activating the environment. For a runtime-only installation, use `uv sync --locked --no-dev` and `uv run --locked --no-dev voice-transcribe --help` (plain `uv run` would reinstall the default development group).
@@ -60,7 +61,7 @@ uv run --locked voice-transcribe --pipeline --input-folder private/input --outpu
 uv run --locked voice-transcribe --pipeline --input-folder private/input --output-folder private/output --resume
 ```
 
-Without installing the CLI, run the same options with either `uv run --locked python src/cli.py` or `uv run --locked python -m src.cli` from the checkout.
+Both installed commands work outside the checkout. From the checkout, `uv run --locked python -m src.cli` remains a development convenience; normal usage is `voice-transcribe` or `voice-batch`.
 
 Videos: `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.m4v`. Audio: `.wav`, `.mp3`, `.m4a`. Extensions are case-insensitive; FFprobe checks for an audio stream and FFmpeg must be able to decode the container/codecs. Files without audio or corrupt media fail clearly. Unsupported files in folders are skipped; subfolders are not traversed. Unsupported single files and empty input folders fail.
 
@@ -85,6 +86,25 @@ uv run --locked voice-transcribe --workflow \
   --interview-manifest private/input/interview_manifest.json \
   --stages raw,polish,review --chapters both --output-folder private/ordered-output
 ```
+
+## Serial batches, live progress and local execution logs
+
+Use `voice-batch` for selected independent interviews, each with an ordered manifest. Plans remain private user inputs. Inventory/preflight only read JSON and source metadata; preparation requires explicit local-copy approval, and processing requires explicit provider-call approval. See the [complete batch guide](docs/batch-orchestration.md) for synthetic plan examples, blocked entries, selections/exclusions, staging checks, raw/review/chapter gates, resume and troubleshooting.
+
+```bash
+uv run --locked voice-batch inventory --plan private/config/batch-plan.json
+uv run --locked voice-batch check --plan private/config/batch-plan.json --select entry-a
+uv run --locked voice-batch prepare --plan private/config/batch-plan.json \
+  --select entry-a --batch private/batches/demo-001 --copy-local-files
+uv run --locked voice-batch run --batch private/batches/demo-001 --phase raw --send-to-openai
+uv run --locked voice-batch run --batch private/batches/demo-001 --phase review --send-to-openai
+# After separately reviewing recordings and reports:
+uv run --locked voice-batch run --batch private/batches/demo-001 \
+  --phase chapters --select entry-a --human-reviewed --send-to-openai --chapters both
+uv run --locked voice-batch status --batch private/batches/demo-001
+```
+
+Installed commands flush safe JSON events immediately, including stage/part/chunk counts, elapsed time, verified cache reuse and idle heartbeats. They write exclusive private `execution-<run>.jsonl` logs under output/batch `execution-logs/`; choose `--log-directory` and `--heartbeat-seconds` when needed. Events never serialize private source paths, IDs, transcript text, hints, credentials or arbitrary errors. Heartbeats indicate coordinator liveness, not provider completion; no overall percent is invented. `--provider-timeout 120 --provider-retries 2` preserves the existing SDK defaults; retries can repeat charges and are not a whole-run deadline. Keyboard/SIGTERM interruption retains completed artifacts and releases locks; batch resume is automatic and direct engine resume uses `--resume`.
 
 ## Author review and chapter comparison
 
@@ -130,12 +150,12 @@ The default output directory is ignored `private/output`. In a Git checkout, the
 - Text is published atomically only after every chunk succeeds. Any failed or malformed chunk fails the whole transcription stage; there is no full-file fallback, error text in the transcript, or silent successful partial transcript.
 - The original audio is streamed into exact PCM frame chunks capped at both 20 MiB and five minutes by default, below the documented 25 MB upload limit. The duration cap is an application choice, configurable with `--audio-chunk-seconds` from 1 to 600 seconds, rather than a claim about the model's duration limit. Every frame, including the final short tail, is processed in order. Fixed boundaries can split speech mid-sentence and affect recognition quality; check the transcript against the recording.
 - A private lock prevents concurrent processing of the same job. If a process is killed, verify that it has stopped before manually deleting its job's `.lock`. A crash between publishing an artifact and recording its checksum produces a safe conflict; use a fresh output directory.
-- JSON progress reports show item indices, opaque IDs, stage statuses, and sanitized guidance. All parser errors use fixed diagnostics and declared option names, never supplied values; usage always identifies the CLI as `voice-transcribe`. Recognized flags with accidental `=value`, ambiguous/unknown options, invalid numbers and missing/conflicting options receive safe guidance and `--help`. Errors report a nonzero exit status and processing continues for other files. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
+- Installed JSON progress reports show item indices, execution IDs, stage/part/chunk statuses, elapsed time and fixed sanitized guidance; private durable logs and idle heartbeats use the same allowlist. All parser errors use fixed diagnostics and declared option names, never supplied values; usage always identifies the CLI as `voice-transcribe`. Recognized flags with accidental `=value`, ambiguous/unknown options, invalid numbers and missing/conflicting options receive safe guidance and `--help`. Errors report a nonzero exit status and processing continues for other files. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
 
 ## Existing audio folder workflow
 
 ```bash
-uv run --locked python src/cli.py --input_folder private/input --output_folder private/audio-transcripts
+uv run --locked voice-transcribe --input_folder private/input --output_folder private/audio-transcripts
 ```
 
 This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` names. Video files remain skipped unless you select pipeline mode. Existing output files, including same-stem collisions, fail rather than overwrite. Resume manifests apply only to pipeline mode.
@@ -207,4 +227,4 @@ Tests generate synthetic tones and color video in temporary folders, mock all pr
 
 Builds produce ignored `dist/` wheel and source archives using the pinned backend. The source archive includes the lock, Python pin and complete offline tests. Source archives may include operating-system ownership metadata; keep them private until inspected. Review archive contents before sharing; no generated media, transcripts, keys, local environment or personal paths belong in a distribution. A clean environment can be checked without disturbing `.venv` using `UV_PROJECT_ENVIRONMENT=private/clean-venv uv sync --locked`. The lock covers declared dependencies across supported Python versions; the validated runtime is CPython 3.14.8 on macOS arm64, not a full operating-system/Python matrix.
 
-Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Author stages use `src/author_workflow.py`, `src/author_review.py`, `src/review_export.py`, `src/chapters.py`, and packaged versioned prompts; see the [architecture table](docs/author-workflow.md#implementation-and-verification). Packaging exposes the existing flat modules through `voice-transcribe`; this feature does not migrate the legacy project to a new package layout.
+Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Author stages use `src/author_workflow.py`, `src/author_review.py`, `src/review_export.py`, `src/chapters.py`, and packaged versioned prompts; see the [architecture table](docs/author-workflow.md#implementation-and-verification). The wheel packages these source modules under `voice_transcription_engine`; installed entrypoints use relative imports and packaged prompts. `src/batch/` separates plan validation, staging/integrity, phase gates and CLI orchestration; `src/progress.py` handles allowlisted execution logs and idle heartbeats.

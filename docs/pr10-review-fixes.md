@@ -24,3 +24,18 @@ A launcher regression exposed an environment-specific macOS issue: this task's e
 - Ruff, whitespace and lock checks, runtime dependency compatibility, pinned wheel/source-distribution builds, installed-wheel synthetic workflow/resume/reorder, source/distribution credential and private-artifact scans passed. All 744 lock archive URLs remain public PyPI URLs; notebook outputs remain clear.
 
 These are offline contract checks, not ASR accuracy or publication-suitability validation. Test/build logs and synthetic smoke scripts remain ignored under `private/`; generated distributions remain ignored under `dist/`. The reproduction log is retained separately from passing validation logs. No review comments or thread resolutions are posted by these fixes.
+
+
+## Subsequent portable orchestration
+
+This document records the historical feature validation above. Current installed commands, serial selection/staging, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
+
+```bash
+uv lock --check
+uv run --locked pytest -q
+uv run --locked --extra notebook pytest -q
+uv run --locked ruff check .
+uv build
+uv run --locked voice-transcribe --help
+uv run --locked voice-batch --help
+```

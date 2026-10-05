@@ -10,11 +10,13 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 
 if __package__:
+    from .progress import emit_progress
     from . import prompts
     from .model_config import EDITING_MODELS
     from .text_editing import split_text
     from .transcriber import _suppress_provider_logging
 else:
+    from progress import emit_progress
     import prompts
     from model_config import EDITING_MODELS
     from text_editing import split_text
@@ -297,7 +299,9 @@ def review_transcript(raw, client, options=None):
     prompt = _prompt()
     raw_hash = _hash(raw)
     chunks, findings = [], {}
-    for chunk in _chunks(raw, options.chunk_bytes):
+    requests = list(_chunks(raw, options.chunk_bytes))
+    for chunk in requests:
+        emit_progress('author_review', 'running', chunk=chunk['chunk_index'], chunks=len(requests))
         text = raw[chunk['context_start']:chunk['context_end']]
         payload = {'chunk_index': chunk['chunk_index'], 'text': text,
                    'core_start': chunk['start'] - chunk['context_start'],
@@ -334,6 +338,7 @@ def review_transcript(raw, client, options=None):
         except Exception:
             chunks.append({**chunk, 'status': 'failed',
                            'error': 'Author-review provider request failed; check access and retry.'})
+        emit_progress('author_review', chunks[-1]['status'], chunk=chunk['chunk_index'], chunks=len(requests))
     completed = sum(chunk['status'] == 'complete' for chunk in chunks)
     status = 'complete' if completed == len(chunks) else ('incomplete' if completed else 'failed')
     output_findings = []

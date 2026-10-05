@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 if __package__:
+    from .progress import emit_progress
     from . import transcriber as asr_engine
     from .author_review import source_segments
     from .author_workflow import (
@@ -22,6 +23,7 @@ if __package__:
     from .private_output import digest, output_directory, write_private
     from .source_provenance import author_binding, validate_chapter_binding
 else:
+    from progress import emit_progress
     import transcriber as asr_engine
     from author_review import source_segments
     from author_workflow import (
@@ -410,20 +412,24 @@ class OrderedInterview:
                 raise PipelineError("Transcriber settings must match the interview configuration.")
             # Validate/decode ALL parts locally before ASR, including later recordings.
             for part, directory, identity in self.parts:
+                emit_progress('conversion', 'running', part=part['order'], parts=len(self.parts))
                 pipeline = Pipeline(
                     directory,
                     resume=self.resume,
                     media_timeout=self.media_timeout,
                     options=self.options,
+                    progress=self.progress,
                 )
                 pipeline.process(
                     part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
                 )
             self.preflight()
             for part, directory, identity in self.parts:
+                emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
                 self.progress("part_transcription", "running")
                 Pipeline(
-                    directory, resume=True, media_timeout=self.media_timeout, options=self.options
+                    directory, resume=True, media_timeout=self.media_timeout, options=self.options,
+                    progress=self.progress
                 ).process(
                     part["path"],
                     transcriber=transcriber,
@@ -451,7 +457,9 @@ class OrderedInterview:
                     self.job, state, "enhancement", "derivative_readability.txt", config, raw_hash
                 ):
                     summary["enhancement"] = "skipped"
+                    self.progress("enhancement", "skipped")
                 else:
+                    self.progress("enhancement", "running")
                     Pipeline._write_derivative(self.job, transcriber, raw_hash)
                     state["stages"]["enhancement"] = {
                         "status": "complete",
@@ -461,6 +469,7 @@ class OrderedInterview:
                     }
                     save()
                     summary["enhancement"] = "complete"
+                    self.progress("enhancement", "complete")
             try:
                 run_author_stages(
                     self.job,

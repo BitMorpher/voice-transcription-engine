@@ -26,3 +26,18 @@ See [the workflow guide](author-workflow.md) for all options, examples, rubric, 
 Model responses are synthetic and mocked. This validates implemented contracts, not ASR accuracy, issue-detection quality, factual judgment, or suitability of actual testimony for publication. Coverage confirms validated model acknowledgement of every source core, not exhaustive issue detection. Raw ASR still requires a recording check. Narrative output preserves source wording and arranges testimony; third-person mode frames exact testimony rather than freely rewriting a story. Workbook decisions are a human record and are not imported as approval by the CLI.
 
 Runtime environments, synthetic examples, detailed test/build/audit logs and distribution archives remain ignored under `private/` or `dist/`. Source archives retain ordinary local tar ownership metadata and should be inspected before any later sharing.
+
+
+## Subsequent portable orchestration
+
+This document records the historical feature validation above. Current installed commands, serial selection/staging, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
+
+```bash
+uv lock --check
+uv run --locked pytest -q
+uv run --locked --extra notebook pytest -q
+uv run --locked ruff check .
+uv build
+uv run --locked voice-transcribe --help
+uv run --locked voice-batch --help
+```
