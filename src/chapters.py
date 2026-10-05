@@ -411,7 +411,11 @@ def render_chapter(document, style):
     lines.extend(chapter['warnings'])
     lines.append('')
     if style == 'interview':
-        lines.extend(['Testimony excerpts in source order. Speaker roles are unassigned.',
+        attribution = document.get('recording_provenance', {}).get('attribution', {})
+        banner = ('Testimony excerpts in source order. Names and roles appear only for user-confirmed mappings; '
+                  'unmapped speakers remain unidentified.' if attribution.get('contract') == 2
+                  else 'Testimony excerpts in source order. Speaker roles are unassigned.')
+        lines.extend([banner,
                       'No interviewer questions have been generated.', ''])
     else:
         lines.extend(['Conservative narrative arrangement in original source voice.',

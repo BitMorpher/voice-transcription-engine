@@ -37,12 +37,22 @@ else:
     from text_editing import words
     from transcriber import TranscriptionError, _suppress_provider_logging
 
+ATTRIBUTION_CONTRACT = 2
+MANIFEST_VERSION = 'attributed-interview-v2'
 DIARIZATION_MODEL = 'gpt-4o-transcribe-diarize'
 NOTICE = ('ATTRIBUTED DERIVATIVE — HUMAN RECORDING REVIEW REQUIRED.\n'
           'Labels and timestamps are metadata, not spoken words. Diarization is automatic; '
           'names are user-confirmed mappings, never inferred roles. Unmapped voices remain '
           'unidentified. Request labels may reset; overlap and unclear speech need listening.\n')
 SAFE_CACHE = 'Attributed cache/output is changed, unverified, or conflicts; use a new output folder. No artifact was overwritten.'
+
+
+class AttributionError(TranscriptionError):
+    """Safe failure retaining completed and failed attributed stage statuses."""
+
+    def __init__(self, message, *, stages):
+        super().__init__(message)
+        self.stages = dict(stages)
 
 
 @dataclass(frozen=True)
@@ -81,7 +91,7 @@ class InterviewOptions:
 
     @property
     def fingerprint(self):
-        return _fingerprint({'contract': 1, 'interviewer': self.interviewer,
+        return _fingerprint({'contract': ATTRIBUTION_CONTRACT, 'interviewer': self.interviewer,
                              'interviewee': self.interviewee, 'model': self.model,
                              'mapping': sorted(self.speaker_map)})
 
@@ -317,7 +327,7 @@ class AttributedInterview:
             spans.append({'kind': 'recording', 'part_id': part_id, 'order': part['order'],
                           'start': start, 'end': cursor})
             parts.append({'id': part_id, 'order': part['order'], 'path': 'Local recording (opaque identity)',
-                          'source_sha256': part['source_sha256'], 'raw_transcript': 'attributed/transcription.txt',
+                          'source_sha256': part['source_sha256'], 'raw_transcript': (self.job / f'{part_id}_transcription.txt').relative_to(self.output.parent).as_posix(),
                           'raw_sha256': hashlib.sha256(raw_part.encode()).hexdigest(),
                           'original_raw_sha256': part['original_raw_sha256'],
                           'provider_payload_sha256': _fingerprint(payload),
@@ -332,7 +342,8 @@ class AttributedInterview:
                       'recording_time': 'Part-local audio seconds only; no global timeline across recordings.',
                       'separator': '\n\n', 'parts': parts, 'spans': spans,
                       'raw_sha256': hashlib.sha256(raw.encode()).hexdigest(),
-                      'attribution': {'contract': 1, 'notice': NOTICE, 'model': self.options.model,
+                      'attribution': {'contract': ATTRIBUTION_CONTRACT,
+                                      'part_artifact_reference_base': 'output_directory', 'notice': NOTICE, 'model': self.options.model,
                                       'turns': turns, 'names_are_not_voice_evidence': True}}
         return raw, provenance, '\n\n'.join(provider_text)
 
@@ -374,7 +385,11 @@ class AttributedInterview:
                 validate_chapter_binding(_read_json(path), provenance)
 
     def process(self, transcriber):
-        summary = {}
+        summary = {'attribution': 'pending'}
+        active_stage = 'attribution'
+        raw_names = {'transcription.txt', 'provenance.json', 'diarization_transcription.txt',
+                     'attribution_notice.txt',
+                     *(f'part-{part["order"]:06d}_transcription.txt' for part in self.inputs)}
         lock = self.output / '.attribution.lock'
         try:
             output_directory(self.job.parent)
@@ -382,7 +397,8 @@ class AttributedInterview:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             os.close(fd)
         except FileExistsError:
-            raise TranscriptionError('Attributed output is locked; wait for the running process before retrying.') from None
+            raise AttributionError('Attributed output is locked; wait for the running process before retrying.',
+                                   stages={'attribution': 'failed'}) from None
         reporter = CURRENT.get()
         previous_context = reporter.context if reporter is not None else None
         if reporter is not None:
@@ -398,14 +414,14 @@ class AttributedInterview:
                 if not self.resume or self.job.is_symlink():
                     raise ValueError()
                 state = _read_json(self.job / 'manifest.json')
-                if state['version'] != 'attributed-interview-v1' or state['binding_sha256'] != binding:
+                if state['version'] != MANIFEST_VERSION or state['binding_sha256'] != binding:
                     raise ValueError()
                 for name, expected in state['raw_artifacts'].items():
-                    if name not in {'transcription.txt', 'provenance.json', 'diarization_transcription.txt', 'attribution_notice.txt'}:
+                    if name not in raw_names:
                         raise ValueError()
                     if (self.job / name).is_symlink() or digest(self.job / name) != expected:
                         raise ValueError()
-                if set(state['raw_artifacts']) != {'transcription.txt', 'provenance.json', 'diarization_transcription.txt', 'attribution_notice.txt'}:
+                if set(state['raw_artifacts']) != raw_names:
                     raise ValueError()
                 self._preflight_derivatives(state, transcriber)
             # Validate ALL existing caches before the first paid request.
@@ -422,8 +438,10 @@ class AttributedInterview:
             self._sources_unchanged()
             if state is None:
                 files = {'transcription.txt': raw, 'provenance.json': _json(provenance),
-                         'diarization_transcription.txt': provider_text, 'attribution_notice.txt': NOTICE}
-                state = {'version': 'attributed-interview-v1', 'binding_sha256': binding,
+                         'diarization_transcription.txt': provider_text, 'attribution_notice.txt': NOTICE,
+                         **{f'{part["id"]}_transcription.txt': raw[part['start']:part['end']]
+                            for part in provenance['parts']}}
+                state = {'version': MANIFEST_VERSION, 'binding_sha256': binding,
                          'human_review_required': True, 'raw_artifacts': {
                              name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()},
                          'stages': {'transcription': {'status': 'complete', 'sha256': provenance['raw_sha256']}}}
@@ -433,6 +451,8 @@ class AttributedInterview:
                 if (_read_json(self.job / 'provenance.json') != provenance
                         or (self.job / 'transcription.txt').read_bytes() != raw.encode()
                         or (self.job / 'diarization_transcription.txt').read_bytes() != provider_text.encode()
+                        or any((self.job / f'{part["id"]}_transcription.txt').read_bytes()
+                               != raw[part['start']:part['end']].encode() for part in provenance['parts'])
                         or state['stages']['transcription']['sha256'] != provenance['raw_sha256']):
                     raise ValueError()
                 summary['attribution'] = 'skipped'
@@ -440,6 +460,8 @@ class AttributedInterview:
             def save():
                 write_private(self.job / 'manifest.json', _json(state), replace=True)
             if self.enhance:
+                active_stage = 'enhancement'
+                summary['enhancement'] = 'pending'
                 config = _fingerprint({'contract': 1, 'provenance': provenance,
                                        'editing': transcriber.editing_options.fingerprint})
                 target = self.job / 'derivative_readability.txt'
@@ -465,18 +487,21 @@ class AttributedInterview:
                     save()
                     summary['enhancement'] = 'complete'
                 self.progress('enhancement', summary['enhancement'])
+            active_stage = None
             if self.author_options is not None:
                 run_author_stages(self.job, state, transcriber, self.author_options,
                                   resume=self.resume, save=save, summary=summary,
                                   progress=self.progress, provenance=provenance)
             self._sources_unchanged()
             return summary
-        except ModelConfigurationError as error:
-            raise TranscriptionError(str(error)) from None
+        except (ModelConfigurationError, TranscriptionError, AuthorWorkflowError) as error:
+            if active_stage is not None and summary.get(active_stage) == 'pending':
+                summary[active_stage] = 'failed'
+            raise AttributionError(str(error), stages=summary) from None
         except (ValueError, KeyError, TypeError, OSError, AttributeError):
-            raise TranscriptionError(SAFE_CACHE) from None
-        except AuthorWorkflowError as error:
-            raise TranscriptionError(str(error)) from None
+            if active_stage is not None and summary.get(active_stage) == 'pending':
+                summary[active_stage] = 'failed'
+            raise AttributionError(SAFE_CACHE, stages=summary) from None
         finally:
             lock.unlink()
             if reporter is not None:

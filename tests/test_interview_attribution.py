@@ -1,6 +1,8 @@
 """Synthetic turn/mapping, independent-family, resume and privacy contracts."""
 
+import hashlib
 import json
+import shutil
 import os
 import wave
 from types import SimpleNamespace
@@ -17,7 +19,8 @@ from src.interview_attribution import (
     AttributedInterview, InterviewOptions, DIARIZATION_MODEL, diarization_configuration,
     diarize, input_record,
 )
-from src.model_config import TranscriptionOptions
+from src.model_config import TranscriptionOptions, EditingOptions, _fingerprint
+from src.ordered_interview import OrderedInterview
 from src.pipeline import Pipeline, PipelineError
 from src.source_provenance import validate_provenance, validate_binding, validate_chapter_binding
 from src.transcriber import Transcriber, TranscriptionError
@@ -86,6 +89,7 @@ def test_additive_all_stages_and_resume(monkeypatch, synthetic_media, tmp_path, 
     assert 'Synthetic Guest' not in raw
     provenance = json.loads((family / 'provenance.json').read_text())
     validate_provenance(raw, provenance)
+    assert_part_artifacts(output, family, provenance)
     turns = provenance['attribution']['turns']
     assert turns[0]['role'] == 'interviewer' and turns[1]['role'] is None
     assert turns[0]['overlap_detected'] and turns[1]['overlap_detected']
@@ -93,10 +97,15 @@ def test_additive_all_stages_and_resume(monkeypatch, synthetic_media, tmp_path, 
     validate_binding(report, provenance)
     book = load_workbook(artifact(family, 'author_review', 'review_report.xlsx'))
     assert book['Speaker turns'].cell(2, 7).value == 'user_confirmed_mapping'
+    assert book['Recording parts'].cell(2, 5).value == provenance['parts'][0]['raw_transcript']
     chapters = json.loads(artifact(family, 'chapters', 'chapter_drafts.json').read_text())
     validate_chapter_binding(chapters, provenance)
     for style in ('interview', 'narrative'):
         assert 'identity evidence: unidentified' in artifact(family, 'chapters', f'chapter_{style}.txt').read_text()
+    chapter_text = artifact(family, 'chapters', 'chapter_interview.txt').read_text()
+    assert 'Names and roles appear only for user-confirmed mappings' in chapter_text
+    assert 'Speaker roles are unassigned.' not in chapter_text
+    assert 'Speaker roles are unassigned.' in artifact(original, 'chapters', 'chapter_interview.txt').read_text()
     edited = (family / 'derivative_readability.txt').read_text()
     assert 'unidentified' in edited and 'A question?' in edited
     calls = interview_provider.audio.transcriptions.create.call_count, interview_provider.chat.completions.create.call_count
@@ -115,14 +124,14 @@ def test_additive_all_stages_and_resume(monkeypatch, synthetic_media, tmp_path, 
             assert path.stat().st_mode & 0o077 == 0
 
 
-@pytest.mark.parametrize('change', ['raw', 'cache', 'polish', 'review', 'xlsx', 'chapter'])
+@pytest.mark.parametrize('change', ['raw', 'part', 'cache', 'polish', 'review', 'xlsx', 'chapter'])
 def test_tamper_independent_resume(monkeypatch, synthetic_media, tmp_path, interview_provider, change):
     source, output = synthetic_media(), tmp_path / 'out'
     monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_provider, **kw))
     argv = args(source, output, '--chapters', 'both')
     assert main(argv) == 0
     family = next(path.parent for path in (output / 'attributed').rglob('transcription.txt'))
-    targets = {'raw': family / 'transcription.txt', 'cache': next((output / 'attributed').rglob('provider_responses.json')),
+    targets = {'raw': family / 'transcription.txt', 'part': family / 'part-000001_transcription.txt', 'cache': next((output / 'attributed').rglob('provider_responses.json')),
                'polish': family / 'derivative_readability.txt', 'review': artifact(family, 'author_review', 'review_report.json'),
                'xlsx': artifact(family, 'author_review', 'review_report.xlsx'), 'chapter': artifact(family, 'chapters', 'chapter_interview.txt')}
     target = targets[change]
@@ -305,6 +314,10 @@ def test_ordered_cli_families_keep_part_provenance_and_stage_selection(monkeypat
     family = next(path.parent for path in (output / 'attributed').rglob('transcription.txt'))
     provenance = json.loads((family / 'provenance.json').read_text())
     validate_provenance((family / 'transcription.txt').read_text(), provenance)
+    assert_part_artifacts(output, family, provenance)
+    book = load_workbook(artifact(family, 'author_review', 'review_report.xlsx'))
+    assert [book['Recording parts'].cell(row, 5).value for row in (2, 3)] == [
+        part['raw_transcript'] for part in provenance['parts']]
     roles = [t['role'] for t in provenance['attribution']['turns']]
     assert roles == ['interviewer', None, None, None, 'interviewee', None]
     assert len(list(output.rglob('review_report.json'))) == 2
@@ -426,3 +439,209 @@ def test_identical_content_files_get_distinct_output_families(monkeypatch, synth
 def test_full_text_comparison_preserves_word_boundaries(full, segment, expected):
     from src.interview_attribution import _complete_turn_text
     assert _complete_turn_text({'text': full, 'segments': [dict(speaker='A', text=segment)]}) == expected
+
+
+def assert_part_artifacts(output, family, provenance):
+    raw = (family / 'transcription.txt').read_bytes().decode('utf-8')
+    assert provenance['attribution']['contract'] == 2
+    assert provenance['attribution']['part_artifact_reference_base'] == 'output_directory'
+    assert state(family)['version'] == 'attributed-interview-v2'
+    for part in provenance['parts']:
+        path = output / part['raw_transcript']
+        assert path.parent == family
+        assert path.read_bytes() == raw[part['start']:part['end']].encode('utf-8')
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == part['raw_sha256']
+        assert state(family)['raw_artifacts'][path.name] == part['raw_sha256']
+
+
+@pytest.mark.parametrize('change', ['deleted', 'symlink', 'forged_checksum', 'unexpected_path', 'legacy_manifest'])
+def test_part_contract_resume_rejects_before_provider(monkeypatch, synthetic_media, tmp_path, interview_provider, change):
+    output = tmp_path / 'out'
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_provider, **kw))
+    argv = args(synthetic_media(), output, '--stages', 'raw')
+    assert main(argv) == 0
+    family = next(path.parent for path in (output / 'attributed').rglob('transcription.txt'))
+    part = family / 'part-000001_transcription.txt'
+    manifest = state(family)
+    if change == 'deleted':
+        part.unlink()
+    elif change == 'symlink':
+        part.unlink()
+        part.symlink_to(family / 'transcription.txt')
+    elif change == 'forged_checksum':
+        part.write_bytes(b'forged part')
+        manifest['raw_artifacts'][part.name] = hashlib.sha256(part.read_bytes()).hexdigest()
+    elif change == 'unexpected_path':
+        manifest['raw_artifacts']['../outside.txt'] = manifest['raw_artifacts'].pop(part.name)
+    else:
+        manifest['version'] = 'attributed-interview-v1'
+    (family / 'manifest.json').write_text(json.dumps(manifest))
+    before = (family / 'manifest.json').read_bytes()
+    calls = interview_provider.audio.transcriptions.create.call_count
+    assert main([*argv, '--resume']) == 1
+    assert interview_provider.audio.transcriptions.create.call_count == calls
+    assert (family / 'manifest.json').read_bytes() == before
+
+
+def test_v1_family_remains_untouched_while_v2_reuses_cache(monkeypatch, synthetic_media, tmp_path, interview_provider):
+    output = tmp_path / 'out'
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_provider, **kw))
+    argv = args(synthetic_media(), output, '--stages', 'raw,review')
+    assert main(argv) == 0
+    current = next(path.parent for path in (output / 'attributed').rglob('transcription.txt'))
+    old_fingerprint = _fingerprint({'contract': 1, 'interviewer': 'Synthetic Interviewer',
+        'interviewee': 'Synthetic Guest', 'model': DIARIZATION_MODEL, 'mapping': []})
+    legacy = current.parent / old_fingerprint
+    assert legacy != current
+    shutil.copytree(current, legacy)
+    old = state(legacy)
+    old['version'] = 'attributed-interview-v1'
+    payload = json.loads(next(output.rglob('provider_responses.json')).read_text())
+    old['binding_sha256'] = _fingerprint({'source': current.parent.name, 'names': old_fingerprint,
+                                       'diarization': payload['configuration']})
+    provenance = json.loads((legacy / 'provenance.json').read_text())
+    provenance['manifest_sha256'] = old_fingerprint
+    provenance['attribution']['contract'] = 1
+    del provenance['attribution']['part_artifact_reference_base']
+    for part in provenance['parts']:
+        part['raw_transcript'] = 'attributed/transcription.txt'
+        name = f'{part["id"]}_transcription.txt'
+        (legacy / name).unlink()
+        del old['raw_artifacts'][name]
+    (legacy / 'provenance.json').write_text(json.dumps(provenance))
+    old['raw_artifacts']['provenance.json'] = hashlib.sha256((legacy / 'provenance.json').read_bytes()).hexdigest()
+    # Old derived artifacts are opaque evidence, never accepted for the new contract.
+    (legacy / 'manifest.json').write_text(json.dumps(old))
+    before = {p.relative_to(legacy): p.read_bytes() for p in legacy.rglob('*') if p.is_file()}
+    shutil.rmtree(current)
+    audio_calls = interview_provider.audio.transcriptions.create.call_count
+    review_calls = interview_provider.chat.completions.create.call_count
+    assert main([*argv, '--resume']) == 0
+    assert interview_provider.audio.transcriptions.create.call_count == audio_calls
+    assert interview_provider.chat.completions.create.call_count > review_calls
+    assert before == {p.relative_to(legacy): p.read_bytes() for p in legacy.rglob('*') if p.is_file()}
+    assert_part_artifacts(output, current, json.loads((current / 'provenance.json').read_text()))
+
+
+@pytest.mark.parametrize('ordered', [False, True])
+@pytest.mark.parametrize('failure', ['chapter_gate', 'review', 'polish', 'diarization'])
+def test_failure_summaries_preserve_completed_attributed_stages(synthetic_media, tmp_path, interview_provider, ordered, failure):
+    source, output = synthetic_media(), tmp_path / 'out'
+    audio = interview_provider.audio.transcriptions.create.side_effect
+    chat = interview_provider.chat.completions.create.side_effect
+    if failure == 'chapter_gate':
+        interview_provider.high = True
+    elif failure == 'diarization':
+        def broken_audio(**kw):
+            if kw['model'] == DIARIZATION_MODEL:
+                raise RuntimeError('PRIVATE_PROVIDER_DETAILS')
+            return audio(**kw)
+        interview_provider.audio.transcriptions.create.side_effect = broken_audio
+    else:
+        def broken_chat(**kw):
+            body = json.loads(kw['messages'][-1]['content'])
+            name = kw['response_format']['json_schema']['name']
+            attributed = 'user_confirmed_mapping' in body.get('text', '') or 'unidentified' in body.get('text', '')
+            if (failure == 'review' and attributed and name == 'source_grounded_author_review'
+                    or failure == 'polish' and body.get('text') == 'A question?'):
+                raise RuntimeError('PRIVATE_PROVIDER_DETAILS')
+            return chat(**kw)
+        interview_provider.chat.completions.create.side_effect = broken_chat
+    options = AuthorOptions(chapter_options=ChapterOptions())
+    common = dict(author_options=options, interview_options=InterviewOptions('Host', 'Guest'))
+    if ordered:
+        manifest = tmp_path / 'parts.json'
+        manifest.write_text(json.dumps({'version': 1, 'interview_id': 'synthetic',
+            'parts': [{'id': 'part-1', 'path': source.name}]}))
+        run = OrderedInterview(manifest, output, enhance=True, options=TranscriptionOptions(),
+                               editing_options=EditingOptions(), **common)
+        def process():
+            return run.process(transcriber=Transcriber(client=interview_provider))
+    else:
+        run = Pipeline(output, **common)
+        def process():
+            return run.process(source, transcriber=Transcriber(client=interview_provider), enhance=True)
+    with pytest.raises(PipelineError) as caught:
+        process()
+    stages = caught.value.stages
+    assert 'PRIVATE_PROVIDER_DETAILS' not in str(caught.value)
+    assert 'attribution' not in stages
+    assert stages['attributed_attribution'] == ('failed' if failure == 'diarization' else 'complete')
+    if failure != 'diarization':
+        family = next(path.parent for path in (output / 'attributed').rglob('transcription.txt'))
+        assert state(family)['stages']['transcription']['status'] == 'complete'
+    if failure in ('chapter_gate', 'review'):
+        assert stages['attributed_enhancement'] == 'complete'
+        assert stages['attributed_author_review'] == ('complete' if failure == 'chapter_gate' else 'failed')
+    if failure == 'chapter_gate':
+        assert stages['attributed_chapters'] == 'failed'
+        assert state(family)['stages']['author_review']['status'] == 'complete'
+        run.resume = True
+        with pytest.raises(PipelineError) as resumed:
+            process()
+        assert resumed.value.stages['attributed_attribution'] == 'skipped'
+        assert resumed.value.stages['attributed_enhancement'] == 'skipped'
+        assert resumed.value.stages['attributed_author_review'] == 'skipped'
+        assert resumed.value.stages['attributed_chapters'] == 'failed'
+    if failure == 'polish':
+        assert stages['attributed_enhancement'] == 'failed'
+    assert not list((output / 'attributed').rglob('chapter_drafts.json'))
+
+
+@pytest.mark.parametrize('mapping', [(), ('1:1:A=interviewer', '1:1:B=interviewee')])
+def test_attributed_chapter_banner_includes_mapping_uncertainty(monkeypatch, synthetic_media, tmp_path, interview_provider, mapping):
+    output = tmp_path / 'out'
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_provider, **kw))
+    extras = [item for value in mapping for item in ('--speaker-map', value)]
+    assert main(args(synthetic_media(), output, '--stages', 'raw,review', '--chapters', 'interview', *extras)) == 0
+    family = next(path.parent for path in (output / 'attributed').rglob('transcription.txt'))
+    text = artifact(family, 'chapters', 'chapter_interview.txt').read_text()
+    assert 'Names and roles appear only for user-confirmed mappings; unmapped speakers remain unidentified.' in text
+    assert 'Speaker roles are unassigned.' not in text
+    assert 'Speaker 1:1:C: Speaker C; identity evidence: unidentified' in text
+    assert ('identity evidence: user_confirmed_mapping' in text) == bool(mapping)
+
+
+def test_part_files_preserve_unicode_and_crlf_exact_bytes(monkeypatch, synthetic_media, tmp_path, interview_provider):
+    audio = interview_provider.audio.transcriptions.create.side_effect
+    def unicode_audio(**kw):
+        response = audio(**kw)
+        if isinstance(response, dict):
+            response['segments'][0]['text'] = 'A café question?\r\n第二行'
+            response['text'] = '\n'.join(f'{s["speaker"]}: {s["text"]}' for s in response['segments'])
+        return response
+    interview_provider.audio.transcriptions.create.side_effect = unicode_audio
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_provider, **kw))
+    output = tmp_path / 'out'
+    argv = args(synthetic_media(), output, '--stages', 'raw')
+    assert main(argv) == 0
+    family = next(path.parent for path in (output / 'attributed').rglob('transcription.txt'))
+    assert_part_artifacts(output, family, json.loads((family / 'provenance.json').read_text()))
+    assert 'A café question?\r\n第二行'.encode() in (family / 'part-000001_transcription.txt').read_bytes()
+    calls = interview_provider.audio.transcriptions.create.call_count
+    assert main([*argv, '--resume']) == 0
+    assert interview_provider.audio.transcriptions.create.call_count == calls
+
+
+@pytest.mark.parametrize('ordered', [False, True])
+def test_cli_failed_chapter_reports_completed_attribution(monkeypatch, synthetic_media, tmp_path, interview_provider, capsys, ordered):
+    interview_provider.high = True
+    source, output = synthetic_media(), tmp_path / 'out'
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_provider, **kw))
+    argv = args(source, output, '--stages', 'raw,review', '--chapters', 'interview')
+    if ordered:
+        manifest = tmp_path / 'parts.json'
+        manifest.write_text(json.dumps({'version': 1, 'interview_id': 'synthetic',
+            'parts': [{'id': 'part-1', 'path': source.name}]}))
+        argv[argv.index('--input'):argv.index('--input') + 2] = ['--interview-manifest', str(manifest)]
+    assert entrypoint(argv) == 1
+    logs = capsys.readouterr()
+    events = [json.loads(line) for line in logs.out.splitlines() if line.startswith('{')]
+    failure = next(event for event in events if event['status'] == 'failed' and 'stages' in event)
+    assert failure['stages']['attributed_attribution'] == 'complete'
+    assert failure['stages']['attributed_author_review'] == 'complete'
+    assert failure['stages']['attributed_chapters'] == 'failed'
+    assert 'attribution' not in failure['stages']
+    for private in ('Synthetic Interviewer', 'Synthetic Guest', 'A question?', str(tmp_path), source.name):
+        assert private not in logs.out + logs.err
+    assert not list(output.rglob('chapter_drafts.json'))

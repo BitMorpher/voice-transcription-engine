@@ -6,14 +6,14 @@ import os
 from pathlib import Path
 
 if __package__:
-    from .interview_attribution import AttributedInterview, input_record
+    from .interview_attribution import AttributedInterview, AttributionError, input_record
     from .author_workflow import AuthorWorkflowError, run_author_stages
     from .media import MEDIA_EXTENSIONS, MediaError, prepare_audio
     from .model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
     from .private_output import digest, output_directory, write_private
     from .transcriber import TranscriptionError
 else:
-    from interview_attribution import AttributedInterview, input_record
+    from interview_attribution import AttributedInterview, AttributionError, input_record
     from author_workflow import AuthorWorkflowError, run_author_stages
     from media import MEDIA_EXTENSIONS, MediaError, prepare_audio
     from model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
@@ -207,8 +207,11 @@ class Pipeline:
                         author_options=self.author_options, progress=self.progress)
                     attributed = family.process(transcriber)
                     summary.update({'attributed_' + key: value for key, value in attributed.items()})
+                except AttributionError as error:
+                    summary.update({'attributed_' + key: value for key, value in error.stages.items()})
+                    raise PipelineError(str(error), stages=summary) from None
                 except TranscriptionError as error:
-                    summary['attribution'] = 'failed'
+                    summary['attributed_attribution'] = 'failed'
                     raise PipelineError(str(error), stages=summary) from None
             if author_error:
                 raise PipelineError(author_error, stages=summary) from None

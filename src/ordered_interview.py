@@ -497,9 +497,9 @@ class OrderedInterview:
                 author_error = str(error)
             if self.interview_options is not None:
                 if __package__:
-                    from .interview_attribution import AttributedInterview, input_record
+                    from .interview_attribution import AttributedInterview, AttributionError, input_record
                 else:
-                    from interview_attribution import AttributedInterview, input_record
+                    from interview_attribution import AttributedInterview, AttributionError, input_record
                 inputs = [input_record(part['order'], directory / identity,
                           _read_json(directory / identity / 'manifest.json'))
                           for part, directory, identity in self.parts]
@@ -509,8 +509,11 @@ class OrderedInterview:
                 try:
                     attributed = family.process(transcriber)
                     summary.update({'attributed_' + key: value for key, value in attributed.items()})
+                except AttributionError as error:
+                    summary.update({'attributed_' + key: value for key, value in error.stages.items()})
+                    raise PipelineError(str(error), stages=summary) from None
                 except asr_engine.TranscriptionError as error:
-                    summary['attribution'] = 'failed'
+                    summary['attributed_attribution'] = 'failed'
                     raise PipelineError(str(error), stages=summary) from None
             if author_error:
                 raise PipelineError(author_error, stages=summary) from None

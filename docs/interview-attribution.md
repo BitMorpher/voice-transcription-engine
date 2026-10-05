@@ -97,6 +97,7 @@ existing paths and contracts. Attributed outputs live under:
     manifest.json
   <source-binding-sha256>/<names-and-mappings-sha256>/
     transcription.txt
+    part-000001_transcription.txt                  # one exact file per recording part
     diarization_transcription.txt
     attribution_notice.txt
     provenance.json
@@ -124,11 +125,17 @@ than silently losing words.
 (`user_confirmed_mapping` or `unidentified`), automatic/unverified diarization,
 overlap flags, exact speech hashes and character spans, original raw hashes, and
 part-local audio timestamps. No global time is inferred across recording pauses.
+Each part’s `raw_transcript` is a path relative to the output directory, resolving
+to its own `part-<six-digit-order>_transcription.txt`. Its UTF-8 bytes equal the
+combined transcript’s part slice and match `raw_sha256`; the manifest checksums
+these files on resume. The XLSX **Recording parts** sheet uses those same paths.
 Metadata headers are not spoken words. `attribution_notice.txt` explains this
 alongside the attributed transcript. Polish edits each speech segment separately
 and restores exact metadata labels. Review JSON includes source-bound speaker
 references; XLSX has a **Speaker turns** sheet with the same evidence. Both chapter
-styles include speaker provenance and visible uncertainty. Inspect JSON for
+styles include speaker provenance and visible uncertainty. Attributed interview
+chapter banners explain user-confirmed mapping and unidentified speakers; original
+interview chapter banners retain their unassigned-role wording. Inspect JSON for
 precise source spans; chapter layout remains a human-review draft.
 
 Raw always remains available. The same selected stages run independently for both
@@ -138,6 +145,17 @@ Both retain the complete-review and unresolved-high gates described in the
 [author workflow](author-workflow.md). `--draft-with-unresolved-high` remains an
 explicit, visibly labeled draft override for both families. Existing batch
 approval cannot be transferred to an attributed source.
+
+Attributed output contract v2 uses `attributed-interview-v2` manifests and binds
+version 2 into the names/mappings family fingerprint and provenance. Existing v1
+families and their review/chapter artifacts remain untouched; a v2 run creates a
+new family and can reuse verified provider caches. Author artifacts bind the new
+provenance, so old reviews and rendered chapters are not reused for v2. The shared
+recording-part provenance schema and provider-cache contract remain version 1.
+
+Failure summaries preserve completed or skipped attributed raw/polish/review
+stages and identify the failed later stage separately. A blocked chapter gate
+does not report successful attribution as failed, and does not publish a chapter.
 
 Names/mapping changes create a new attributed family and can reuse verified
 diarization responses with `--resume`; those display changes do not require

@@ -298,7 +298,8 @@ def main(argv=None, *, approved_review=None):
                                 stage=stage, stage_status=status)) if CURRENT.get() is not None or args.workflow else None) if pipeline_mode else None
     except (MediaError, PipelineError, ConfigurationError, OSError, ValueError, AuthorWorkflowError, ReviewError, TranscriptionError) as error:
         message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError, AuthorWorkflowError, ReviewError) else 'Cannot access local input/output; check permissions and free space.'
-        _report(status='failed', message=message)
+        _report(status='failed', message=message,
+                **({'stages': error.stages} if type(error) is PipelineError and error.stages else {}))
         return 1
 
     failures = 0
