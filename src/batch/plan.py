@@ -59,7 +59,7 @@ def load_plan(path):
                            'auto': MEDIA_EXTENSIONS}.get(kind, set())
                 value = source.stat()
                 identity = value.st_dev, value.st_ino
-                require(source.is_file() and value.st_size > 0 and source.suffix.lower() in allowed
+                require(source.is_file() and value.st_size > 0 and (source.suffix.lower() in allowed or (not source.suffix and kind == 'video'))
                         and identity not in sources, 'Media is missing, empty, unsupported or duplicated.')
                 sources.add(identity)
                 part_ids.add(part['id'])

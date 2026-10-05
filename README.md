@@ -239,3 +239,5 @@ Selected polish, review JSON/XLSX and chapter styles run independently for both
 families, with additional provider calls and the same review gates. See the
 [interview attribution guide](docs/interview-attribution.md) for commands, mapping,
 private output paths, costs and accuracy limitations.
+
+Batch processing accepts explicitly declared extensionless videos through private, content-validated staging and supports opt-in per-entry speaker attribution. See [batch media and attribution](docs/batch-media-attribution.md).

@@ -49,6 +49,38 @@ class ApprovedReview:
                    report_sha256)
 
 
+def validate_approved_review(approval, options, *, attributed=None):
+    """Revalidate a captured family approval before any other family requests."""
+    try:
+        if type(approval) is not ApprovedReview:
+            raise ValueError()
+        source = approval.job
+        if any(path.is_symlink() for path in (source, *source.parents,
+                                              source / 'manifest.json', source / 'provenance.json')):
+            raise ValueError()
+        if digest(source / 'manifest.json') != approval.manifest_sha256:
+            raise ValueError()
+        state = _read(source / 'manifest.json')
+        provenance = _read(source / 'provenance.json')
+        if attributed is not None and ('attribution' in provenance) != attributed:
+            raise ValueError()
+        raw = _raw_snapshot(source, approval.raw_sha256)
+        record = state['stages']['author_review']
+        configuration = author_binding(options.fingerprint('author_review', approval.raw_sha256), provenance)
+        if (state['provenance_sha256'] != approval.provenance_sha256
+                or digest(source / 'provenance.json') != approval.provenance_sha256
+                or _fingerprint(record) != approval.record_sha256
+                or not _verified_bundle(source, record, configuration, approval.raw_sha256,
+                                        {'review_report.json', 'review_report.xlsx'})):
+            raise ValueError()
+        report, checksum = _load_bound_report(source, record, raw, options.review_options,
+                                             provenance=provenance)
+        if checksum != approval.report_sha256 or any(f['severity'] == 'high' for f in report['findings']):
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError, AuthorWorkflowError):
+        raise AuthorWorkflowError(SAFE_APPROVAL) from None
+
+
 def reuse_approved_review(approval, job, state, options, provenance, save):
     """Validate approval again under the interview lock, then atomically copy bytes.
 

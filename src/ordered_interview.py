@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 if __package__:
-    from .review_reuse import reuse_approved_review
+    from .review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
     from .progress import emit_progress
     from . import transcriber as asr_engine
     from .author_review import source_segments
@@ -24,7 +24,7 @@ if __package__:
     from .private_output import digest, output_directory, write_private
     from .source_provenance import author_binding, validate_chapter_binding
 else:
-    from review_reuse import reuse_approved_review
+    from review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
     from progress import emit_progress
     import transcriber as asr_engine
     from author_review import source_segments
@@ -394,7 +394,7 @@ class OrderedInterview:
                     self.job, record, raw, self.author_options.review_options, provenance=provenance
                 )
 
-    def process(self, *, transcriber, approved_review=None):
+    def process(self, *, transcriber, approved_review=None, approved_attributed_review=None):
         """Publish combined raw only after every part succeeds, then run author stages."""
         original_resume = self.resume
         lock = self.output / ".interview.lock"
@@ -404,6 +404,26 @@ class OrderedInterview:
         except FileExistsError:
             raise PipelineError(SAFE_CACHE) from None
         try:
+            try:
+                if approved_attributed_review is not None:
+                    if __package__:
+                        from .interview_attribution import AttributedInterview, input_record
+                    else:
+                        from interview_attribution import AttributedInterview, input_record
+                    if self.interview_options is None:
+                        raise AuthorWorkflowError(SAFE_APPROVAL)
+                    inputs = [input_record(part['order'], directory / identity,
+                              _read_json(directory / identity / 'manifest.json'))
+                              for part, directory, identity in self.parts]
+                    expected = AttributedInterview(self.output, inputs, self.interview_options,
+                        resume=True, enhance=self.enhance, author_options=self.author_options)
+                    if approved_attributed_review.job != expected.job:
+                        raise AuthorWorkflowError(SAFE_APPROVAL)
+                for approval, attributed in ((approved_review, False), (approved_attributed_review, True)):
+                    if approval is not None:
+                        validate_approved_review(approval, self.author_options, attributed=attributed)
+            except AuthorWorkflowError as error:
+                raise PipelineError(str(error)) from None
             self.preflight()
             existed = self.job.exists()
             # Initial validation enforces the caller's resume choice. Internal passes
@@ -507,7 +527,7 @@ class OrderedInterview:
                     resume=original_resume, enhance=self.enhance,
                     author_options=self.author_options, progress=self.progress)
                 try:
-                    attributed = family.process(transcriber)
+                    attributed = family.process(transcriber, approved_review=approved_attributed_review)
                     summary.update({'attributed_' + key: value for key, value in attributed.items()})
                 except AttributionError as error:
                     summary.update({'attributed_' + key: value for key, value in error.stages.items()})
