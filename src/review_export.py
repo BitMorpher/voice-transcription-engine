@@ -227,6 +227,23 @@ def _build(report):
         provenance = report['recording_provenance']
         validate_provenance(source, provenance)
         validate_binding(report, provenance)
+        if 'attribution' in provenance:
+            attribution = provenance['attribution']
+            _row(overview, ('Attribution evidence', _text(attribution['notice'])))
+            turn_sheet = workbook.create_sheet('Speaker turns')
+            _table(turn_sheet, ('Turn', 'Part', 'Request', 'Scoped speaker', 'Display name',
+                'Role', 'Identity evidence', 'Diarization evidence', 'Speech start character',
+                'Speech end character', 'Part audio start seconds', 'Part audio end seconds',
+                'Overlap detected', 'Diarization cache SHA-256'),
+                {'A': 22, 'B': 10, 'C': 10, 'D': 25, 'E': 30, 'F': 20, 'G': 35, 'H': 35,
+                 'I': 24, 'J': 24, 'K': 22, 'L': 22, 'M': 20, 'N': 68})
+            for turn in attribution['turns']:
+                _row(turn_sheet, (_text(turn['turn_id']), turn['part_order'], turn['request'],
+                    _text(turn['speaker_key']), _text(turn['display_name']), _text(turn['role'] or ''),
+                    _text(turn['identity_evidence']), _text(turn['diarization_evidence']),
+                    turn['speech_start'], turn['speech_end'], turn['audio_start'], turn['audio_end'],
+                    str(turn['overlap_detected']).lower(), _text(turn['cache_binding_sha256'])))
+            turn_sheet.auto_filter.ref = turn_sheet.dimensions
         parts_sheet = workbook.create_sheet('Recording parts')
         _table(parts_sheet, ('Order', 'Part ID', 'Local source file', 'Source SHA-256',
                             'Part raw transcript', 'Part raw SHA-256', 'Combined start', 'Combined end'),

@@ -426,6 +426,12 @@ def render_chapter(document, style):
                              f'local segments {", ".join(reference["local_segment_ids"])}.')
             else:
                 lines.append('Explicit recording separator; no recording time or content inferred.')
+            for turn in reference.get('speaker_turns', []):
+                lines.append(f'Speaker {turn["speaker_key"]}: {turn["display_name"]}; '
+                             f'identity evidence: {turn["identity_evidence"]}; '
+                             f'diarization: {turn["diarization_evidence"]}; '
+                             f'part audio seconds {turn["audio_start"]}:{turn["audio_end"]}; '
+                             f'overlap detected: {turn["overlap_detected"]}.')
         lines.append('Review flags: ' + (', '.join(passage['finding_ids']) or 'None linked; not a publication clearance.'))
         if style == 'narrative' and chapter['person'] == 'third':
             lines.append('The source testimony states (speaker identity requires verification):')

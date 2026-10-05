@@ -161,11 +161,13 @@ class OrderedInterview:
         media_timeout=3600,
         enhance=False,
         progress=None,
+        interview_options=None,
     ):
         self.document = load_interview(manifest)
         self.output = output_directory(output)
         self.options, self.editing_options = options, editing_options
         self.author_options = author_options
+        self.interview_options = interview_options
         self.resume, self.media_timeout, self.enhance = resume, media_timeout, enhance
         self.progress = progress or (lambda stage, status: None)
         self.binding = _hash(
@@ -478,6 +480,7 @@ class OrderedInterview:
                     save()
                     summary["enhancement"] = "complete"
                     self.progress("enhancement", "complete")
+            author_error = None
             try:
                 run_author_stages(
                     self.job,
@@ -491,7 +494,26 @@ class OrderedInterview:
                     provenance=provenance,
                 )
             except AuthorWorkflowError as error:
-                raise PipelineError(str(error), stages=summary) from None
+                author_error = str(error)
+            if self.interview_options is not None:
+                if __package__:
+                    from .interview_attribution import AttributedInterview, input_record
+                else:
+                    from interview_attribution import AttributedInterview, input_record
+                inputs = [input_record(part['order'], directory / identity,
+                          _read_json(directory / identity / 'manifest.json'))
+                          for part, directory, identity in self.parts]
+                family = AttributedInterview(self.output, inputs, self.interview_options,
+                    resume=original_resume, enhance=self.enhance,
+                    author_options=self.author_options, progress=self.progress)
+                try:
+                    attributed = family.process(transcriber)
+                    summary.update({'attributed_' + key: value for key, value in attributed.items()})
+                except asr_engine.TranscriptionError as error:
+                    summary['attribution'] = 'failed'
+                    raise PipelineError(str(error), stages=summary) from None
+            if author_error:
+                raise PipelineError(author_error, stages=summary) from None
             return self.binding, summary
         except PipelineError:
             raise

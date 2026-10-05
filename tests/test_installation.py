@@ -30,9 +30,14 @@ def wheel_environment(tmp_path_factory):
     result = subprocess.run([uv, 'pip', 'install', '--offline', '--python', str(python), '--no-deps', str(wheel)],
                             env=environment, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, 'Offline wheel installation failed.'
-    # Dependencies come from the locked test environment, while its editable .pth files
-    # are NOT executed by PYTHONPATH. The project itself must load from the new wheel.
-    environment['PYTHONPATH'] = os.pathsep.join(site.getsitepackages())
+    # Borrow only locked runtime dependencies. Prioritize this wheel's physical
+    # site-packages so a noneditable test installation cannot shadow the wheel;
+    # PYTHONPATH does not execute the test environment's editable .pth files.
+    result = subprocess.run([str(python), '-c',
+                             'import sysconfig; print(sysconfig.get_path("purelib"))'],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0
+    environment['PYTHONPATH'] = os.pathsep.join([result.stdout.strip(), *site.getsitepackages()])
     environment.pop('OPENAI_API_KEY', None)
     return work, python, environment, wheel
 
@@ -129,3 +134,82 @@ assert len(list(Path('batch').rglob('chapter_drafts.json'))) == 1
     assert any(row.get('stage') == 'author_review' and row.get('chunk') == 1 for row in rows)
     assert str(work) not in result.stdout and 'Synthetic testimony' not in result.stdout
     assert result.stderr == ''
+
+
+def test_wheel_interview_family_and_private_cli(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    script = work / 'interview-smoke.py'
+    script.write_text('''
+import json, socket, wave
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+import voice_transcription_engine.cli as engine
+from voice_transcription_engine.transcriber import Transcriber
+from voice_transcription_engine.interview_attribution import DIARIZATION_MODEL
+
+def blocked(*a, **kw):
+    raise AssertionError('No real network allowed.')
+socket.socket.connect = blocked
+source = Path('interview-synthetic.wav')
+with wave.open(str(source), 'wb') as wav:
+    wav.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+    wav.writeframes(b'\\0\\0' * 36000)
+client = MagicMock()
+def audio(**kw):
+    if kw['model'] == DIARIZATION_MODEL:
+        assert set(kw) == {'model', 'response_format', 'chunking_strategy', 'file'}
+        return {'text': 'A: Synthetic words.', 'segments': [
+            {'speaker': 'A', 'start': 0, 'end': 0.1, 'text': 'Synthetic words.'}]}
+    return SimpleNamespace(text='Original words.\\r\\nExact tail.')
+client.audio.transcriptions.create.side_effect = audio
+def chat(**kw):
+    supplied = json.loads(kw['messages'][-1]['content'])
+    name = kw['response_format']['json_schema']['name']
+    if name == 'faithful_transcript_edit':
+        body = dict(chunk_index=supplied['chunk_index'], text=supplied['text'], speaker_uncertain=False)
+    elif name == 'source_grounded_author_review':
+        body = dict(chunk_index=supplied['chunk_index'], fully_reviewed=True,
+                    reviewed_start=supplied['core_start'], reviewed_end=supplied['core_end'], findings=[])
+    else:
+        body = dict(chunk_index=supplied['chunk_index'], passages=[
+            dict(unit_ids=[unit['unit_id']], text=unit['text'].strip(), kind='verbatim_excerpt')
+            for unit in supplied['source_units']], coverage_omissions=[])
+    return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+        message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+client.chat.completions.create.side_effect = chat
+engine.Transcriber = lambda **kw: Transcriber(client=client, **kw)
+args = ['--workflow', '--interview', '--input', str(source), '--output-folder', 'interview-output',
+        '--interviewer-name', 'SYNTHETIC_PRIVATE_HOST', '--interviewee-name', 'SYNTHETIC_PRIVATE_GUEST',
+        '--audio-chunk-seconds', '1', '--speaker-map', '1:1:A=interviewer', '--chapters', 'both']
+assert engine.entrypoint(args) == 0
+out = Path('interview-output')
+family = next(path.parent for path in (out / 'attributed').rglob('transcription.txt'))
+provenance = json.loads((family / 'provenance.json').read_text())
+assert [turn['role'] for turn in provenance['attribution']['turns']] == ['interviewer', None, None]
+assert len(list(out.rglob('review_report.json'))) == 2
+assert len(list(out.rglob('review_report.xlsx'))) == 2
+assert len(list(out.rglob('chapter_drafts.json'))) == 2
+assert len(list(out.rglob('derivative_readability.txt'))) == 2
+original = next(path for path in out.iterdir() if (path / 'transcription.txt').is_file())
+before = (original / 'transcription.txt').read_bytes()
+calls = client.audio.transcriptions.create.call_count, client.chat.completions.create.call_count
+assert engine.entrypoint(args + ['--resume']) == 0
+assert calls == (client.audio.transcriptions.create.call_count, client.chat.completions.create.call_count)
+assert before == (original / 'transcription.txt').read_bytes()
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed interview family smoke failed.'
+    for private in ('SYNTHETIC_PRIVATE_', 'Synthetic words.', 'Original words.', str(work), 'interview-synthetic.wav'):
+        assert private not in result.stdout + result.stderr
+    assert result.stderr == ''
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert any(row.get('family') == 'attributed' and row.get('stage') == 'diarization' for row in events)
+    executable = python.parent / ('voice-transcribe.exe' if os.name == 'nt' else 'voice-transcribe')
+    result = subprocess.run([str(executable), '--input', 'SYNTHETIC_PRIVATE_PATH',
+                             '--interviewer-name', 'SYNTHETIC_PRIVATE_NAME'],
+                            cwd=work, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2
+    assert 'SYNTHETIC_PRIVATE_' not in result.stdout + result.stderr
+    assert 'Traceback' not in result.stdout + result.stderr
