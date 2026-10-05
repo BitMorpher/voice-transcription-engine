@@ -9,6 +9,7 @@ import wave
 from pathlib import Path
 
 if __package__:
+    from .provider_errors import classify
     from .progress import emit_progress
     from .media import AUDIO_EXTENSIONS, prepare_audio
     from .model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
@@ -21,6 +22,7 @@ if __package__:
         words,
     )
 else:
+    from provider_errors import classify
     from progress import emit_progress
     from media import AUDIO_EXTENSIONS, prepare_audio
     from model_config import DEFAULT_ASR_MODEL, EditingOptions, TranscriptionOptions
@@ -143,7 +145,8 @@ class Transcriber:
                         raise TranscriptionError('Provider returned an invalid transcription response.')
                     parts.append(text)
                     emit_progress('transcription', 'complete', chunk=index, chunks=chunk.total_chunks)
-                except Exception:
+                except Exception as error:
+                    emit_progress('transcription', 'failed', chunk=index, chunks=chunk.total_chunks, **classify(error))
                     raise TranscriptionError(
                         f'Transcription failed on chunk {index}; no complete transcript was saved. '
                         'Check API access, quota, and network connectivity before retrying.'
@@ -197,8 +200,10 @@ class Transcriber:
                 combined = '[Speaker attribution uncertain in chunks: ' + ', '.join(map(str, uncertain)) + ']\n\n' + combined
             return combined
         except EditingError as error:
+            emit_progress('enhancement', 'failed', error_category='validation')
             raise TranscriptionError(str(error)) from None
-        except Exception:
+        except Exception as error:
+            emit_progress('enhancement', 'failed', **classify(error))
             raise TranscriptionError('Optional editing failed; check API/model access, quota, and network connectivity. The original transcript is retained.') from None
 
     def enhance_transcription(self, transcription: str) -> str:
