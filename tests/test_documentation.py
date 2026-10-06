@@ -42,3 +42,17 @@ def test_documented_cli_options_are_declared():
                         assert all(word.split('=', 1)[0] in options for word in args if word.startswith('--')), path.name
                     checked[command] += 1
     assert checked['voice-batch'] >= 15 and checked['voice-transcribe'] >= 20
+
+
+def test_parameter_reference_covers_every_public_flag_and_batch_help_is_complete():
+    reference = (ROOT / 'docs/cli-reference.md').read_text()
+    tree = ast.parse((ROOT / 'src/cli.py').read_text())
+    flags = {'--help'}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'add_argument':
+            flags.update(arg.value for arg in node.args if isinstance(arg, ast.Constant)
+                         and isinstance(arg.value, str) and arg.value.startswith('--'))
+    for action in parser()._actions:
+        assert action.help, f'Missing batch help for {action.dest}'
+        flags.update(action.option_strings)
+    assert all(flag in reference for flag in flags)

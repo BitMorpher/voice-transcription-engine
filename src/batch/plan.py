@@ -1,4 +1,4 @@
-"""Metadata-only private batch plans and exact serial selection."""
+"""Metadata-only private batch plans and exact selection in plan order."""
 
 import json
 

@@ -48,6 +48,7 @@ def test_wheel_namespace_prompts_and_console_scripts(wheel_environment):
         names = archive.namelist()
         assert 'voice_transcription_engine/cli.py' in names
         assert 'voice_transcription_engine/batch/runner.py' in names
+        assert 'voice_transcription_engine/batch/concurrency.py' in names
         assert any(name.startswith('voice_transcription_engine/prompts/') and name.endswith('.txt') for name in names)
         assert 'cli.py' not in names
         assert not any('private/' in name or '.env' in name or 'batch-plan' in name for name in names)
@@ -133,6 +134,72 @@ assert len(list(Path('batch').rglob('chapter_drafts.json'))) == 1
     assert any(row.get('cache_reused') for row in rows)
     assert any(row.get('stage') == 'author_review' and row.get('chunk') == 1 for row in rows)
     assert str(work) not in result.stdout and 'Synthetic testimony' not in result.stdout
+    assert result.stderr == ''
+
+
+def test_wheel_parallel_interviews_shared_allowance_and_aliases(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    work = work / 'parallel-smoke'
+    work.mkdir()
+    script = work / 'parallel.py'
+    script.write_text('''
+import contextlib, io, json, shutil, socket, threading, wave
+from pathlib import Path
+from types import SimpleNamespace
+import voice_transcription_engine.cli as engine
+import voice_transcription_engine.pipeline as pipeline
+from voice_transcription_engine.batch.cli import main as batch
+from voice_transcription_engine.progress import CURRENT
+from voice_transcription_engine.transcriber import Transcriber
+
+def blocked(*args, **kwargs):
+    raise AssertionError('Synthetic providers only; no network.')
+socket.socket.connect = blocked
+pipeline.prepare_audio = lambda source, target, **kwargs: shutil.copyfile(source, target)
+engine.require_ffmpeg = lambda: None
+entries = []
+for item in range(1, 4):
+    source = Path(f'synthetic-{item}.wav')
+    with wave.open(str(source), 'wb') as wav:
+        wav.setparams((1, 2, 100, 0, 'NONE', 'not compressed'))
+        wav.writeframes(item.to_bytes(2, 'little') * 120)
+    manifest = Path(f'ordered-{item}.json')
+    manifest.write_text(json.dumps(dict(version=1, interview_id=f'synthetic-{item}',
+        parts=[dict(id='one', path=source.name, media_type='audio')])))
+    entries.append(dict(id=f'entry-{item}', manifest=manifest.name))
+Path('plan.json').write_text(json.dumps(dict(version=1, interviews=entries)))
+calls, barrier, mutex = [], threading.Barrier(2), threading.Lock()
+def response(**parameters):
+    with mutex:
+        calls.append((CURRENT.get().context['item'], parameters['model']))
+        ordinal = len(calls)
+    if ordinal <= 2:
+        barrier.wait(timeout=5)
+    return SimpleNamespace(text='SYNTHETIC_PRIVATE_WORDS')
+provider = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=response)))
+engine.Transcriber = lambda **kwargs: Transcriber(client=provider, **kwargs)
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    assert batch(['prepare', '--plan', 'plan.json', '--batch', 'batch', '--copy-local-files']) == 0
+    args = ['run', '--batch', 'batch', '--send-to-openai', '--parallel-interviews', '2',
+            '--transcription-model', 'gpt-transcribe', '--audio-chunk-seconds', '1', '--provider-retries', '0']
+    assert batch(args + ['--max-provider-requests', '2']) == 1
+    assert len(calls) == 2
+    assert len(list(Path('batch').rglob('response.json'))) == 2
+    assert batch(args) == 0
+    assert len(calls) == 6
+    before = {p: p.read_bytes() for p in Path('batch').rglob('*') if p.is_file() and 'output' in p.parts}
+    assert batch(args) == 0 and len(calls) == 6
+    assert all(p.read_bytes() == data for p, data in before.items())
+    assert batch(['status', '--batch', 'batch']) == 0
+assert not list(Path('batch').rglob('*.lock'))
+assert 'SYNTHETIC_PRIVATE_WORDS' not in output.getvalue() and str(Path.cwd()) not in output.getvalue()
+rows = [json.loads(line) for line in output.getvalue().splitlines()]
+assert any(row.get('configuration', {}).get('parallel_interviews') == 2 for row in rows)
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed wheel parallel/recovery smoke failed.'
     assert result.stderr == ''
 
 

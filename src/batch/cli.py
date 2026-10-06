@@ -12,6 +12,7 @@ from ..provider_control import CURRENT_CONTROL, ProviderControl
 from ..progress import CURRENT, Reporter, emit_progress, interruptions, LogError
 from .plan import BatchError, load_plan, require, select
 from .runner import run_one
+from .concurrency import run_sessions
 from .speakers import configurations
 from .storage import (lock, read_snapshot, save_snapshot, stage, summaries, verify, write_summary)
 
@@ -19,23 +20,26 @@ from .storage import (lock, read_snapshot, save_snapshot, stage, summaries, veri
 def parser():
     value = PrivateArgumentParser(prog='voice-batch', color=False, allow_abbrev=False,
                                   description=__doc__)
-    value.add_argument('action', choices=('inventory', 'check', 'prepare', 'verify', 'run', 'status'))
+    value.add_argument('action', choices=('inventory', 'check', 'prepare', 'verify', 'run', 'status'),
+                       help='Inspect metadata, check tools, copy fresh staging, verify staged files, process interviews, or show recorded status.')
     value.add_argument('--plan', type=Path, help='Private version 1 batch JSON; manifest paths relative to plan.')
     value.add_argument('--batch', type=Path, help='Fresh directory for prepare; existing staged directory otherwise.')
     value.add_argument('--select', action='append', default=[], help='Exact private entry ID; repeat as needed.')
     value.add_argument('--exclude', action='append', default=[], help='Exclude exact entry ID; repeat as needed.')
-    value.add_argument('--copy-local-files', action='store_true')
-    value.add_argument('--allow-hydration', action='store_true')
-    value.add_argument('--send-to-openai', action='store_true')
+    value.add_argument('--copy-local-files', action='store_true', help='Required prepare approval to read/copy sources into fresh private staging.')
+    value.add_argument('--allow-hydration', action='store_true', help='Allow prepare to download cloud-placeholder sources locally; may use network/storage.')
+    value.add_argument('--send-to-openai', action='store_true', help='Required run approval to send audio/text to OpenAI; provider use can incur charges.')
     value.add_argument('--human-reviewed', action='store_true',
                        help='Confirm human review of every requested output family before selected chapters.')
-    value.add_argument('--phase', choices=('raw', 'review', 'chapters'), default='raw')
+    value.add_argument('--phase', choices=('raw', 'review', 'chapters'), default='raw', help='Run phase (default: raw); review needs complete raw; chapters need approved complete review.')
+    value.add_argument('--parallel-interviews', type=int, default=1,
+                       help='Maximum whole interview groups running together, positive integer (default: 1; start with 2 for overlap). Run only; recordings within each group stay ordered. Shared provider limits; no requests-per-minute or cost cap.')
     value.add_argument('--interview', action='store_true',
                        help='Run original and separate attributed families; missing names keep scoped unidentified speakers.')
     value.add_argument('--speaker-config', type=Path,
                        help='Optional private per-entry names and confirmed mappings; requires run --interview.')
-    value.add_argument('--interview-model',
-                       help='Additional diarization model, gpt-4o-transcribe-diarize; requires run --interview.')
+    value.add_argument('--speaker-model', '--interview-model', dest='interview_model',
+                       help='Voice separation model, gpt-4o-transcribe-diarize; does not identify people. Requires run --interview; --interview-model remains an alias.')
     value.add_argument('--diarization-chunk-seconds', type=_positive_timeout,
                        help='Independent speaker-pass duration, 1–600 seconds; original ASR caches keep their settings.')
     value.add_argument('--confirm-speaker-mappings', action='store_true',
@@ -46,24 +50,26 @@ def parser():
                        help='Elapsed deadline for new provider starts; requires zero retries. In-flight I/O is timeout-bounded, not cancelled at this deadline.')
     value.add_argument('--provider-failure-limit', type=int, default=2,
                        help='Stop after consecutive failures per endpoint/model (default: 2); account/configuration failures stop immediately.')
-    value.add_argument('--model', default='gpt-transcribe')
-    value.add_argument('--editing-model', default='gpt-6-astra')
-    value.add_argument('--author-model', default='gpt-6-astra')
-    value.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300)
-    value.add_argument('--media-timeout', type=_positive_timeout, default=3600)
-    value.add_argument('--provider-timeout', type=_positive_timeout, default=120)
-    value.add_argument('--provider-retries', type=int, choices=range(6), default=2)
-    value.add_argument('--heartbeat-seconds', type=_positive_timeout, default=30)
+    value.add_argument('--transcription-model', '--model', dest='model', default='gpt-transcribe', help='Original speech-to-text model (default: gpt-transcribe); --model remains an alias.')
+    value.add_argument('--editing-model', default='gpt-6-astra', help='Polish model, gpt-6-astra or gpt-6.1-sol (default: gpt-6-astra); review/chapters phases.')
+    value.add_argument('--author-model', default='gpt-6-astra', help='Review/chapter model, gpt-6-astra or gpt-6.1-sol (default: gpt-6-astra).')
+    value.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300, help='Original audio request duration, 1–600 seconds (default: 300); preserve for cache reuse.')
+    value.add_argument('--media-timeout', type=_positive_timeout, default=3600, help='Seconds per FFmpeg operation, positive finite number (default: 3600); prepare/run.')
+    value.add_argument('--provider-timeout', type=_positive_timeout, default=120, help='Seconds per SDK I/O wait, positive finite number (default: 120); run, not a total deadline.')
+    value.add_argument('--provider-retries', type=int, choices=range(6), default=2, help='SDK retries per operation, 0–5 (default: 2); choose 0 with request/time limits.')
+    value.add_argument('--heartbeat-seconds', type=_positive_timeout, default=30, help='Idle progress interval in seconds, positive finite number (default: 30).')
     value.add_argument('--log-directory', type=Path, help='Private execution logs; defaults to batch/execution-logs.')
-    value.add_argument('--context-file')
-    value.add_argument('--glossary-file')
-    value.add_argument('--language', action='append', default=[])
-    value.add_argument('--chapters', choices=('interview', 'narrative', 'both'), default='both')
-    value.add_argument('--narrative-person', choices=('first', 'third'), default='first')
+    value.add_argument('--context-file', help='Private UTF-8 recording context, sent with supported ASR requests; run.')
+    value.add_argument('--glossary-file', help='Private UTF-8 expected terms, one per line; gpt-transcribe only, run.')
+    value.add_argument('--language', action='append', default=[], help='Lowercase expected language code; repeat for multilingual gpt-transcribe. Diarization allows one two-letter code.')
+    value.add_argument('--chapters', choices=('interview', 'narrative', 'both'), default='both', help='Chapter styles for chapters phase (default: both).')
+    value.add_argument('--narrative-person', choices=('first', 'third'), default='first', help='Narrative framing for chapters phase (default: first).')
     return value
 
 
 def execute(args, reporter):
+    require(args.parallel_interviews >= 1 and (args.action == 'run' or args.parallel_interviews == 1),
+            'Parallel interviews require run and a positive integer.')
     require((args.action == 'run' or not args.interview)
             and (args.interview or (args.speaker_config is None and args.interview_model is None
                 and args.diarization_chunk_seconds is None and not args.confirm_speaker_mappings)),
@@ -129,21 +135,27 @@ def execute(args, reporter):
             'provider_timeout': args.provider_timeout, 'provider_retries': args.provider_retries,
             'max_provider_requests': args.max_provider_requests, 'max_run_seconds': args.max_run_seconds,
             'provider_failure_limit': args.provider_failure_limit, 'interview': args.interview,
+            'parallel_interviews': args.parallel_interviews,
             'context_supplied': bool(args.context_file), 'glossary_supplied': bool(args.glossary_file),
             'language_hint_count': len(args.language)})
     rows = []
-    def process():
-        for item in items:
-            reporter.context = {'scope': 'batch', 'phase': phase, 'item': item['position'], 'selected': len(items)}
-            reporter.active = {}
+    started = set()
+    def process_item(item):
+        previous = reporter.context
+        reporter.context = {'scope': 'batch', 'phase': phase, 'item': item['position'], 'selected': len(items)}
+        reporter.begin_session(item['position'])
+        with reporter.lock:
+            started.add(item['position'])
+        try:
             emit_progress('preflight', 'running')
             if control and control.reason:
                 status = 'not_attempted'
                 requested_families = ['original']
                 if args.interview_options_by_id.get(item['id']) is not None:
                     requested_families.append('attributed')
-                reporter.item_stages[item['position']] = {
-                    family: {'preflight': 'not_attempted'} for family in requested_families}
+                for family in requested_families:
+                    reporter.emit(status='not_attempted', family=family,
+                                  stages={'preflight': 'not_attempted'})
             elif item['status'] == 'blocked':
                 status = 'blocked'
             else:
@@ -162,35 +174,77 @@ def execute(args, reporter):
                         reporter.emit(status='progress', stage='preflight', stage_status='complete',
                                       parts=len(item['manifest']['parts']),
                                       blocked=sum(part['dataless'] for part in item['manifest']['parts']))
-                except (LogError, KeyboardInterrupt):
+                except KeyboardInterrupt:
+                    if control:
+                        control.cancel()
+                    status = 'interrupted'
+                except LogError:
                     raise
                 except Exception as error:
                     if type(error) is BatchError:
                         reporter.emit(status='failed', message=str(error))
                     status = ('incomplete' if control and control.reason in {'request_limit', 'start_deadline'} else 'failed')
+                    if control and control.cancelled.is_set():
+                        status = 'interrupted'
             row = {'item': item['position'], 'status': status,
-                   'families': reporter.item_stages.get(item['position'], {})}
+                   'families': reporter.families(item['position'])}
             if control and control.reason:
                 row['stop_reason'] = control.reason
-            rows.append(row)
-            counts = Counter(row['status'] for row in rows)
-            reporter.emit(**row, processed=sum(row['status'] != 'not_attempted' for row in rows), failed=counts['failed'], completed=counts['complete'],
-                          staged=counts['staged'], verified=counts['verified'], blocked=counts['blocked'])
+            return row
+        finally:
+            reporter.end_session(item['position'])
+            reporter.context = previous
+
+    def record(row):
+        if reporter.failed and row['status'] not in {'interrupted', 'not_attempted'}:
+            row = {**row, 'status': 'failed'}
+        rows.append(row)
+        counts = Counter(row['status'] for row in rows)
+        if reporter.failed:
+            return
+        reporter.emit(**row, processed=sum(row['status'] != 'not_attempted' for row in rows), failed=counts['failed'], completed=counts['complete'],
+                      staged=counts['staged'], verified=counts['verified'], blocked=counts['blocked'])
+
+    def unattempted(active_status='interrupted'):
+        attempted = {row['item'] for row in rows}
+        for item in items:
+            if item['position'] not in attempted:
+                active = item['position'] in started
+                row = {'item': item['position'], 'status': active_status if active else 'not_attempted',
+                    'families': reporter.families(item['position']) if active else
+                        {family: {'preflight': 'not_attempted'} for family in
+                        (['original', 'attributed'] if args.interview_options_by_id.get(item['id']) else ['original'])}}
+                if control and control.reason:
+                    row['stop_reason'] = control.reason
+                record(row)
+
+    def process():
+        if args.action == 'run' and args.parallel_interviews > 1:
+            run_sessions(items, min(args.parallel_interviews, len(items)), process_item, record, control)
+            unattempted()
+        else:
+            for item in items:
+                row = process_item(item)
+                record(row)
+                if row['status'] == 'interrupted' or control and control.cancelled.is_set():
+                    raise KeyboardInterrupt()
     if root and args.action in {'prepare', 'verify', 'run'}:
         with lock(root):
             try:
                 process()
             except KeyboardInterrupt:
-                active = reporter.context.get('item', 0)
-                rows.append({'item': active, 'status': 'interrupted',
-                             'families': reporter.item_stages.get(active, {})})
-                attempted = {row['item'] for row in rows}
-                rows.extend({'item': item['position'], 'status': 'not_attempted',
-                    'families': {family: {'preflight': 'not_attempted'} for family in
-                        (['original', 'attributed'] if args.interview_options_by_id.get(item['id']) else ['original'])}}
-                    for item in items if item['position'] not in attempted)
+                unattempted()
+                rows.sort(key=lambda row: row['item'])
                 write_summary(root, reporter, rows, phase)
                 raise
+            except LogError:
+                if control:
+                    control.cancel()
+                unattempted(active_status='failed')
+                rows.sort(key=lambda row: row['item'])
+                write_summary(root, reporter, rows, phase)
+                raise
+            rows.sort(key=lambda row: row['item'])
             write_summary(root, reporter, rows, phase)
     else:
         process()

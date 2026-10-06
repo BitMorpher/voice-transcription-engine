@@ -132,16 +132,17 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                                    description='Convert local media and transcribe audio using OpenAI.')
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--input', help='Local media file or folder (pipeline mode).')
-    inputs.add_argument('--input_folder', '--input-folder', help='Folder of audio files; also accepted in pipeline mode.')
+    inputs.add_argument('--input-folder', '--input_folder', dest='input_folder', help='Folder of audio files; also accepted in pipeline mode. Underscore spelling is a deprecated compatibility alias.')
     inputs.add_argument('--interview-manifest', help='Version 1 JSON manifest: ordered recordings from one interview; requires --workflow.')
-    parser.add_argument('--output_folder', '--output-folder', default='private/output',
-                        help='Private output directory (default: ignored private/output).')
+    parser.add_argument('--output-folder', '--output_folder', dest='output_folder', default='private/output',
+                        help='Private output directory (default: private/output). Underscore spelling is a deprecated compatibility alias.')
     parser.add_argument('--pipeline', action='store_true', help='Prepare audio/video, then transcribe.')
     parser.add_argument('--extract-only', action='store_true', help='Prepare WAV audio locally; no API/key required.')
     parser.add_argument('--resume', action='store_true', help='Verify manifest checksums and skip complete pipeline stages.')
     parser.add_argument('--media-timeout', type=_positive_timeout, default=3600,
                         help='Maximum seconds per FFmpeg operation (default: 3600).')
-    parser.add_argument('--model', default=DEFAULT_ASR_MODEL, help='ASR model (default: gpt-transcribe).')
+    parser.add_argument('--transcription-model', '--model', dest='model', default=DEFAULT_ASR_MODEL,
+                        help='Original speech-to-text model (default: gpt-transcribe); --model remains a compatibility alias.')
     parser.add_argument('--editing-model', default=DEFAULT_EDITING_MODEL,
                         help='Opt-in faithful editing model (default: gpt-6-astra).')
     parser.add_argument('--context-file', help='Private UTF-8 file of user-supplied recording context.')
@@ -150,10 +151,10 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                         help='Expected lowercase ISO 639 language code; repeat for multilingual gpt-transcribe input.')
     parser.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300,
                         help='Local audio request duration cap, 1–600 seconds (default: 300).')
-    parser.add_argument('--enhance_for_reading', '--enhance-for-reading', action='store_true',
-                        help='Opt in to an additional AI readability derivative; may be inaccurate.')
-    parser.add_argument('--format_as_interview', action='store_true',
-                        help='Legacy audio-only faithful layout alias; never assigns speaker roles.')
+    parser.add_argument('--enhance-for-reading', '--enhance_for_reading', dest='enhance_for_reading', action='store_true',
+                        help='Additional faithful readability derivative; may be inaccurate. Underscore spelling is deprecated.')
+    parser.add_argument('--format-as-interview', '--format_as_interview', dest='format_as_interview', action='store_true',
+                        help='Legacy audio-only layout; never assigns roles. Underscore spelling is deprecated; use --enhance-for-reading for new workflows.')
     parser.add_argument('--workflow', action='store_true',
                         help='Author workflow: raw, optional polish, review, selectable chapter drafts.')
     parser.add_argument('--interview', action='store_true',
@@ -166,8 +167,8 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                         help='Independent speaker-pass duration (1–600 seconds); omitted uses the original chunk duration.')
     parser.add_argument('--confirm-speaker-mappings', action='store_true',
                         help='Confirm supplied mappings were checked against the explicit new diarization chunk scopes.')
-    parser.add_argument('--interview-model', default=DIARIZATION_MODEL,
-                        help='Additional diarization model (gpt-4o-transcribe-diarize); --model still controls original transcription.')
+    parser.add_argument('--speaker-model', '--interview-model', dest='interview_model', default=DIARIZATION_MODEL,
+                        help='Voice separation model (gpt-4o-transcribe-diarize); does not identify people. Requires --interview; --interview-model remains an alias. Original speech-to-text uses --transcription-model.')
     parser.add_argument('--media-type', choices=('auto', 'audio', 'video'), default='auto',
                         help='Workflow media type (default: auto by supported extension).')
     parser.add_argument('--stages', default='raw,polish,review',
@@ -197,7 +198,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
     supplied_flags = {arg.split('=', 1)[0] for arg in (argv if argv is not None else sys.argv[1:])}
     if args.interview and (not args.workflow or args.extract_only):
         parser.usage_error('--interview requires --workflow and cannot use --extract-only.')
-    if not args.interview and supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model', '--diarization-chunk-seconds', '--confirm-speaker-mappings'}:
+    if not args.interview and supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model', '--speaker-model', '--diarization-chunk-seconds', '--confirm-speaker-mappings'}:
         parser.usage_error('Speaker naming options require --interview.')
     reporter = CURRENT.get()
     if reporter is not None:
@@ -237,7 +238,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
     if args.resume and not pipeline_mode:
         parser.usage_error('--resume requires --pipeline, --extract-only, or --workflow.')
     if args.format_as_interview and pipeline_mode:
-        parser.usage_error('--format_as_interview is available only in legacy audio mode.')
+        parser.usage_error('--format-as-interview is available only in legacy audio mode.')
     if args.extract_only and args.enhance_for_reading:
         parser.usage_error('--extract-only cannot request enhancement.')
     if args.extract_only and (args.context_file or args.glossary_file or args.language):
@@ -250,7 +251,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                 retries=args.provider_retries))
         if interview_options_override is not None and (type(interview_options_override) is not InterviewOptions
                 or not args.workflow or args.interview_manifest is None or args.interview
-                or supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model'}):
+                or supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model', '--speaker-model'}):
             raise ModelConfigurationError('Internal batch interview settings require an ordered workflow without competing speaker flags.')
         interview_options = interview_options_override or (InterviewOptions(args.interviewer_name, args.interviewee_name,
             tuple(args.speaker_map), args.interview_model,
@@ -307,7 +308,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
         if source.is_symlink() or not source.exists():
             raise PipelineError('Input is missing or is a symlink; choose an accessible local file or folder.')
         if args.input_folder is not None and not source.is_dir():
-            raise PipelineError('--input_folder must be a local directory.')
+            raise PipelineError('--input-folder must be a local directory.')
         extensions = MEDIA_EXTENSIONS if pipeline_mode else AUDIO_EXTENSIONS
         if source.is_dir():
             files = sorted(path for path in source.iterdir()

@@ -1,5 +1,7 @@
 # Author workflow: local media to source-bound review and chapter drafts
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 The author workflow takes a local audio or video recording, retains the automatic raw transcript, optionally produces a lightly polished derivative, reviews the raw text for passages needing human attention, and produces selectable chapter drafts. It is intended to help an author compare treatments of devotional oral history while preserving testimony and uncertainty.
 
 The raw transcript is the original automatic API result, assembled in audio-chunk order. It is never overwritten by polishing, review, or chapter generation. Automatic transcription can omit or misrecognize words, names, languages, and speaker turns. Check it against the recording before relying on an excerpt as spoken verbatim. Exact-source checks below establish correspondence to this automatic text; they do not establish correspondence to the recording, truth, or suitability for publication.
@@ -40,7 +42,7 @@ Both audio and video are normalized to mono 16 kHz, 16-bit PCM WAV. Video uses t
 | `--narrative-person first\|third` | Default `first`; controls conservative testimony framing, described below. |
 | `--author-model gpt-6-astra` | Review and narrative-arrangement model. Also accepts `gpt-6.1-sol`; default Astra with high reasoning. |
 | `--editing-model gpt-6-astra` | Separate polishing model; also accepts `gpt-6.1-sol`. |
-| `--model gpt-transcribe` | ASR model. Existing model and hint options remain available; see the README. |
+| `--transcription-model gpt-transcribe` | ASR model. Existing model and hint options remain available; see the README. |
 | `--resume` | Verify source, configuration, prompts, and artifact checksums before skipping complete stages. |
 | `--draft-with-unresolved-high` | Explicitly permit visibly labeled chapter drafts despite unresolved high-priority findings. Requires a chapter style. Does not bypass a failed or incomplete review. |
 
@@ -158,7 +160,7 @@ Complete bundles are published by an atomic directory rename with a unique UUID.
 
 Use the same source, output directory, model/hint settings, stage settings, and `--resume` to skip verified stages. You can add previously unrun stages, or retry failed stages while retaining verified earlier work. A completed stage with changed prompts/settings, changed/missing bundle artifacts, a symlink, or a mismatched raw hash is a conflict. Use a fresh output directory to compare a changed completed configuration. Do not hand-edit manifests or raw text to bypass checks. Original raw and existing derivatives/bundles are never replaced.
 
-API chunks are not checkpointed within a stage. Retrying failed ASR, polishing, review, or narrative arrangement can repeat requests and charges. Review retries review the complete source again rather than trusting an incomplete report. CLI progress includes only item positions, opaque IDs, stage statuses, and fixed guidance; it omits raw text, names, private paths, credentials, provider payloads, and tracebacks. Failure returns a nonzero exit code while other input files can continue. The job lock prevents concurrent workflow runs; arbitrary external edits are checked by source snapshots/checksums but are not prevented by the lock.
+Validated original ASR and interview speaker-pass responses are checkpointed and reused on matching resume. Polishing, review and narrative arrangement do not checkpoint individual requests and can repeat earlier successful requests/charges after a failed stage. Review retries review the complete source again rather than trusting an incomplete report. CLI progress includes only item positions, opaque IDs, stage statuses, and fixed guidance; it omits raw text, names, private paths, credentials, provider payloads, and tracebacks. Failure returns a nonzero exit code while other input files can continue. The job lock prevents concurrent workflow runs; arbitrary external edits are checked by source snapshots/checksums but are not prevented by the lock.
 
 ## Local extraction and existing commands
 
@@ -208,7 +210,7 @@ Folder batch mode creates independent jobs. For several recordings from one inte
 
 ## Batch selection and execution monitoring
 
-For serial independent interviews, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands now emit flushed safe stage/part/chunk events and elapsed idle heartbeats, with exclusive local JSONL logs. Source paths, user IDs, hints and transcript/provider text are excluded. Use the engine's matching source/settings with `--resume`; the batch coordinator adds resume automatically. No failed-stage API chunk checkpoint is claimed.
+For independent interviews with optional parallel processing, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands now emit flushed safe stage/part/chunk events and elapsed idle heartbeats, with exclusive local JSONL logs. Source paths, user IDs, hints and transcript/provider text are excluded. Use the engine's matching source/settings with `--resume`; the batch coordinator adds resume automatically. Validated original ASR and interview speaker-pass chunks are checkpointed; text editing/review/chapter requests are not. See [recovery controls](recovery-controls.md).
 
 ```bash
 uv run --locked voice-transcribe --workflow \

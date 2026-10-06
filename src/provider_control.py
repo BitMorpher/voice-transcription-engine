@@ -1,8 +1,9 @@
-"""Shared serial provider admission limits; no content, credentials, or cost estimates."""
+"""Batch-wide, thread-safe provider admission; no content or credentials."""
 
 from contextvars import ContextVar
 import math
 import time
+import threading
 from types import SimpleNamespace
 
 if __package__:
@@ -13,7 +14,7 @@ else:
     from progress import CURRENT
 
 CURRENT_CONTROL = ContextVar('provider_control', default=None)
-STOP_REASONS = {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider'}
+STOP_REASONS = {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider', 'interrupted'}
 
 
 class ProviderStopped(RuntimeError):
@@ -35,11 +36,24 @@ class ProviderControl:
         self.requests = self.failures = 0
         self.failure_streaks = {}
         self.reason = None
+        self.lock = threading.RLock()
+        self.cancelled = threading.Event()
+
+    def cancel(self):
+        """Deny subsequent calls while already admitted I/O drains normally."""
+        with self.lock:
+            self.cancelled.set()
+            if self.reason is None:
+                self.reason = 'interrupted'
 
     def remaining(self):
         return None if self.max_seconds is None else self.max_seconds - (self.clock() - self.started)
 
     def check(self):
+        with self.lock:
+            self._check()
+
+    def _check(self):
         if self.reason is None:
             if self.max_requests is not None and self.requests >= self.max_requests:
                 self.reason = 'request_limit'
@@ -54,24 +68,27 @@ class ProviderControl:
             raise ProviderStopped('Provider admission stopped; completed checkpoints are retained. No additional request was started.')
 
     def call(self, client, path, timeout, retries, parameters):
-        self.check()
-        remaining = self.remaining()
-        if remaining is not None and remaining <= 0:
-            self.reason = 'start_deadline'
+        # Reserve one operation atomically. The lock is released for network I/O,
+        # so the request allowance is shared without serializing valid requests.
+        with self.lock:
             self.check()
-        effective_timeout = timeout if remaining is None else min(timeout, remaining)
+            remaining = self.remaining()
+            if remaining is not None and remaining <= 0:
+                self.reason = 'start_deadline'
+                self.check()
+            effective_timeout = timeout if remaining is None else min(timeout, remaining)
+            if (self.max_requests is not None or self.max_seconds is not None) and retries != 0:
+                raise ProviderStopped('Bounded provider calls require zero SDK retries.')
+            self.requests += 1
+            reporter = CURRENT.get()
+            if reporter:
+                reporter.emit(status='progress', provider_requests=self.requests,
+                              effective_provider_timeout=effective_timeout)
         # Count SDK operation starts. Zero retries prevents SDK retry attempts;
         # redirects/custom transports are not monetary or server-work guarantees.
-        if (self.max_requests is not None or self.max_seconds is not None) and retries != 0:
-            raise ProviderStopped('Bounded provider calls require zero SDK retries.')
         import openai
         if isinstance(client, openai.OpenAI):
             client = client.with_options(timeout=effective_timeout, max_retries=retries)
-        self.requests += 1
-        reporter = CURRENT.get()
-        if reporter:
-            reporter.emit(status='progress', provider_requests=self.requests,
-                          effective_provider_timeout=effective_timeout)
         method = client
         for name in path:
             method = getattr(method, name)
@@ -80,16 +97,21 @@ class ProviderControl:
         try:
             response = method(**parameters)
         except Exception as error:
-            self.failures = self.failure_streaks.get(scope, 0) + 1
-            self.failure_streaks[scope] = self.failures
             category = classify(error)['error_category']
-            if category in SYSTEMIC:
-                self.reason = 'systemic_provider'
-            elif self.failures >= self.failure_limit:
-                self.reason = 'provider_failures'
+            with self.lock:
+                self.failures = self.failure_streaks.get(scope, 0) + 1
+                self.failure_streaks[scope] = self.failures
+                if self.reason is None:
+                    if category in SYSTEMIC:
+                        self.reason = 'systemic_provider'
+                    elif self.failures >= self.failure_limit:
+                        self.reason = 'provider_failures'
             raise
         else:
-            self.failures = self.failure_streaks[scope] = 0
+            # Observe streaks in response-completion order. A success cannot
+            # reopen a stopped run, including cancellation or another scope.
+            with self.lock:
+                self.failures = self.failure_streaks[scope] = 0
             return response
 
 
