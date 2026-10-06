@@ -15,12 +15,14 @@ import time
 import uuid
 
 if __package__:
-    from .provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE
+    from .provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE, TIMEOUT_PHASES, TIMEOUT_GUIDANCE
+    from .batch.prerequisites import GUIDANCE as BLOCK_GUIDANCE
 else:
-    from provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE
+    from provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE, TIMEOUT_PHASES, TIMEOUT_GUIDANCE
+    from batch.prerequisites import GUIDANCE as BLOCK_GUIDANCE
 
 CURRENT = ContextVar('execution_reporter', default=None)
-STAGES = {'conversion', 'transcription', 'enhancement', 'author_review', 'chapters',
+STAGES = {'prerequisite', 'phase_result', 'conversion', 'transcription', 'enhancement', 'author_review', 'chapters',
           'part_transcription', 'staging', 'preflight', 'verification', 'combined_raw'}
 STAGES |= {'diarization', 'attribution', 'attributed_attribution', 'attributed_enhancement',
            'attributed_author_review', 'attributed_chapters'}
@@ -35,6 +37,7 @@ GUIDANCE = ('Check local input permissions, media validity, output space and cac
             'Chapter runs require complete review and explicit human approval.')
 
 SAFE_GUIDANCE = {
+    'One or more requested families are blocked; inspect their prerequisite events. Eligible family results are retained.',
     'Speaker options require run --interview.',
     'Provider controls require run.',
     'Parallel interviews require run and a positive integer.',
@@ -97,6 +100,13 @@ def safe_families(value):
             if family in {'original', 'attributed'} and isinstance(stages, dict)}
 
 
+def safe_blockers(value):
+    if not isinstance(value, dict):
+        return {}
+    return {family: reason for family, reason in value.items()
+            if family in {'original', 'attributed'} and isinstance(reason, str) and reason in BLOCK_GUIDANCE}
+
+
 def emit_progress(stage, status, **counters):
     reporter = CURRENT.get()
     if reporter is not None:
@@ -117,6 +127,7 @@ class Reporter:
         self.sequence = 0
         self._context = threading.local()
         self.item_stages = {}
+        self.item_blockers = {}
         self.configuration = {}
         self.active = {}
         self.sessions = {}
@@ -151,6 +162,10 @@ class Reporter:
         with self.lock:
             return {family: dict(stages) for family, stages in self.item_stages.get(item, {}).items()}
 
+    def blockers(self, item):
+        with self.lock:
+            return dict(self.item_blockers.get(item, {}))
+
     def start(self, directory):
         if self.log is not None:
             return
@@ -184,6 +199,13 @@ class Reporter:
                 elif key == 'error_category' and isinstance(value, str) and value in CATEGORIES:
                     event[key] = value
                     event['guidance'] = ERROR_GUIDANCE[value]
+                elif key == 'timeout_phase' and isinstance(value, str) and value in TIMEOUT_PHASES:
+                    event[key] = value
+                elif key == 'blocked_reason' and isinstance(value, str) and value in BLOCK_GUIDANCE:
+                    event[key] = value
+                    event['guidance'] = BLOCK_GUIDANCE[value]
+                elif key == 'family_blockers':
+                    event[key] = safe_blockers(value)
                 elif key == 'http_status' and type(value) is int and 100 <= value <= 599:
                     event[key] = value
                 elif key == 'scope' and isinstance(value, str) and value in {'batch', 'interview'}:
@@ -221,12 +243,18 @@ class Reporter:
                         family, stage = 'attributed', stage.removeprefix('attributed_')
                     else:
                         family = event.get('family', 'original')
-                    if stage in {'conversion', 'transcription', 'enhancement', 'author_review', 'chapters', 'combined_raw', 'diarization', 'attribution'} or stage == 'preflight' and status == 'not_attempted':
+                    if stage in {'prerequisite', 'phase_result', 'conversion', 'transcription', 'enhancement', 'author_review', 'chapters', 'combined_raw', 'diarization', 'attribution'} or stage == 'preflight' and status == 'not_attempted':
                         families.setdefault(family, {})[stage] = status
                 if 'stage' in event and 'stage_status' in event:
                     remember(event['stage'], event['stage_status'])
                 for stage, status in event.get('stages', {}).items():
                     remember(stage, status)
+                if 'blocked_reason' in event and event.get('family') in {'original', 'attributed'}:
+                    self.item_blockers.setdefault(item, {})[event['family']] = event['blocked_reason']
+            if event.get('error_category') == 'timeout' and 'timeout_phase' in event:
+                event['guidance'] = TIMEOUT_GUIDANCE[event['timeout_phase']]
+            else:
+                event.pop('timeout_phase', None)
             if event.get('stage_status') == 'skipped':
                 event['cache_reused'] = True
             if event.get('status') in {'failed', 'blocked'} or event.get('stage_status') == 'failed':

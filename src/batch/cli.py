@@ -11,7 +11,7 @@ from ..cli import PrivateArgumentParser, _positive_timeout
 from ..provider_control import CURRENT_CONTROL, ProviderControl
 from ..progress import CURRENT, Reporter, emit_progress, interruptions, LogError
 from .plan import BatchError, load_plan, require, select
-from .runner import run_one
+from .runner import run_one, blocked
 from .concurrency import run_sessions
 from .speakers import configurations
 from .storage import (lock, read_snapshot, save_snapshot, stage, summaries, verify, write_summary)
@@ -31,7 +31,7 @@ def parser():
     value.add_argument('--send-to-openai', action='store_true', help='Required run approval to send audio/text to OpenAI; provider use can incur charges.')
     value.add_argument('--human-reviewed', action='store_true',
                        help='Confirm human review of every requested output family before selected chapters.')
-    value.add_argument('--phase', choices=('raw', 'review', 'chapters'), default='raw', help='Run phase (default: raw); review needs complete raw; chapters need approved complete review.')
+    value.add_argument('--phase', choices=('raw', 'review', 'chapters'), default='raw', help='Run phase (default: raw). Each requested family needs its own complete raw for review, or approved complete review for chapters. Ready families continue when another is blocked; partial results exit nonzero.')
     value.add_argument('--parallel-interviews', type=int, default=1,
                        help='Maximum whole interview groups running together, positive integer (default: 1; start with 2 for overlap). Run only; recordings within each group stay ordered. Shared provider limits; no requests-per-minute or cost cap.')
     value.add_argument('--interview', action='store_true',
@@ -109,8 +109,6 @@ def execute(args, reporter):
         root = save_snapshot(root, plan, items)
     if args.action == 'run':
         require(args.send_to_openai, 'Provider calls require --send-to-openai.')
-        require(args.phase != 'chapters' or (args.human_reviewed and args.select),
-                'Chapters require --human-reviewed and explicit --select IDs.')
     if args.log_directory or args.action in {'prepare', 'verify', 'run'}:
         reporter.heartbeat = args.heartbeat_seconds
         reporter.start(args.log_directory or root / 'execution-logs')
@@ -158,6 +156,10 @@ def execute(args, reporter):
                                   stages={'preflight': 'not_attempted'})
             elif item['status'] == 'blocked':
                 status = 'blocked'
+            elif args.action == 'run' and args.phase == 'chapters' and not (args.human_reviewed and args.select):
+                for family in (['original', 'attributed'] if args.interview_options_by_id.get(item['id']) else ['original']):
+                    blocked(reporter, family, args.phase, 'human_review_required')
+                status = 'blocked'
             else:
                 try:
                     if args.action == 'prepare':
@@ -167,8 +169,7 @@ def execute(args, reporter):
                         verify(root, item)
                         status = 'verified'
                     elif args.action == 'run':
-                        run_one(root, item, args)
-                        status = 'complete'
+                        status = run_one(root, item, args) or 'complete'
                     else:
                         status = 'complete'
                         reporter.emit(status='progress', stage='preflight', stage_status='complete',
@@ -187,7 +188,8 @@ def execute(args, reporter):
                     if control and control.cancelled.is_set():
                         status = 'interrupted'
             row = {'item': item['position'], 'status': status,
-                   'families': reporter.families(item['position'])}
+                   'families': reporter.families(item['position']),
+                   'family_blockers': reporter.blockers(item['position'])}
             if control and control.reason:
                 row['stop_reason'] = control.reason
             return row
@@ -203,7 +205,8 @@ def execute(args, reporter):
         if reporter.failed:
             return
         reporter.emit(**row, processed=sum(row['status'] != 'not_attempted' for row in rows), failed=counts['failed'], completed=counts['complete'],
-                      staged=counts['staged'], verified=counts['verified'], blocked=counts['blocked'])
+                      staged=counts['staged'], verified=counts['verified'], blocked=counts['blocked'],
+                      message='One or more requested families are blocked; inspect their prerequisite events. Eligible family results are retained.' if row['status'] == 'blocked' else None)
 
     def unattempted(active_status='interrupted'):
         attempted = {row['item'] for row in rows}
@@ -211,6 +214,7 @@ def execute(args, reporter):
             if item['position'] not in attempted:
                 active = item['position'] in started
                 row = {'item': item['position'], 'status': active_status if active else 'not_attempted',
+                    'family_blockers': reporter.blockers(item['position']),
                     'families': reporter.families(item['position']) if active else
                         {family: {'preflight': 'not_attempted'} for family in
                         (['original', 'attributed'] if args.interview_options_by_id.get(item['id']) else ['original'])}}
@@ -250,6 +254,7 @@ def execute(args, reporter):
         process()
     reporter.context = {'scope': 'batch', 'phase': phase}
     reporter.emit(status='summary', selected=len(items), processed=sum(row['status'] != 'not_attempted' for row in rows),
+                  completed=sum(row['status'] == 'complete' for row in rows),
                   failed=sum(row['status'] == 'failed' for row in rows),
                   blocked=sum(row['status'] == 'blocked' for row in rows),
                   not_attempted=sum(row['status'] == 'not_attempted' for row in rows),

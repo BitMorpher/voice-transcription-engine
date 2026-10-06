@@ -34,7 +34,116 @@ def test_known_status_classification(status, code, category):
 
 @pytest.mark.parametrize('kind,category', [(openai.APITimeoutError, 'timeout'), (openai.APIConnectionError, 'connection')])
 def test_transport_classification(kind, category):
-    assert classify(kind(request=httpx2.Request('POST', 'https://example.invalid'))) == {'error_category': category}
+    assert classify(kind(request=httpx2.Request('POST', 'https://example.invalid'))) == {
+        'error_category': category, **({'timeout_phase': 'unknown'} if category == 'timeout' else {})}
+
+
+@pytest.mark.parametrize('transport_name', ['httpx', 'httpx2'])
+@pytest.mark.parametrize('kind,phase', [('ConnectTimeout', 'connect'), ('WriteTimeout', 'write'),
+                                      ('ReadTimeout', 'read'), ('PoolTimeout', 'pool')])
+def test_real_sdk_wrapping_preserves_only_safe_timeout_phase(transport_name, kind, phase):
+    transport = pytest.importorskip(transport_name)
+    def fail(request):
+        raise getattr(transport, kind)('SYNTHETIC_SECRET credentials and source', request=request)
+    client = openai.OpenAI(api_key='SYNTHETIC_SECRET', max_retries=0,
+        base_url='https://example.invalid/SYNTHETIC_SECRET',
+        http_client=transport.Client(transport=transport.MockTransport(fail)))
+    try:
+        with pytest.raises(openai.APITimeoutError) as caught:
+            client.audio.transcriptions.create(model='synthetic', file=('audio.wav', b'synthetic'))
+        result = classify(caught.value)
+    finally:
+        client.close()
+    assert result == {'error_category': 'timeout', 'timeout_phase': phase}
+    stream = io.StringIO()
+    Reporter(stream).emit(status='progress', stage='transcription', stage_status='failed', **result)
+    event = json.loads(stream.getvalue())
+    assert event['timeout_phase'] == phase
+    assert 'SYNTHETIC_SECRET' not in stream.getvalue() and 'https://' not in stream.getvalue()
+
+
+def test_timeout_phase_without_optional_legacy_transport(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, 'httpx', None)
+    error = openai.APITimeoutError(request=httpx2.Request('POST', 'https://example.invalid'))
+    error.__cause__ = httpx2.WriteTimeout('SYNTHETIC_SECRET')
+    assert classify(error) == {'error_category': 'timeout', 'timeout_phase': 'write'}
+
+
+def test_author_review_retains_safe_timeout_phase_in_report_and_progress():
+    error = openai.APITimeoutError(request=httpx2.Request('POST', 'https://example.invalid'))
+    error.__cause__ = httpx2.ReadTimeout('SYNTHETIC_SECRET')
+    client = MagicMock()
+    client.chat.completions.create.side_effect = error
+    stream = io.StringIO()
+    token = CURRENT.set(Reporter(stream))
+    try:
+        report = review_transcript('Invented short text.', client, ReviewOptions())
+    finally:
+        CURRENT.reset(token)
+    assert report['coverage']['chunks'][0]['timeout_phase'] == 'read'
+    failures = [json.loads(line) for line in stream.getvalue().splitlines()
+                if json.loads(line).get('stage_status') == 'failed']
+    assert len(failures) == 1 and failures[0]['timeout_phase'] == 'read'
+    assert 'SYNTHETIC_SECRET' not in stream.getvalue() + json.dumps(report)
+
+
+@pytest.mark.parametrize('chain', ['context', 'cause', 'suppressed', 'cycle', 'long', 'ambiguous', 'unknown'])
+def test_timeout_phase_uses_only_reliable_active_exception_chain(chain):
+    error = openai.APITimeoutError(request=httpx2.Request('POST', 'https://example.invalid'))
+    transport = httpx2.ReadTimeout('SYNTHETIC_SECRET')
+    expected = 'unknown'
+    if chain == 'context':
+        error.__context__ = transport
+        expected = 'read'
+    elif chain == 'cause':
+        error.__context__ = httpx2.WriteTimeout('ignored context')
+        error.__cause__ = transport
+        expected = 'read'
+    elif chain == 'suppressed':
+        error.__context__ = transport
+        error.__suppress_context__ = True
+    elif chain == 'cycle':
+        error.__cause__ = transport
+        transport.__cause__ = error
+    elif chain == 'long':
+        current = error
+        for _ in range(17):
+            current.__cause__ = RuntimeError('SYNTHETIC_SECRET')
+            current = current.__cause__
+        current.__cause__ = transport
+    elif chain == 'ambiguous':
+        error.__cause__ = transport
+        transport.__cause__ = httpx2.WriteTimeout('SYNTHETIC_SECRET')
+    else:
+        error.__cause__ = TimeoutError('ReadTimeout SYNTHETIC_SECRET')
+    assert classify(error) == {'error_category': 'timeout', 'timeout_phase': expected}
+
+
+def test_timeout_phase_never_reads_exception_text_or_overridden_chain_properties():
+    class PrivateWrapper(RuntimeError):
+        def __str__(self):
+            pytest.fail('Do not inspect exception text.')
+        @property
+        def __cause__(self):
+            pytest.fail('Do not call arbitrary chain properties.')
+    wrapper = PrivateWrapper()
+    BaseException.__cause__.__set__(wrapper, httpx2.PoolTimeout('SYNTHETIC_SECRET'))
+    error = openai.APITimeoutError(request=httpx2.Request('POST', 'https://example.invalid'))
+    error.__cause__ = wrapper
+    assert classify(error)['timeout_phase'] == 'pool'
+    assert classify(wrapper) == {'error_category': 'provider_unknown'}
+
+
+def test_reporter_drops_injected_timeout_and_prerequisite_metadata():
+    stream = io.StringIO()
+    reporter = Reporter(stream)
+    reporter.emit(status='failed', error_category='timeout', timeout_phase='SYNTHETIC_SECRET',
+                  blocked_reason='SYNTHETIC_SECRET', family_blockers={'original': 'SYNTHETIC_SECRET'},
+                  url='https://example.invalid/private', request_id='SYNTHETIC_SECRET')
+    reporter.emit(status='progress', timeout_phase='read')
+    assert 'SYNTHETIC_SECRET' not in stream.getvalue() and 'https://' not in stream.getvalue()
+    assert all('timeout_phase' not in json.loads(line) for line in stream.getvalue().splitlines())
 
 
 def test_unknown_exception_fields_are_not_accessed():

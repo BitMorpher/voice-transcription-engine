@@ -112,19 +112,21 @@ voice-batch run --batch private/batches/session-001 --phase chapters \
 ```
 
 Use the same selected families, ASR model, hints, chunk size and speaker settings
-across phases. Review requires verified complete raw for both requested families.
-It runs polish and review independently. Chapters require explicit entry selection,
-human review of both requested families, complete source/settings-bound reports
-and no high findings in either. Original review cannot approve attributed chapters.
+across phases. Review requires verified complete raw for each family it processes.
+If attributed raw is missing, original polish/review can still run; the attributed
+family is reported as blocked and the command exits nonzero. The reverse also
+applies when the attributed family and its shared source parts are intact.
+Chapters require explicit entry selection and actual human review, with an intact
+source/settings-bound report and no high findings for each family that proceeds. Original review cannot approve attributed chapters.
 Approvals capture exact manifest, raw, provenance and JSON/XLSX identities and are
-revalidated before any provider request. Chapter generations reuse the exact
+revalidated before that family’s provider requests. A blocked family never receives another family’s approval. Chapter generations reuse the exact
 accepted review bytes; they do not regenerate an unapproved review.
 
 An attributed family rejects conflicting completed polish/review/chapter settings
 before further requests; use fresh output for a deliberate editorial configuration
 change. Changing speaker mappings instead creates a new attributed source that
 requires its own complete review and human approval. There is no batch high-finding
-bypass. A failed attributed stage does not relabel completed original or attributed
+bypass. Missing/mismatched prerequisites are `blocked` with per-family guidance; no provider request is made to repair them during review/chapters. A failed attributed stage does not relabel completed original or attributed
 raw/review stages as failed. Complete earlier artifacts remain inspectable.
 
 The extra ASR pass and selected downstream stages can incur additional charges.

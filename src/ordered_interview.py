@@ -268,7 +268,7 @@ class OrderedInterview:
         }
         return raw, provenance
 
-    def preflight(self):
+    def preflight(self, *, original=True, require_raw=False):
         """Check every existing cache/output before any provider request."""
         try:
             for part, directory, identity in self.parts:
@@ -280,6 +280,8 @@ class OrderedInterview:
                     if ancestor.is_symlink():
                         raise ValueError()
                 if not job.exists():
+                    if require_raw:
+                        raise ValueError()
                     continue
                 if not self.resume or os.path.lexists(job / ".lock"):
                     raise ValueError()
@@ -297,6 +299,8 @@ class OrderedInterview:
                     ("transcription", "transcription.txt"),
                 ]:
                     record = state["stages"].get(stage)
+                    if require_raw and (not isinstance(record, dict) or record.get('status') != 'complete'):
+                        raise ValueError()
                     if os.path.lexists(job / name) or (
                         isinstance(record, dict) and record.get("status") == "complete"
                     ):
@@ -313,6 +317,8 @@ class OrderedInterview:
                             and not (job / name).read_bytes().decode("utf-8").strip()
                         ):
                             raise ValueError()
+            if not original:
+                return
             if self.job.parent.is_symlink() or self.job.is_symlink():
                 raise ValueError()
             if self.job.exists():
@@ -394,7 +400,8 @@ class OrderedInterview:
                     self.job, record, raw, self.author_options.review_options, provenance=provenance
                 )
 
-    def process(self, *, transcriber, approved_review=None, approved_attributed_review=None):
+    def process(self, *, transcriber, approved_review=None, approved_attributed_review=None,
+                attributed_only=False, require_raw=False):
         """Publish combined raw only after every part succeeds, then run author stages."""
         original_resume = self.resume
         lock = self.output / ".interview.lock"
@@ -424,7 +431,33 @@ class OrderedInterview:
                         validate_approved_review(approval, self.author_options, attributed=attributed)
             except AuthorWorkflowError as error:
                 raise PipelineError(str(error)) from None
-            self.preflight()
+            if attributed_only:
+                # Batch text phases may run this family independently. They must
+                # never buy missing ASR/diarization or touch original derivatives.
+                if self.interview_options is None or approved_review is not None:
+                    raise PipelineError(SAFE_APPROVAL)
+                self.preflight(original=False, require_raw=True)
+                if (transcriber.options.fingerprint != self.options.fingerprint
+                        or transcriber.editing_options.fingerprint != self.editing_options.fingerprint):
+                    raise PipelineError('Transcriber settings must match the interview configuration.')
+                if __package__:
+                    from .interview_attribution import AttributedInterview, AttributionError, input_record
+                else:
+                    from interview_attribution import AttributedInterview, AttributionError, input_record
+                inputs = [input_record(part['order'], directory / identity,
+                          _read_json(directory / identity / 'manifest.json'))
+                          for part, directory, identity in self.parts]
+                family = AttributedInterview(self.output, inputs, self.interview_options,
+                    resume=True, enhance=self.enhance, author_options=self.author_options,
+                    progress=self.progress)
+                family.verified_raw(transcriber)
+                try:
+                    stages = family.process(transcriber, approved_review=approved_attributed_review, require_raw=True)
+                except AttributionError as error:
+                    raise PipelineError(str(error), stages={'attributed_' + key: value
+                        for key, value in error.stages.items()}) from None
+                return self.binding, {'attributed_' + key: value for key, value in stages.items()}
+            self.preflight(require_raw=require_raw)
             existed = self.job.exists()
             # Initial validation enforces the caller's resume choice. Internal passes
             # can now reuse artifacts created during this same locked run.
@@ -434,43 +467,50 @@ class OrderedInterview:
                 or transcriber.editing_options.fingerprint != self.editing_options.fingerprint
             ):
                 raise PipelineError("Transcriber settings must match the interview configuration.")
-            # Validate/decode ALL parts locally before ASR, including later recordings.
-            for part, directory, identity in self.parts:
-                emit_progress('conversion', 'running', part=part['order'], parts=len(self.parts))
-                pipeline = Pipeline(
-                    directory,
-                    resume=self.resume,
-                    media_timeout=self.media_timeout,
-                    options=self.options,
-                    progress=self.progress,
-                )
-                pipeline.process(
-                    part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
-                )
-            self.preflight()
-            if hasattr(transcriber, 'asr_checkpoint'):
-                # Validate all partial part checkpoints before any new ASR call.
+            if require_raw:
+                # Batch text phases reuse only verified completed recordings.
+                # Do not enter audio conversion/ASR even if files change later.
+                for part, _, _ in self.parts:
+                    for stage in ('conversion', 'transcription'):
+                        emit_progress(stage, 'skipped', part=part['order'], parts=len(self.parts))
+            else:
+                # Validate/decode ALL parts locally before ASR, including later recordings.
                 for part, directory, identity in self.parts:
-                    job = directory / identity
-                    state = _read_json(job / 'manifest.json')
-                    if state['stages'].get('transcription', {}).get('status') != 'complete':
-                        transcriber.asr_checkpoint(job / 'audio.wav', checkpoint_root=job / 'asr-chunks',
-                            source_sha256=part['source_sha256'],
-                            audio_sha256=state['stages']['conversion']['sha256'])
-            for part, directory, identity in self.parts:
-                emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
-                self.progress("part_transcription", "running")
-                Pipeline(
-                    directory, resume=True, media_timeout=self.media_timeout, options=self.options,
-                    progress=self.progress
-                ).process(
-                    part["path"],
-                    transcriber=transcriber,
-                    require_nonempty=True,
-                    expected_source_sha256=part["source_sha256"],
-                )
-                self.progress("part_transcription", "complete")
-            self.preflight()
+                    emit_progress('conversion', 'running', part=part['order'], parts=len(self.parts))
+                    pipeline = Pipeline(
+                        directory,
+                        resume=self.resume,
+                        media_timeout=self.media_timeout,
+                        options=self.options,
+                        progress=self.progress,
+                    )
+                    pipeline.process(
+                        part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
+                    )
+                self.preflight()
+                if hasattr(transcriber, 'asr_checkpoint'):
+                    # Validate all partial part checkpoints before any new ASR call.
+                    for part, directory, identity in self.parts:
+                        job = directory / identity
+                        state = _read_json(job / 'manifest.json')
+                        if state['stages'].get('transcription', {}).get('status') != 'complete':
+                            transcriber.asr_checkpoint(job / 'audio.wav', checkpoint_root=job / 'asr-chunks',
+                                source_sha256=part['source_sha256'],
+                                audio_sha256=state['stages']['conversion']['sha256'])
+                for part, directory, identity in self.parts:
+                    emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
+                    self.progress("part_transcription", "running")
+                    Pipeline(
+                        directory, resume=True, media_timeout=self.media_timeout, options=self.options,
+                        progress=self.progress
+                    ).process(
+                        part["path"],
+                        transcriber=transcriber,
+                        require_nonempty=True,
+                        expected_source_sha256=part["source_sha256"],
+                    )
+                    self.progress("part_transcription", "complete")
+                self.preflight()
             raw, provenance = self._combine()
             if not self.job.exists():
                 self._publish(raw, provenance)

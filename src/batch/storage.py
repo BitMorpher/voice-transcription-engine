@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 
 from ..ordered_interview import _local, _read_json
-from ..progress import safe_configuration, safe_families
+from ..progress import safe_configuration, safe_families, safe_blockers
 from ..private_output import digest, output_directory, write_private
 from .plan import BatchError, encode, require, snapshot
 from .probe import probe_video, suffix_from_probe
@@ -171,6 +171,7 @@ def summaries(root):
             if type(row.get('item')) is not int or row['item'] < 1:
                 continue
             families = safe_families(row.get('families'))
+            blockers = safe_blockers(row.get('family_blockers'))
             for family, stages in families.items():
                 key = row['item'], family, data.get('phase', '')
                 latest[key] = {'item': row['item'], 'family': family,
@@ -178,7 +179,8 @@ def summaries(root):
                     'recorded_status': ('not_attempted' if set(stages.values()) == {'not_attempted'}
                         else 'interrupted' if row.get('status') == 'interrupted'
                         and any(status in {'pending', 'running'} for status in stages.values())
-                        else 'failed' if 'failed' in stages.values() else 'incomplete'
+                        else 'failed' if 'failed' in stages.values() else 'blocked' if 'blocked' in stages.values() else 'incomplete'
                         if any(status in {'pending', 'running', 'not_attempted', 'interrupted', 'incomplete'}
-                               for status in stages.values()) else 'complete'), 'stages': stages}
+                               for status in stages.values()) else 'complete'), 'stages': stages,
+                    **({'blocked_reason': blockers[family]} if family in blockers else {})}
     return result + [{'status': 'latest', **row} for _, row in sorted(latest.items())]

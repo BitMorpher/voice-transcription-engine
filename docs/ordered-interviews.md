@@ -94,3 +94,7 @@ uv run --locked voice-batch status --batch private/batches/demo-001
 
 
 When the batch chapter coordinator creates a new chapter generation, it transfers the exact gate-approved review JSON/XLSX bytes after locked source/bundle checks and skips the provider review request. Conflicting or changed approved reviews fail closed. This batch approval transfer is distinct from the direct workflow's generation behavior described above; see [the human-approved batch chapter gate](batch-orchestration.md#raw-review-and-human-approved-chapters).
+
+## Batch prerequisites and safe failure detail
+
+For `voice-batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.

@@ -359,7 +359,7 @@ def test_approval_change_between_gate_and_execution_fails_before_requests(review
     assert provider.chat.completions.create.call_count == calls
     assert not list(root.rglob('chapter_drafts.json'))
     text = capsys.readouterr().out
-    assert 'Approved review changed' in text
+    assert 'review_prerequisite' in text and 'blocked' in text
     assert 'SYNTHETIC_SECRET' not in text
 
 
