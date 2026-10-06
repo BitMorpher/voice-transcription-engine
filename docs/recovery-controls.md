@@ -8,6 +8,8 @@ Each nonempty ASR response and structurally valid diarization response is writte
 
 Bindings cover source SHA-256, prepared-audio SHA-256, model/settings fingerprints, response format, byte/duration limits, exact encoded WAV checksum, chunk order, offsets, durations, total coverage, and the checkpoint contract. Existing checkpoints are validated before new calls for that recording; ordered interviews preflight partial ASR checkpoints across every part. Changed/incomplete/symlink checkpoints fail closed, with no overwrite. Orphan temporary directories are not successful checkpoints. Checksums detect changes relative to the saved manifest; they are not a cryptographic signature against someone replacing both manifest and content.
 
+New checkpoints store the full recording binding and chunk layout once in a private `binding.json`. Each chunk manifest references that binding's fingerprint and its own descriptor, so metadata storage and validation grow linearly with chunk count. Existing version-1 chunk checkpoints remain reusable without rewriting them; a resumed recording can contain both old and new chunk manifests. A missing or changed shared binding blocks reuse of new-format checkpoints.
+
 Original manifest version 2 and whole-recording diarization cache version 1 remain compatible. Verified completed recordings bypass the new chunk caches and remain byte-identical on reuse. Original ASR defaults/model/hints/fingerprint have not changed. Keep the same staging paths and matching ASR settings: ordered cache identities include resolved paths. Copying/moving a batch and processing it at a new location can prevent reuse. A backup can be retained separately while processing at the original path.
 
 ## Independent speaker-pass duration

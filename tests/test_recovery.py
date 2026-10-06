@@ -80,7 +80,7 @@ def test_asr_failure_after_n_chunks_and_restart_only_missing(tmp_path, pcm):
     assert not (job / 'transcription.txt').exists()
     assert json.loads((job / 'manifest.json').read_text())['stages']['transcription']['status'] == 'failed'
     saved = snapshot(job / 'asr-chunks')
-    assert len(saved) == 4  # two atomic response/manifest pairs
+    assert len(saved) == 5  # shared binding plus two atomic response/manifest pairs
     provider.audio.transcriptions.create.side_effect = original
     identity, _ = Pipeline(output, options=options, resume=True).process(source, transcriber=transcriber)
     assert identity == job.name
@@ -93,7 +93,8 @@ def test_asr_failure_after_n_chunks_and_restart_only_missing(tmp_path, pcm):
     assert provider.audio.transcriptions.create.call_count == 5
 
 
-@pytest.mark.parametrize('tamper', ['response', 'manifest', 'missing', 'symlink', 'forged_shape', 'offset'])
+@pytest.mark.parametrize('tamper', ['response', 'manifest', 'missing', 'symlink', 'forged_shape',
+                                    'offset', 'binding'])
 def test_partial_asr_checkpoint_tamper_blocks_before_request(tmp_path, pcm, tamper):
     source = audio(tmp_path / 'synthetic.wav')
     provider, options = client(), TranscriptionOptions(chunk_seconds=1)
@@ -120,6 +121,11 @@ def test_partial_asr_checkpoint_tamper_blocks_before_request(tmp_path, pcm, tamp
         state = json.loads(manifest.read_text())
         state['chunk']['offset_seconds'] += 1
         manifest.write_text(json.dumps(state))
+    elif tamper == 'binding':
+        binding = manifest.parent.parent / 'binding.json'
+        state = json.loads(binding.read_text())
+        state['binding']['source_sha256'] = 'b' * 64
+        binding.write_text(json.dumps(state))
     else:
         response.write_text('{"text":42}')
         state = json.loads(manifest.read_text())
@@ -157,7 +163,7 @@ def test_diarization_partial_restart_and_complete_legacy_read_only(tmp_path, pcm
     assert not list((output / 'attributed').rglob('provider_responses.json'))
     assert not family.job.exists()
     saved = snapshot(output / 'attributed/diarization-chunks')
-    assert len(saved) == 4
+    assert len(saved) == 5
     provider.audio.transcriptions.create.side_effect = original
     family.process(transcriber)
     assert provider.audio.transcriptions.create.call_count == 6
@@ -455,7 +461,7 @@ def test_partial_diarization_tamper_before_any_new_call(tmp_path, pcm, tamper):
         manifest.unlink()
     elif tamper == 'rebound':
         body = json.loads(manifest.read_text())
-        body['binding']['source_sha256'] = 'b' * 64
+        body['binding_sha256'] = 'b' * 64
         manifest.write_text(json.dumps(body))
     else:
         body = json.loads(response.read_text())
