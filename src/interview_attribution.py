@@ -292,7 +292,7 @@ class AttributedInterview:
                                   'configuration': configuration})
             if not (self.output / 'diarization-cache' / cache).is_dir():
                 raise ValueError()
-            payloads.append((part, *self._cache(part, transcriber, configuration)))
+            payloads.append((part, *self._cache(part, transcriber, configuration, require_cached=True)))
         raw, provenance, provider_text = self._assemble(payloads)
         if (_read_json(self.job / 'provenance.json') != provenance
                 or (self.job / 'transcription.txt').read_bytes() != raw.encode()
@@ -316,7 +316,7 @@ class AttributedInterview:
             if path.is_symlink() or digest(path) != expected:
                 raise ValueError()
 
-    def _cache(self, part, transcriber, configuration):
+    def _cache(self, part, transcriber, configuration, *, require_cached=False):
         binding = _fingerprint({'source': part['source_sha256'], 'audio': part['audio_sha256'],
                                 'configuration': configuration})
         cache = self.output / 'diarization-cache' / binding
@@ -350,6 +350,8 @@ class AttributedInterview:
             self.progress('diarization', 'skipped')
             self.cache_snapshots[cache / 'provider_responses.json'] = state['response_sha256']
             return payload, binding
+        if require_cached:
+            raise ValueError()
         self._sources_unchanged()
         checkpoint = _checkpoint(transcriber, part['audio'], configuration,
             self.output / 'diarization-chunks', part['source_sha256'], part['audio_sha256'])
@@ -474,7 +476,7 @@ class AttributedInterview:
                 path = next(self.job / name for name in record['artifacts'] if name.endswith('/chapter_drafts.json'))
                 validate_chapter_binding(_read_json(path), provenance)
 
-    def process(self, transcriber, *, approved_review=None):
+    def process(self, transcriber, *, approved_review=None, require_raw=False):
         summary = {'attribution': 'pending'}
         active_stage = 'attribution'
         raw_names = {'transcription.txt', 'provenance.json', 'diarization_transcription.txt',
@@ -500,6 +502,8 @@ class AttributedInterview:
                                     'diarization': configuration})
             # Entire family checked before making a diarization request.
             state = None
+            if require_raw and not os.path.lexists(self.job):
+                raise ValueError()
             if os.path.lexists(self.job):
                 if not self.resume or self.job.is_symlink():
                     raise ValueError()
@@ -524,11 +528,12 @@ class AttributedInterview:
                 if state is not None and not os.path.lexists(cache):
                     raise ValueError()
                 if os.path.lexists(cache):
-                    self._cache(part, transcriber, configuration)
+                    self._cache(part, transcriber, configuration, require_cached=state is not None)
                 else:
                     _checkpoint(transcriber, part['audio'], configuration,
                         self.output / 'diarization-chunks', part['source_sha256'], part['audio_sha256'])
-            payloads = [(part, *self._cache(part, transcriber, configuration)) for part in self.inputs]
+            payloads = [(part, *self._cache(part, transcriber, configuration,
+                         require_cached=state is not None)) for part in self.inputs]
             raw, provenance, provider_text = self._assemble(payloads)
             self._sources_unchanged()
             if state is None:

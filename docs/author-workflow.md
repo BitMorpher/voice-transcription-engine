@@ -225,3 +225,7 @@ uv run --locked voice-batch status --batch private/batches/demo-001
 
 
 For batch chapters, the explicit human gate now binds the exact approved review bundle used for drafting. `src/review_reuse.py` verifies and transfers that bundle byte for byte into a chapter generation before author stages; a new chapter configuration does not request a fresh review after approval. Changed/conflicting bundles stop drafting. Narrative completion/property/refusal/truncation errors emit terminal safe `completion` events, while schema/source-coverage failures emit `validation` events for the failed chunk.
+
+## Batch prerequisites and safe failure detail
+
+For `voice-batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.

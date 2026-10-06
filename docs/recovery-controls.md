@@ -49,12 +49,12 @@ voice-batch run --batch private/batches/demo-001 --select entry-a \
   --phase raw --interview --speaker-config private/config/speakers.json \
   --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
   --diarization-chunk-seconds 60 --provider-timeout 120 --provider-retries 0 \
-  --max-provider-requests 1 --max-run-seconds 180
+  --max-provider-requests 1 --max-run-seconds 180 --send-to-openai
 ```
 
 The first uncached provider operation consumes the allowance, regardless of stage. If original ASR is incomplete, that operation may be ASR instead of diarization. It may also complete a sufficiently short session or use no allowance when all selected work is cached. For longer sessions a nonzero incomplete result is expected, with the completed chunk checkpoint retained. This is not a one-chunk quality assessment for a full interview and does not produce a full transcript automatically.
 
-After inspecting the safe result and authorizing further paid processing, repeat with an explicitly chosen larger request allowance. Preserve the ASR model/hints/chunk setting and independent diarization duration to reuse checkpoints. Do not blindly launch every interview after repeated failures. `voice-batch` resumes automatically; **it has no `--resume` option**. Direct `voice-transcribe` pipeline/workflow recovery uses `--resume`.
+**Stop after a diagnostic provider failure.** A timeout/connection/account failure is not the expected request-limit stop and is not evidence of a saved chunk. Do not proceed to all sessions or enlarge the allowance until that failure is investigated. Only after confirming a valid returned response/checkpoint and deliberately authorizing further paid processing should you repeat with a larger allowance. Preserve the ASR model/hints/chunk setting and independent diarization duration to reuse checkpoints. Do not blindly launch every interview after repeated failures. `voice-batch` resumes automatically; **it has no `--resume` option**. Direct `voice-transcribe` pipeline/workflow recovery uses `--resume`.
 
 ## Safe status and configuration
 
@@ -63,3 +63,11 @@ Every new run records allowlisted effective model enums, chunk durations, provid
 `voice-batch status --batch ...` presents chronological history with the original `historical_run` and `started_at`, then the latest **recorded** stages per item, family and phase, with `latest_run`. Original completion remains visible when attribution fails, and original-only review does not replace attributed history. Latest stage sets come from one run rather than combining different settings/generations. The envelope `run` is the status command's identity; the explicit historical/latest fields identify the earlier execution. Legacy summaries use their filesystem modification time when no timestamp exists and do not acquire inferred family success. Status does not read transcripts/media or freshly verify artifact checksums; use the existing verification/gates before processing.
 
 Offline regressions cover later-chunk failures, restart reuse, corrupt/rebound checkpoints, old completed cache reuse, the synthetic 43/47 recovery case, independent chunk scopes, SDK mock-transport timeout/retry behavior, cross-stage limits, failure streaks, signals and mixed-family chronology. They validate software contracts, not live provider accuracy, latency or cost.
+
+## Diagnose the failure before another paid run
+
+New SDK timeout events include a fixed `timeout_phase`: `connect` (connection establishment), `write` (sending request data), `read` (waiting for response data), `pool` (waiting for a local connection slot), or `unknown`. Classification follows recognized transport exception types, never message text. Unknown or ambiguous evidence stays unknown; a `read` result does not establish the provider/network root cause. The SDK may already have retried before returning its final exception when retries are enabled. Old logs cannot be reclassified from elapsed time alone.
+
+Review is not a remedy for incomplete raw. Batch review/chapters check each family separately, record unavailable prerequisites as `blocked`, and continue only the eligible families. For example, complete original raw with missing attribution can produce complete original review and blocked attributed review in the same run. The command returns nonzero and preserves both facts. No audio requests are made by a text phase to fill missing prerequisites. To request only original review, omit interview mode and the speaker configuration and select known-ready originals.
+
+Chapter gates also remain independent: a missing review or high findings in one family blocks that family’s chapters without approving it from another family’s report. The other family can proceed only with its own exact reviewed bundle, explicit selection and actual human approval. Blocked gates have fixed `blocked_reason` guidance; they do not consume request allowance or count as provider failures. Saved summaries retain `family_blockers`, stage states and each family’s `phase_result`; status reports this recorded evidence without reading media/transcripts.

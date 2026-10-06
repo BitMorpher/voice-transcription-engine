@@ -127,7 +127,7 @@ def _legacy_process(source, output, transcriber, args):
 
 
 def _execute(argv=None, *, approved_review=None, interview_options_override=None,
-         approved_attributed_review=None):
+         approved_attributed_review=None, attributed_only=False, require_raw=False):
     parser = PrivateArgumentParser(prog='voice-transcribe', color=False, allow_abbrev=False,
                                    description='Convert local media and transcribe audio using OpenAI.')
     inputs = parser.add_mutually_exclusive_group(required=True)
@@ -253,6 +253,11 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                 or not args.workflow or args.interview_manifest is None or args.interview
                 or supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model', '--speaker-model'}):
             raise ModelConfigurationError('Internal batch interview settings require an ordered workflow without competing speaker flags.')
+        if attributed_only and (interview_options_override is None or not args.workflow
+                or args.interview_manifest is None or 'review' not in requested):
+            raise ModelConfigurationError('Independent attributed processing requires a batch text phase.')
+        if require_raw and (not args.workflow or args.interview_manifest is None or 'review' not in requested):
+            raise ModelConfigurationError('Existing raw is required only for an ordered text phase.')
         interview_options = interview_options_override or (InterviewOptions(args.interviewer_name, args.interviewee_name,
             tuple(args.speaker_map), args.interview_model,
             diarization_chunk_seconds=args.diarization_chunk_seconds,
@@ -294,13 +299,14 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                 enhance=args.enhance_for_reading or 'polish' in requested,
                 interview_options=interview_options,
                 progress=lambda stage, status: _report(status='progress', stage=stage, stage_status=status))
-            interview.preflight()
+            interview.preflight(original=not attributed_only, require_raw=require_raw or attributed_only)
             require_ffmpeg()
             transcriber = Transcriber(media_timeout=args.media_timeout, options=options,
                                       editing_options=editing_options,
                                       provider_timeout=args.provider_timeout, provider_retries=args.provider_retries)
             identity, stages = interview.process(transcriber=transcriber, approved_review=approved_review,
-                                                  approved_attributed_review=approved_attributed_review)
+                                                  approved_attributed_review=approved_attributed_review,
+                                                  attributed_only=attributed_only, require_raw=require_raw)
             _report(job=identity, status='complete', stages=stages)
             _report(status='summary', processed=1, failed=0)
             return 0
@@ -375,12 +381,13 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
 
 
 def main(argv=None, *, approved_review=None, interview_options_override=None,
-         approved_attributed_review=None):
+         approved_attributed_review=None, attributed_only=False, require_raw=False):
     token = CURRENT_CONTROL.set(CURRENT_CONTROL.get())
     try:
         return _execute(argv, approved_review=approved_review,
             interview_options_override=interview_options_override,
-            approved_attributed_review=approved_attributed_review)
+            approved_attributed_review=approved_attributed_review, attributed_only=attributed_only,
+            require_raw=require_raw)
     finally:
         CURRENT_CONTROL.reset(token)
 

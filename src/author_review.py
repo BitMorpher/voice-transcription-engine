@@ -348,7 +348,7 @@ def review_transcript(raw, client, options=None):
                            **failure})
         if chunks[-1].get('error_category') == 'not_attempted':
             chunks[-1]['attempted'] = False
-        failure = {key: chunks[-1][key] for key in ('error_category', 'http_status') if key in chunks[-1]}
+        failure = {key: chunks[-1][key] for key in ('error_category', 'http_status', 'timeout_phase') if key in chunks[-1]}
         emit_progress('author_review', chunks[-1]['status'], chunk=chunk['chunk_index'], chunks=len(requests), **failure)
         if failure.get('error_category') in SYSTEMIC | {'not_attempted'}:
             # Preserve full attempted/unattempted coverage without charging more

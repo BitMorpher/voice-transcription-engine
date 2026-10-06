@@ -228,6 +228,131 @@ def run(root, phase='raw', *flags):
     return main(['run', '--batch', str(root), '--phase', phase, '--send-to-openai', '--interview', *flags])
 
 
+def latest_summary(root):
+    path = max(root.glob('summary-*.json'), key=lambda path: path.stat().st_mtime_ns)
+    return json.loads(path.read_text())
+
+
+def test_missing_attribution_allows_parallel_original_review_and_cache_reuse(interview_batch, interview_client, capsys):
+    root = interview_batch
+    assert main(['run', '--batch', str(root), '--send-to-openai']) == 0
+    originals = {p: p.read_bytes() for p in root.rglob('transcription.txt')}
+    audio_calls = interview_client.audio.transcriptions.create.call_count
+    assert run(root, 'review', '--parallel-interviews', '2') == 1
+    summary = latest_summary(root)
+    assert summary['blocked'] == 2 and summary['failed'] == summary['completed'] == 0
+    assert interview_client.audio.transcriptions.create.call_count == audio_calls
+    assert len(list(root.rglob('review_report.json'))) == 2
+    for row in summary['items']:
+        assert row['families']['original']['author_review'] == 'complete'
+        assert row['families']['attributed']['author_review'] == 'blocked'
+        assert row['family_blockers'] == {'attributed': 'raw_prerequisite'}
+    calls = interview_client.chat.completions.create.call_count
+    assert run(root, 'review', '--parallel-interviews', '2') == 1
+    assert interview_client.chat.completions.create.call_count == calls
+    assert all(path.read_bytes() == value for path, value in originals.items())
+    capsys.readouterr()
+    assert main(['status', '--batch', str(root)]) == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    latest = [r for r in events if r['status'] == 'latest' and r['phase'] == 'review']
+    assert len(latest) == 4
+    assert all(r['recorded_status'] == ('blocked' if r['family'] == 'attributed' else 'complete') for r in latest)
+    assert all(r.get('blocked_reason') == 'raw_prerequisite' for r in latest if r['family'] == 'attributed')
+
+
+def test_missing_all_raw_reports_blocked_without_initializing_provider(interview_batch, monkeypatch, capsys):
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kw: pytest.fail('A prerequisite must block before provider initialization.'))
+    capsys.readouterr()
+    assert run(interview_batch, 'review', '--parallel-interviews', '2') == 1
+    summary = latest_summary(interview_batch)
+    assert summary['blocked'] == 2 and summary['failed'] == 0
+    assert all(row['family_blockers'] == dict(original='raw_prerequisite', attributed='raw_prerequisite')
+               for row in summary['items'])
+    text = capsys.readouterr().out
+    assert 'OPENAI_API_KEY' not in text and 'provider_unknown' not in text
+    assert json.loads(text.splitlines()[-1])['provider_requests'] == 0
+
+
+def test_attributed_review_can_continue_when_combined_original_is_invalid(interview_batch, interview_client):
+    root = interview_batch
+    assert run(root) == 0
+    original = next((root / 'item-0001/output/interviews').rglob('transcription.txt'))
+    original.write_bytes(b'SYNTHETIC_PRIVATE_TAMPERING')
+    audio = interview_client.audio.transcriptions.create.call_count
+    assert run(root, 'review', '--select', 'entry-1') == 1
+    row = latest_summary(root)['items'][0]
+    assert row['status'] == 'blocked' and row['family_blockers'] == {'original': 'raw_prerequisite'}
+    assert row['families']['attributed']['author_review'] == 'complete'
+    assert len(list(family(root).rglob('review_report.json'))) == 1
+    assert not list(original.parent.rglob('review_report.json'))
+    assert original.read_bytes() == b'SYNTHETIC_PRIVATE_TAMPERING'
+    assert interview_client.audio.transcriptions.create.call_count == audio
+
+
+@pytest.mark.parametrize('artifact', ['transcription.txt', 'audio.wav', 'manifest.json'])
+def test_invalid_shared_part_blocks_both_families_without_requests(interview_batch, interview_client, artifact):
+    root = interview_batch
+    assert run(root) == 0
+    path = next((root / 'item-0001/output/parts').rglob(artifact))
+    path.write_bytes(b'SYNTHETIC_PRIVATE_TAMPERING')
+    calls = interview_client.chat.completions.create.call_count
+    assert run(root, 'review', '--select', 'entry-1') == 1
+    assert interview_client.chat.completions.create.call_count == calls
+    row = latest_summary(root)['items'][0]
+    assert row['status'] == 'blocked' and set(row['family_blockers']) == {'original', 'attributed'}
+    assert path.read_bytes() == b'SYNTHETIC_PRIVATE_TAMPERING'
+
+
+def test_original_text_validation_failure_does_not_block_ready_attribution(interview_batch, interview_client):
+    from src.progress import CURRENT
+    root = interview_batch
+    assert run(root) == 0
+    respond = interview_client.chat.completions.create.side_effect
+    def chat(**kwargs):
+        if CURRENT.get().context.get('family') == 'original':
+            supplied = json.loads(kwargs['messages'][-1]['content'])
+            body = dict(chunk_index=supplied['chunk_index'], text='Invented extra words.', speaker_uncertain=False)
+            return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+                message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+        return respond(**kwargs)
+    interview_client.chat.completions.create.side_effect = chat
+    assert run(root, 'review', '--select', 'entry-1') == 1
+    assert latest_summary(root)['failed'] == 1
+    assert latest_summary(root)['items'][0]['families']['attributed']['author_review'] == 'complete'
+    assert not list((root / 'item-0001/output/interviews').rglob('review_report.json'))
+
+
+def test_parallel_text_phases_share_request_allowance_after_family_split(interview_batch, interview_client, capsys):
+    import threading
+    root = interview_batch
+    assert run(root) == 0
+    barrier = threading.Barrier(2)
+    respond = interview_client.chat.completions.create.side_effect
+    def chat(**kwargs):
+        barrier.wait(timeout=5)
+        return respond(**kwargs)
+    interview_client.chat.completions.create.side_effect = chat
+    capsys.readouterr()
+    assert run(root, 'review', '--parallel-interviews', '2', '--max-provider-requests', '2', '--provider-retries', '0') == 1
+    assert interview_client.chat.completions.create.call_count == 2
+    summary = latest_summary(root)
+    assert summary['incomplete'] == 2 and summary['failed'] == summary['blocked'] == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert events[-1]['provider_requests'] == 2 and events[-1]['stop_reason'] == 'request_limit'
+    assert all(row['families']['attributed']['preflight'] == 'not_attempted' for row in summary['items'])
+
+
+def test_missing_human_approval_is_blocked_per_family_with_no_requests(interview_batch, interview_client):
+    assert run(interview_batch) == 0
+    assert run(interview_batch, 'review') == 0
+    calls = interview_client.chat.completions.create.call_count
+    assert run(interview_batch, 'chapters', '--select', 'entry-1') == 1
+    row = latest_summary(interview_batch)['items'][0]
+    assert row['status'] == 'blocked'
+    assert row['family_blockers'] == dict(original='human_review_required', attributed='human_review_required')
+    assert interview_client.chat.completions.create.call_count == calls
+
+
 def family(root, item=1):
     return next(p.parent for p in (root / f'item-{item:04d}/output/attributed').rglob('transcription.txt'))
 
@@ -311,18 +436,23 @@ def test_speaker_flags_require_opt_in(interview_batch, interview_client, flag):
 
 
 @pytest.mark.parametrize('high_family', ['original', 'attributed'])
-def test_each_familys_high_gate_stops_all_chapter_calls(interview_batch, interview_client, high_family):
+def test_each_familys_high_gate_blocks_only_its_chapters(interview_batch, interview_client, high_family):
     interview_client.high_family = high_family
     assert run(interview_batch) == 0
     assert run(interview_batch, 'review') == 0
     calls = interview_client.chat.completions.create.call_count
     assert run(interview_batch, 'chapters', '--human-reviewed', '--select', 'entry-1') == 1
-    assert interview_client.chat.completions.create.call_count == calls
-    assert not list(interview_batch.rglob('chapter_drafts.json'))
+    assert interview_client.chat.completions.create.call_count > calls
+    drafts = list(interview_batch.rglob('chapter_drafts.json'))
+    assert len(drafts) == 1
+    assert ('attributed' in drafts[0].parts) == (high_family == 'original')
+    summary = latest_summary(interview_batch)
+    assert summary['blocked'] == 1 and summary['failed'] == 0
+    assert summary['items'][0]['family_blockers'] == {high_family: 'high_findings'}
 
 
 @pytest.mark.parametrize('artifact', ['transcription.txt', 'provenance.json', 'review_report.json', 'review_report.xlsx', 'manifest.json'])
-def test_changed_attributed_approval_stops_original_chapter_calls(interview_batch, interview_client, monkeypatch, artifact):
+def test_changed_attributed_approval_preserves_eligible_original_chapters(interview_batch, interview_client, monkeypatch, artifact):
     from src.batch import runner
     root = interview_batch
     assert run(root) == 0
@@ -336,8 +466,10 @@ def test_changed_attributed_approval_stops_original_chapter_calls(interview_batc
     monkeypatch.setattr(runner, 'gate_attribution', changed)
     calls = interview_client.chat.completions.create.call_count
     assert run(root, 'chapters', '--human-reviewed', '--select', 'entry-1') == 1
-    assert interview_client.chat.completions.create.call_count == calls
-    assert not list(root.rglob('chapter_drafts.json'))
+    assert interview_client.chat.completions.create.call_count > calls
+    drafts = list(root.rglob('chapter_drafts.json'))
+    assert len(drafts) == 1 and 'interviews' in drafts[0].parts
+    assert latest_summary(root)['items'][0]['family_blockers'] == {'attributed': 'review_prerequisite'}
 
 
 def test_unknown_mode_requires_provider_consent_and_action(interview_batch, interview_client):
@@ -366,31 +498,34 @@ def test_duplicate_config_ids_and_json_keys_fail_before_requests(interview_batch
     assert interview_client.audio.transcriptions.create.call_count == 0
 
 
-def test_missing_attributed_review_and_mapping_change_never_buy_chapters(interview_batch, interview_client, tmp_path):
+def test_missing_attributed_review_or_mapping_never_buy_attributed_chapters(interview_batch, interview_client, tmp_path):
     root = interview_batch
     assert run(root) == 0
     # Original-only review cannot approve the attributed family.
     assert main(['run', '--batch', str(root), '--phase', 'review', '--send-to-openai']) == 0
     calls = interview_client.chat.completions.create.call_count
     assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed') == 1
-    assert interview_client.chat.completions.create.call_count == calls
+    assert interview_client.chat.completions.create.call_count > calls
+    assert not list((root / 'item-0001/output/attributed').rglob('chapter_drafts.json'))
     assert run(root, 'review') == 0
     cfg = settings(tmp_path, [{'id': 'entry-1', 'interviewee_name': 'Synthetic Guest',
                              'speaker_map': ['1:1:B=interviewee']}])
     calls = interview_client.chat.completions.create.call_count
     assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--speaker-config', str(cfg)) == 1
     assert interview_client.chat.completions.create.call_count == calls
-    assert not list(root.rglob('chapter_drafts.json'))
+    assert not list((root / 'item-0001/output/attributed').rglob('chapter_drafts.json'))
 
 
-def test_changed_complete_attributed_chapter_settings_fail_before_new_requests(interview_batch, interview_client):
+def test_changed_complete_attributed_chapter_settings_preserve_its_existing_drafts(interview_batch, interview_client):
     root = interview_batch
     assert run(root) == 0
     assert run(root, 'review') == 0
     assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--chapters', 'interview') == 0
     calls = interview_client.chat.completions.create.call_count
+    before = {p: p.read_bytes() for p in (root / 'item-0001/output/attributed').rglob('*') if p.is_file()}
     assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--chapters', 'narrative') == 1
-    assert interview_client.chat.completions.create.call_count == calls
+    assert interview_client.chat.completions.create.call_count > calls  # eligible original generation
+    assert all(p.read_bytes() == content for p, content in before.items())
 
 
 def test_original_approval_cannot_be_substituted_for_attributed_family(interview_batch, interview_client, monkeypatch):
@@ -403,8 +538,10 @@ def test_original_approval_cannot_be_substituted_for_attributed_family(interview
     monkeypatch.setattr(runner, 'gate_attribution', swapped)
     calls = interview_client.chat.completions.create.call_count
     assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed') == 1
-    assert interview_client.chat.completions.create.call_count == calls
-    assert not list(root.rglob('chapter_drafts.json'))
+    assert interview_client.chat.completions.create.call_count > calls
+    drafts = list(root.rglob('chapter_drafts.json'))
+    assert len(drafts) == 1 and 'interviews' in drafts[0].parts
+    assert latest_summary(root)['items'][0]['family_blockers'] == {'attributed': 'review_prerequisite'}
 
 
 def test_batch_v3_provenance_checksum_is_required_on_raw_resume(interview_batch, interview_client):

@@ -55,7 +55,7 @@ CLI syntax and stacked base history remain unchanged. No review replies or threa
 
 The current batch CLI adds explicit `run --parallel-interviews N`, default 1. Parts within each interview retain their order; worker changes do not change cache identities. `--transcription-model` and `--speaker-model` are the preferred model flags, with published `--model` and `--interview-model` aliases preserved. The [parameter guide](cli-reference.md) documents every public flag, combinations, defaults, costs and examples. Earlier validation counts above describe the earlier feature, not the current suite.
 
-Current local evidence on CPython 3.14.8:
+Parallel-feature local evidence on CPython 3.14.8 (before the family-gate follow-up below):
 
 - Full locked notebook-extra environment: **738 passed**.
 - Separate locked default-dependency environment: **737 passed, 1 expected notebook skip**.
@@ -67,3 +67,17 @@ Twenty-one session regressions use barriers/events and invented PCM, with no pai
 An additional installed-wheel regression runs parallel interviews with a shared allowance, recovery and status from outside the checkout, with sockets blocked. The public-parameter coverage test prevents new flags from silently losing reference documentation or batch help text. Existing fidelity, speaker mapping, symlink/cache checks and author gates remain covered by the full suite.
 
 These checks establish software behavior on synthetic inputs. They do not identify the cause of a live network/provider timeout, prove a model is faster/cheaper, measure live accuracy, establish a requests-per-minute limit or promise a dollar cap. Already admitted I/O and local preparation may prolong cancellation cleanup. No real interview was read, hydrated, uploaded or processed, and no existing runtime, batch or cache was changed.
+
+## Independent family gates and timeout evidence
+
+Current local validation on the same CPython 3.14.8 and unchanged lockfile:
+
+- Full notebook-extra environment: **766 passed**.
+- Separate default-dependency environment: **761 passed, 5 expected skips**: one optional notebook test and four legacy HTTPX transport cases. The default HTTPX2 transport cases run in both environments.
+- Ruff, whitespace, offline lock consistency, installed dependency compatibility, wheel/source builds, installed console help and Markdown link/parameter checks passed. Source/archive privacy scans found no personal paths, private session identifiers, credentials or media; notebook outputs remain empty.
+
+New regressions use the pinned SDK with local mock transports to distinguish connect, write, read and pool timeouts without inspecting exception messages. Unknown, conflicting, suppressed, cyclic and overlong exception chains remain unknown. A hostile exception cannot expose its text through classification. Tests cover the default install without optional HTTPX, review-report/progress propagation, and rejection of injected diagnostic fields.
+
+Synthetic batch cases prove that a missing attributed prerequisite preserves eligible original review, an invalid combined original does not block intact attribution, and corrupt shared part artifacts block both. They check parallel request allowances, cached repeat runs, per-family blocked summaries/status, isolated text failures, missing human approval, high findings and exact approved review-byte reuse. Text phases require complete raw and cannot purchase missing ASR or diarization. The full suite also retains cancellation, failure-stop, installed-wheel and security coverage.
+
+These results establish the software contracts only. The new timeout phase describes reliable transport evidence when available; it does not diagnose a live provider/network root cause or retroactively classify older logs. No paid provider call, real recording read/upload, runtime upgrade, batch/cache mutation, merge or deployment was performed for this change. Check the draft PR's CI against its exact head commit before review.
