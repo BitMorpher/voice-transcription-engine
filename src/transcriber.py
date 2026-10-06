@@ -9,6 +9,9 @@ import wave
 from pathlib import Path
 
 if __package__:
+    from .chunk_cache import ChunkCache, descriptor, layout_for
+    from .private_output import digest
+    from .provider_control import CURRENT_CONTROL, ControlledClient, ProviderStopped
     from .provider_errors import classify
     from .progress import emit_progress
     from .media import AUDIO_EXTENSIONS, prepare_audio
@@ -22,6 +25,9 @@ if __package__:
         words,
     )
 else:
+    from chunk_cache import ChunkCache, descriptor, layout_for
+    from private_output import digest
+    from provider_control import CURRENT_CONTROL, ControlledClient, ProviderStopped
     from provider_errors import classify
     from progress import emit_progress
     from media import AUDIO_EXTENSIONS, prepare_audio
@@ -81,10 +87,17 @@ class Transcriber:
                 client = openai.OpenAI(timeout=provider_timeout, max_retries=provider_retries)
             except Exception:
                 raise ConfigurationError('Cannot configure OpenAI; check your environment settings.') from None
-        self.client = client
+        self._client = client
+        self.provider_timeout, self.provider_retries = provider_timeout, provider_retries
         _suppress_provider_logging()
 
-    def _wave_chunks(self, audio_path):
+    @property
+    def client(self):
+        if CURRENT_CONTROL.get() is not None:
+            return ControlledClient(self._client, self.provider_timeout, self.provider_retries)
+        return self._client
+
+    def _wave_chunks(self, audio_path, *, chunk_seconds=None):
         """Yield WAV buffers covering every frame once, each below max_bytes.
 
         Read one chunk at a time; no compressed-size estimation or unbounded list
@@ -93,7 +106,7 @@ class Transcriber:
         with wave.open(str(audio_path), 'rb') as audio:
             frame_bytes = audio.getnchannels() * audio.getsampwidth()
             max_frames = min((self.max_bytes - 64) // frame_bytes,
-                             int(self.options.chunk_seconds * audio.getframerate()))
+                             int((self.options.chunk_seconds if chunk_seconds is None else chunk_seconds) * audio.getframerate()))
             if max_frames < 1 or audio.getnframes() < 1:
                 raise TranscriptionError('Audio is empty or chunk size is invalid.')
             remaining = audio.getnframes()
@@ -136,21 +149,55 @@ class Transcriber:
             audio = prepare_audio(source, Path(temporary) / 'audio.wav', timeout=self.media_timeout)
             return self._transcribe_wave(audio)
 
-    def _transcribe_wave(self, audio_path):
+    def asr_checkpoint(self, audio_path, *, checkpoint_root, source_sha256, audio_sha256):
+        if digest(audio_path) != audio_sha256:
+            raise TranscriptionError('Prepared audio changed before transcription.')
+        def validate(body, duration):
+            if not isinstance(body, dict) or set(body) != {'text'} or not isinstance(body['text'], str):
+                raise ValueError()
+        cache = ChunkCache(checkpoint_root, {
+            'family': 'original', 'source_sha256': source_sha256, 'audio_sha256': audio_sha256,
+            'configuration_sha256': self.options.fingerprint, 'max_upload_bytes': self.max_bytes,
+            'chunk_seconds': float(self.options.chunk_seconds), 'response_format': 'json',
+            'model': self.options.model,
+        }, layout_for(self._wave_chunks(audio_path)), validate)
+        return cache
+
+    def checkpointed_transcribe(self, audio_path, *, checkpoint_root, source_sha256, audio_sha256):
+        cache = self.asr_checkpoint(audio_path, checkpoint_root=checkpoint_root,
+            source_sha256=source_sha256, audio_sha256=audio_sha256)
+        text = self._transcribe_wave(audio_path, checkpoint=cache)
+        cache.verify()
+        if digest(audio_path) != audio_sha256:
+            raise TranscriptionError('Prepared audio changed during transcription; no complete transcript was saved.')
+        return text
+
+    def _transcribe_wave(self, audio_path, *, checkpoint=None):
         parts = []
         try:
             for index, chunk in enumerate(self._wave_chunks(audio_path), start=1):
                 emit_progress('transcription', 'running', chunk=index, chunks=chunk.total_chunks)
                 try:
                     _suppress_provider_logging()
+                    record = descriptor(index, chunk)
+                    saved = checkpoint.get(record) if checkpoint else None
+                    if saved is not None:
+                        parts.append(saved['text'])
+                        emit_progress('transcription', 'skipped', chunk=index, chunks=chunk.total_chunks)
+                        continue
                     response = self.client.audio.transcriptions.create(
                         file=('audio.wav', chunk, 'audio/wav'), **self.options.request_parameters(),
                     )
                     text = getattr(response, 'text', None)
                     if not isinstance(text, str):
                         raise TranscriptionError('Provider returned an invalid transcription response.')
+                    if checkpoint and text.strip():
+                        checkpoint.put(record, {'text': text})
                     parts.append(text)
                     emit_progress('transcription', 'complete', chunk=index, chunks=chunk.total_chunks)
+                except ProviderStopped:
+                    emit_progress('transcription', 'not_attempted', chunk=index, chunks=chunk.total_chunks)
+                    raise
                 except Exception as error:
                     emit_progress('transcription', 'failed', chunk=index, chunks=chunk.total_chunks, **classify(error))
                     raise TranscriptionError(

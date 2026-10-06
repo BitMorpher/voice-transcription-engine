@@ -151,3 +151,7 @@ an existing tool environment and replace same-named entry points. The isolated
 commands above preserve existing tools and environments. Tests use synthetic media,
 mocked providers and installed-wheel entry points; they do not establish live
 speaker accuracy or publication clearance.
+
+## Recovering long speaker passes
+
+Use an explicit independent `--diarization-chunk-seconds` to experiment with shorter speaker requests while keeping original ASR settings/caches. Request checkpoints, admission bounds, mapping reconfirmation and recorded per-family status are described in [recovery controls](recovery-controls.md). Defaults remain unchanged and live quality is unverified.
