@@ -1,5 +1,7 @@
 # Saving progress and bounding provider starts
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 A failed long recording can resume from its validated request checkpoints. This applies to original ASR in pipeline/workflow mode and to the separate interview diarization pass. It does not recover successful responses that an older release held only in memory. Legacy audio-only output and editing/review/chapter stages do not gain request checkpoints.
 
 ## Checkpoints and compatibility
@@ -32,9 +34,11 @@ Both installed commands accept:
 
 The request counter measures application SDK starts, not money or tokens. Zero retries prevents the SDK's automatic retry attempts; redirects, custom transports and provider billing behavior are not dollar guarantees. With retries enabled, one counted operation may include several HTTP attempts before the application observes failure. The circuit breaker observes the final operation result, not each SDK retry.
 
-The time option is a **start deadline**, not a hard whole-run timeout. It does not cancel an in-flight call, truncate a valid returned response, or stop local media preparation at the deadline. The SDK timeout bounds individual I/O waits, not total processing time; a progressing upload/response can exceed the admission window. A returned valid response is saved, then the next start is denied. Ctrl+C or SIGTERM interrupts local processing, releases locks and retains completed checkpoints; cancellation cannot establish that remote work stopped or was not billed. No background provider worker is left behind by these controls.
+`voice-batch run --parallel-interviews N` adds explicit overlap across whole interview groups, default 1. Start with 2. All workers share the same request allowance, elapsed admission deadline and per-endpoint/model failure streak; these controls are never multiplied by N. Streaks use response-completion order and a later success cannot reopen stopped admission. Operations admitted before a stop may still finish and save valid responses. There is no automatic requests-per-minute throttle or monetary budget. Parts within each interview remain ordered. Prefer one worker and one selection for a diagnostic aimed at a specific stage; scarce allowances across parallel interviews are assigned by scheduling.
 
-Provider failures stop at the configured threshold; local validation/media failures remain isolated between independent interviews. Later entries are `not_attempted`, the active limited entry is `incomplete`, and signal interruption is `interrupted`. Counts separate selected, processed, incomplete and unattempted entries. These states never satisfy review/chapter completion gates. A run returns nonzero if any selected work remains incomplete or unattempted.
+The time option is a **start deadline**, not a hard whole-run timeout. It does not cancel an in-flight call, truncate a valid returned response, or stop local media preparation at the deadline. The SDK timeout bounds individual I/O waits, not total processing time; a progressing upload/response can exceed the admission window. A returned valid response is saved, then the next start is denied. Ctrl+C/SIGTERM stops new scheduling and provider admission. Parallel batch cleanup waits for active workers while keeping locks/logs open; local work and already admitted I/O may take time to finish. Returned valid responses are retained before locks are released. Cancellation cannot establish that remote work stopped or was not billed. No background provider worker remains after normal cleanup returns.
+
+Provider failures stop at the configured threshold; local validation/media failures remain isolated between independent interviews. Later unscheduled entries are `not_attempted`, active entries denied by request/time limits are `incomplete`, and unfinished active entries on signal cancellation are `interrupted`. Already active entries that finish successfully remain complete. Counts separate selected, processed, incomplete and unattempted entries. Incomplete/interrupted/unattempted states never satisfy review/chapter completion gates. A run returns nonzero if any selected work remains incomplete or unattempted.
 
 ## One-operation diagnostic and deliberate recovery
 
@@ -43,7 +47,7 @@ This example is a command for a future explicitly authorized paid test. It is no
 ```bash
 voice-batch run --batch private/batches/demo-001 --select entry-a \
   --phase raw --interview --speaker-config private/config/speakers.json \
-  --model gpt-transcribe --audio-chunk-seconds 300 \
+  --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
   --diarization-chunk-seconds 60 --provider-timeout 120 --provider-retries 0 \
   --max-provider-requests 1 --max-run-seconds 180
 ```

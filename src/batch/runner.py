@@ -1,4 +1,4 @@
-"""Serial failure isolation and separate review/chapter gates."""
+"""One ordered session per worker, with separate review/chapter gates."""
 
 from dataclasses import replace
 import json

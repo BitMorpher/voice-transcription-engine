@@ -28,7 +28,7 @@ STATUSES = {'started', 'progress', 'running', 'complete', 'failed', 'summary', '
             'skipped', 'interrupted', 'blocked', 'staged', 'verified', 'incomplete', 'pending',
             'not_attempted', 'configuration', 'latest'}
 COUNTERS = {'item', 'part', 'parts', 'chunk', 'chunks', 'processed', 'failed', 'selected',
-            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete'}
+            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions'}
 GUIDANCE = ('Check local input permissions, media validity, output space and cache integrity; '
             'for provider stages check OPENAI_API_KEY, model access, quota and connectivity. '
             'Completed caches are retained; repeat voice-batch with matching settings, or use --resume with voice-transcribe. '
@@ -37,6 +37,7 @@ GUIDANCE = ('Check local input permissions, media validity, output space and cac
 SAFE_GUIDANCE = {
     'Speaker options require run --interview.',
     'Provider controls require run.',
+    'Parallel interviews require run and a positive integer.',
     'Provider request/time limits require --provider-retries 0 and positive limits.',
     'Speaker mapping confirmation requires explicit diarization chunks.',
     'Invalid private speaker configuration; use version 1, known entry IDs, optional display names and scoped confirmed mappings.',
@@ -71,7 +72,7 @@ def safe_configuration(value):
               'diarization_model': {'gpt-4o-transcribe-diarize'},
               'editing_model': {'gpt-6-astra', 'gpt-6.1-sol'}, 'author_model': {'gpt-6-astra', 'gpt-6.1-sol'}}
     durations = {'audio_chunk_seconds', 'diarization_chunk_seconds', 'provider_timeout', 'max_run_seconds'}
-    counts = {'provider_retries', 'max_provider_requests', 'provider_failure_limit', 'language_hint_count'}
+    counts = {'provider_retries', 'max_provider_requests', 'provider_failure_limit', 'language_hint_count', 'parallel_interviews'}
     flags = {'interview', 'context_supplied', 'glossary_supplied'}
     for key, data in value.items():
         if key in models and isinstance(data, str) and data in models[key]:
@@ -114,16 +115,41 @@ class Reporter:
         self.started = time.monotonic()
         self.last = self.started
         self.sequence = 0
-        self.context = {}
+        self._context = threading.local()
         self.item_stages = {}
         self.configuration = {}
         self.active = {}
+        self.sessions = {}
         self.log = None
         self.failed = False
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.thread = None
         self.run = uuid.uuid4().hex
+
+    @property
+    def context(self):
+        """Immutable-by-convention context local to each session worker."""
+        return getattr(self._context, 'value', {})
+
+    @context.setter
+    def context(self, value):
+        self._context.value = dict(value)
+
+    def begin_session(self, item):
+        with self.lock:
+            self.sessions[item] = (time.monotonic(), {**self.context, 'item': item})
+
+    def end_session(self, item):
+        with self.lock:
+            self.sessions.pop(item, None)
+            if self.active.get('item') == item:
+                self.active = {}
+
+    def families(self, item):
+        """Snapshot stage state without exposing mutable shared dictionaries."""
+        with self.lock:
+            return {family: dict(stages) for family, stages in self.item_stages.get(item, {}).items()}
 
     def start(self, directory):
         if self.log is not None:
@@ -172,7 +198,7 @@ class Reporter:
                     event[key] = value
                 elif key == 'started_at' and isinstance(value, str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+[+]00:00', value):
                     event[key] = value
-                elif key == 'stop_reason' and isinstance(value, str) and value in {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider'}:
+                elif key == 'stop_reason' and isinstance(value, str) and value in {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider', 'interrupted'}:
                     event[key] = value
                 elif key == 'effective_provider_timeout' and type(value) in (int, float) and math.isfinite(value) and value > 0:
                     event[key] = value
@@ -195,7 +221,7 @@ class Reporter:
                         family, stage = 'attributed', stage.removeprefix('attributed_')
                     else:
                         family = event.get('family', 'original')
-                    if stage in {'conversion', 'transcription', 'enhancement', 'author_review', 'chapters', 'combined_raw', 'diarization', 'attribution'}:
+                    if stage in {'conversion', 'transcription', 'enhancement', 'author_review', 'chapters', 'combined_raw', 'diarization', 'attribution'} or stage == 'preflight' and status == 'not_attempted':
                         families.setdefault(family, {})[stage] = status
                 if 'stage' in event and 'stage_status' in event:
                     remember(event['stage'], event['stage_status'])
@@ -206,12 +232,22 @@ class Reporter:
             if event.get('status') in {'failed', 'blocked'} or event.get('stage_status') == 'failed':
                 event.setdefault('guidance', GUIDANCE)
             if event.get('status') == 'heartbeat':
-                event['idle_seconds'] = round(now - self.last, 3)
+                last = self.sessions[item][0] if item in self.sessions else self.last
+                event['idle_seconds'] = round(now - last, 3)
             else:
                 self.last = now
                 if event.get('stage') != self.active.get('stage'):
                     self.active.pop('chunk', None)
                 self.active.update({k: event[k] for k in ('stage', 'stage_status', 'item', 'part', 'parts', 'chunk', 'chunks') if k in event})
+                if item in self.sessions:
+                    _, active = self.sessions[item]
+                    if 'stage' in event and event['stage'] != active.get('stage'):
+                        active.pop('chunk', None)
+                        active.pop('chunks', None)
+                    active.update({k: event[k] for k in ('scope', 'phase', 'stage', 'stage_status',
+                        'family', 'item', 'part', 'parts', 'chunk', 'chunks') if k in event})
+                    active['family'] = event.get('family', 'original')
+                    self.sessions[item] = (now, active)
             self.sequence += 1
             line = json.dumps(event, sort_keys=True) + '\n'
             # Persist before console delivery. A closed pipe must not lose the local log.
@@ -240,11 +276,15 @@ class Reporter:
     def _heartbeats(self):
         while not self.stop.wait(self.heartbeat):
             with self.lock:
-                if time.monotonic() - self.last >= self.heartbeat:
-                    try:
+                try:
+                    if self.sessions:
+                        for last, active in self.sessions.values():
+                            if time.monotonic() - last >= self.heartbeat:
+                                self.emit(status='heartbeat', active_sessions=len(self.sessions), **active)
+                    elif time.monotonic() - self.last >= self.heartbeat:
                         self.emit(status='heartbeat', **self.active)
-                    except LogError:
-                        self.stop.set()
+                except LogError:
+                    self.stop.set()
 
     def close(self):
         self.stop.set()

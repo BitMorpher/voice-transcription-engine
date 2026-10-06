@@ -1,5 +1,7 @@
 # Local implementation validation
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 The feature was implemented on isolated branch `feature/author-review-chapters`, based on `main` at `27fc9a9284ce19937b6dd4d9bfd19f4939e89a03`. GitHub PR #8 was confirmed merged on 2026-10-04 at 16:01:18 UTC. The earlier checkout was preserved. No merge, real recording processing, paid model request, or private Drive upload was performed for this feature.
 
 ## Delivered behavior
@@ -30,7 +32,7 @@ Runtime environments, synthetic examples, detailed test/build/audit logs and dis
 
 ## Subsequent portable orchestration
 
-This document records the historical feature validation above. Current installed commands, serial selection/staging, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
+This document records the historical feature validation above. Current installed commands, ordered selection/staging and optional parallel interviews, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
 
 ```bash
 uv lock --check

@@ -1,5 +1,7 @@
 # Ordered interview implementation validation
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 Implemented locally on `feat/ordered-interview`, from fresh remote `main` at `49e8f383c1604026220e6bf9448876db309916fa` (merged PR #9). Remote main was reconfirmed at the same commit on 2026-10-04. Inspection found folder batch mode created independent filename-sorted jobs; it had no ordered multipart interview feature.
 
 The new entrypoint is `voice-transcribe --workflow --interview-manifest`. See [the manifest, commands and limitations](ordered-interviews.md). The implementation adds two focused modules and reuses existing media conversion, part pipeline, faithful editing, author review/export and chapter stages. No new dependency, Python pin or lock change was introduced.
@@ -27,7 +29,7 @@ Temporary environments, test/build logs, wheel smoke script and generated distri
 
 ## Subsequent portable orchestration
 
-This document records the historical feature validation above. Current installed commands, serial selection/staging, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
+This document records the historical feature validation above. Current installed commands, ordered selection/staging and optional parallel interviews, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
 
 ```bash
 uv lock --check

@@ -1,5 +1,7 @@
 # Additive interview speaker attribution
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 `voice-transcribe --workflow --interview` keeps the current output family and
 adds a separate attributed family. It uses actual provider speaker segments at
 transcription time; it does not ask a text editor to invent dialogue turns.
@@ -43,8 +45,8 @@ for batch opt-in, configuration and independent human-review gates.
 
 ## Diarization versus mapping
 
-The original `--model` remains unchanged (default `gpt-transcribe`). The
-additional `--interview-model` currently accepts only
+The original `--transcription-model` remains unchanged (default `gpt-transcribe`). The
+additional `--speaker-model` currently accepts only
 `gpt-4o-transcribe-diarize`. That model returns `diarized_json` with segment text,
 speaker, start and end. `chunking_strategy=auto` is always sent, satisfying the
 provider requirement for requests longer than 30 seconds. This CLI exposes no
@@ -166,10 +168,10 @@ diarization responses with `--resume`; those display changes do not require
 another audio request. Stages and editorial models are bound independently to
 the exact source and provenance. Tampered, missing, symlinked, or conflicting
 completed artifacts fail without overwriting; changed provider/chunk settings
-require fresh output where an existing family conflicts. Failed diarization is
-retried for the whole recording: individual requests are not checkpointed, and
-successful requests in a failed recording may be charged again. Completed earlier
-recording caches remain reusable. Locks and atomic directory publication keep
+require fresh output where an existing family conflicts. Validated speaker-pass responses are privately checkpointed, so matching retries
+reuse successful earlier requests within a failed recording. Failed or never-saved
+requests can repeat charges. Completed whole-recording caches remain reusable.
+See [recovery controls](recovery-controls.md) for binding and reconfirmation details. Locks and atomic directory publication keep
 interrupted writes from appearing complete; inspect a stale lock before removing
 it. Storage uses the same private permissions and repository output restrictions
 as the original pipeline.

@@ -87,9 +87,9 @@ uv run --locked voice-transcribe --workflow \
   --stages raw,polish,review --chapters both --output-folder private/ordered-output
 ```
 
-## Serial batches, live progress and local execution logs
+## Interview batches, optional parallel processing and progress
 
-Use `voice-batch` for selected independent interviews, each with an ordered manifest. Plans remain private user inputs. Inventory/preflight only read JSON and source metadata; preparation requires explicit local-copy approval, and processing requires explicit provider-call approval. See the [complete batch guide](docs/batch-orchestration.md) for synthetic plan examples, blocked entries, selections/exclusions, staging checks, raw/review/chapter gates, resume and troubleshooting.
+Use `voice-batch` for selected independent interviews, each with an ordered manifest. Plans remain private user inputs. Inventory/preflight only read JSON and source metadata; preparation requires explicit local-copy approval, and processing requires explicit provider-call approval. Set `--parallel-interviews 2` to run two whole interview groups together; default `1` remains serial. Recordings inside each interview stay ordered. Provider allowances, deadlines and failure stopping are shared across groups. See the [complete parameter reference](docs/cli-reference.md) for every flag, valid combinations, costs and examples. See the [complete batch guide](docs/batch-orchestration.md) for synthetic plan examples, blocked entries, selections/exclusions, staging checks, raw/review/chapter gates, resume and troubleshooting.
 
 ```bash
 uv run --locked voice-batch inventory --plan private/config/batch-plan.json
@@ -97,6 +97,9 @@ uv run --locked voice-batch check --plan private/config/batch-plan.json --select
 uv run --locked voice-batch prepare --plan private/config/batch-plan.json \
   --select entry-a --batch private/batches/demo-001 --copy-local-files
 uv run --locked voice-batch run --batch private/batches/demo-001 --phase raw --send-to-openai
+# Deliberately overlap two independent interview groups:
+uv run --locked voice-batch run --batch private/batches/demo-001 \
+  --phase raw --parallel-interviews 2 --send-to-openai --provider-retries 0
 uv run --locked voice-batch run --batch private/batches/demo-001 --phase review --send-to-openai
 # After separately reviewing recordings and reports:
 uv run --locked voice-batch run --batch private/batches/demo-001 \
@@ -165,7 +168,7 @@ This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` n
 The quality-first default is **`gpt-transcribe`**, the model recommended by current OpenAI documentation for general-purpose file transcription. Optional faithful editing defaults to **`gpt-6-astra`** with high reasoning, because OpenAI currently identifies it as its most capable model and quality is the priority here. This is a documentation-based selection, not an empirical quality claim or benchmark on your recordings. No real audio or paid calls were used to evaluate these models.
 
 ```bash
-uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --model gpt-transcribe
+uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --transcription-model gpt-transcribe
 # Optional known context and literal terms, supplied by you:
 uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 \
   --context-file private/hints/context.txt --glossary-file private/hints/glossary.txt \
@@ -178,7 +181,7 @@ For `gpt-transcribe`, context maps to `prompt`, and `keywords`/`languages` use t
 
 Application safety limits: context ≤8192 UTF-8 bytes, at most 100 glossary terms of ≤256 bytes each, at most 16 language hints, and hint files ≤64 KiB. Store real hints under ignored `private/hints/` or outside all repositories. Hints are sent to OpenAI, so they may contain sensitive information. Only a configuration hash, not their text or file paths, is persisted in the private manifest or reported in logs.
 
-`--model` also accepts `whisper-1`, `gpt-4o-transcribe`, and `gpt-4o-mini-transcribe` for explicit legacy compatibility. These support context plus one ISO 639-1 `language`; this CLI rejects glossary and multiple-language options for them instead of sending incompatible fields. OpenAI's [2026-08-26 deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-08-26-transcription-models) schedules removal of those legacy transcription models on **February 26, 2027**. There is no automatic fallback to a deprecated model when the new model is inaccessible. Model/account access and limits must be checked by the user.
+`--transcription-model` also accepts `whisper-1`, `gpt-4o-transcribe`, and `gpt-4o-mini-transcribe` for explicit legacy compatibility. These support context plus one ISO 639-1 `language`; this CLI rejects glossary and multiple-language options for them instead of sending incompatible fields. OpenAI's [2026-08-26 deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-08-26-transcription-models) schedules removal of those legacy transcription models on **February 26, 2027**. There is no automatic fallback to a deprecated model when the new model is inaccessible. Model/account access and limits must be checked by the user.
 
 ## Optional faithful text editing
 
@@ -197,7 +200,7 @@ Long transcripts are partitioned into contiguous chunks of at most 6000 UTF-8 by
 
 Derivatives carry an AI label, explicitly mark speaker identities/turn boundaries as unverified, and flag chunks where the editor reports attribution uncertainty. No speaker identity or turn is inferred. Editing reads a single verified raw snapshot and rechecks its byte checksum before publishing a derivative; detected raw changes fail without publishing. The private job lock protects against concurrent pipeline runs, not arbitrary external file edits. The raw `transcription.txt` is never overwritten by the pipeline. An editing failure leaves the raw transcript intact. Changing editing model cannot overwrite an existing derivative; use a fresh output folder.
 
-Legacy `--enhance_for_reading` remains supported. `--format_as_interview` is retained only as a legacy audio-mode alias for the same faithful layout operation and existing filename; it no longer asks for interview reconstruction or speaker-role assignment. It does not turn a monologue into an interview.
+Use hyphenated spellings in new commands. Deprecated underscore spellings remain compatible, with no scheduled removal. `--model` and `--interview-model` also remain aliases for `--transcription-model` and `--speaker-model`. Legacy `--enhance_for_reading` remains supported. `--format_as_interview` is retained only as a legacy audio-mode alias for the same faithful layout operation and existing filename; it no longer asks for interview reconstruction or speaker-role assignment. It does not turn a monologue into an interview.
 
 Official selection/compatibility references: [GPT-Transcribe](https://developers.openai.com/api/docs/models/gpt-transcribe), [ASR context and languages](https://developers.openai.com/api/docs/guides/speech-to-text), [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra), and [GPT-6 migration parameters](https://developers.openai.com/api/docs/guides/latest-model).
 

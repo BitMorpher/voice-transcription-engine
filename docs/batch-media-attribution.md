@@ -1,5 +1,7 @@
 # Batch media staging and optional speaker attribution
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 The installed `voice-batch` CLI retains original transcripts and processing defaults.
 `inventory` and `check` inspect JSON and filesystem metadata only. `prepare` requires
 `--copy-local-files`; `run` requires `--send-to-openai`. Provider and human-review
@@ -74,7 +76,7 @@ names or mappings, competing fields on disabled entries and unsupported models
 fail before provider calls. Omitted entries use unidentified-speaker attribution;
 `enabled: false` retains only the original family for that entry. Empty names are
 invalid; omitted or null names are allowed. Names alone do not identify a voice.
-An optional `--interview-model` accepts only `gpt-4o-transcribe-diarize`.
+An optional `--speaker-model` accepts only `gpt-4o-transcribe-diarize`.
 Speaker options require `run --interview`; they do not silently enable extra ASR.
 
 After listening to the recording, an entry with a supplied guest name can use
@@ -128,9 +130,11 @@ raw/review stages as failed. Complete earlier artifacts remain inspectable.
 The extra ASR pass and selected downstream stages can incur additional charges.
 SDK retries zero and a request timeout do not impose a whole-run budget. Batch
 processing may continue after ordinary failures; stop and inspect the first failure
-before bulk retries. Individual chunks are not durable checkpoints, so repeating
-failed stages may repeat successful requests. Safe logs exclude names, paths,
-transcripts, configuration values, probe output and arbitrary provider diagnostics.
+before bulk retries. Validated original ASR and speaker-pass chunks are durable
+checkpoints; matching resume reuses them. Failed text stages can repeat earlier
+successful requests. Safe logs exclude names, paths, transcripts, hint/mapping
+content, probe output and arbitrary diagnostics; allowlisted effective model and
+transport values are recorded.
 
 ## Isolated installation
 
