@@ -1,3 +1,4 @@
+import shutil
 import json
 import hashlib
 from dataclasses import asdict
@@ -243,6 +244,8 @@ def test_regenerated_raw_cannot_reuse_derivative_of_different_bytes(
     derivative = job / 'derivative_readability.txt'
     original_derivative = derivative.read_bytes()
     (job / 'transcription.txt').unlink()
+    # Force a genuine new ASR result rather than exact checkpoint reassembly.
+    shutil.rmtree(job / 'asr-chunks')
     provider.audio.transcriptions.create.return_value = SimpleNamespace(text=replacement)
     with pytest.raises(PipelineError, match='Unverified output') as failure:
         Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
@@ -267,7 +270,7 @@ def test_identical_regenerated_raw_can_reuse_bound_derivative(synthetic_media, t
     _, stages = Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
     assert stages == {'conversion': 'skipped', 'transcription': 'complete', 'enhancement': 'skipped'}
     assert (job / 'derivative_readability.txt').read_bytes() == original
-    assert provider.audio.transcriptions.create.call_count == 2
+    assert provider.audio.transcriptions.create.call_count == 1
     assert provider.chat.completions.create.call_count == 1
     state = json.loads((job / 'manifest.json').read_text())
     assert state['stages']['enhancement']['transcription_sha256'] == digest(job / 'transcription.txt')

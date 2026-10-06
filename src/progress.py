@@ -3,6 +3,9 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
+import math
+import re
+from datetime import datetime, timezone
 import os
 import signal
 import sys
@@ -22,16 +25,20 @@ STAGES = {'conversion', 'transcription', 'enhancement', 'author_review', 'chapte
 STAGES |= {'diarization', 'attribution', 'attributed_attribution', 'attributed_enhancement',
            'attributed_author_review', 'attributed_chapters'}
 STATUSES = {'started', 'progress', 'running', 'complete', 'failed', 'summary', 'heartbeat',
-            'skipped', 'interrupted', 'blocked', 'staged', 'verified', 'incomplete', 'pending'}
+            'skipped', 'interrupted', 'blocked', 'staged', 'verified', 'incomplete', 'pending',
+            'not_attempted', 'configuration', 'latest'}
 COUNTERS = {'item', 'part', 'parts', 'chunk', 'chunks', 'processed', 'failed', 'selected',
-            'completed', 'blocked', 'staged', 'verified', 'interrupted'}
+            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete'}
 GUIDANCE = ('Check local input permissions, media validity, output space and cache integrity; '
             'for provider stages check OPENAI_API_KEY, model access, quota and connectivity. '
-            'Completed caches are retained; retry with matching inputs and --resume. '
+            'Completed caches are retained; repeat voice-batch with matching settings, or use --resume with voice-transcribe. '
             'Chapter runs require complete review and explicit human approval.')
 
 SAFE_GUIDANCE = {
     'Speaker options require run --interview.',
+    'Provider controls require run.',
+    'Provider request/time limits require --provider-retries 0 and positive limits.',
+    'Speaker mapping confirmation requires explicit diarization chunks.',
     'Invalid private speaker configuration; use version 1, known entry IDs, optional display names and scoped confirmed mappings.',
     'Staged video could not be validated; retain partial staging and use a fresh batch after correcting the input.',
     'Attributed stages require matching complete raw and chapters require an intact reviewed bundle without high findings.',
@@ -56,6 +63,39 @@ SAFE_GUIDANCE = {
 }
 
 
+def safe_configuration(value):
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    models = {'asr_model': {'gpt-transcribe', 'whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'},
+              'diarization_model': {'gpt-4o-transcribe-diarize'},
+              'editing_model': {'gpt-6-astra', 'gpt-6.1-sol'}, 'author_model': {'gpt-6-astra', 'gpt-6.1-sol'}}
+    durations = {'audio_chunk_seconds', 'diarization_chunk_seconds', 'provider_timeout', 'max_run_seconds'}
+    counts = {'provider_retries', 'max_provider_requests', 'provider_failure_limit', 'language_hint_count'}
+    flags = {'interview', 'context_supplied', 'glossary_supplied'}
+    for key, data in value.items():
+        if key in models and isinstance(data, str) and data in models[key]:
+            result[key] = data
+        elif key in durations and type(data) in (int, float) and math.isfinite(data) and data > 0:
+            result[key] = data
+        elif key in counts and type(data) is int and data >= 0:
+            result[key] = data
+        elif key in flags and type(data) is bool:
+            result[key] = data
+        elif key in {'max_run_seconds', 'max_provider_requests'} and data is None:
+            result[key] = None
+    return result
+
+
+def safe_families(value):
+    if not isinstance(value, dict):
+        return {}
+    return {family: {stage: status for stage, status in stages.items()
+                     if stage in STAGES and isinstance(status, str) and status in STATUSES}
+            for family, stages in value.items()
+            if family in {'original', 'attributed'} and isinstance(stages, dict)}
+
+
 def emit_progress(stage, status, **counters):
     reporter = CURRENT.get()
     if reporter is not None:
@@ -70,10 +110,13 @@ class Reporter:
     """Thread-safe JSONL console/file reporting with an honest idle heartbeat."""
     def __init__(self, stream, *, heartbeat=30):
         self.stream, self.heartbeat = stream, heartbeat
+        self.started_at = datetime.now(timezone.utc).isoformat()
         self.started = time.monotonic()
         self.last = self.started
         self.sequence = 0
         self.context = {}
+        self.item_stages = {}
+        self.configuration = {}
         self.active = {}
         self.log = None
         self.failed = False
@@ -125,9 +168,39 @@ class Reporter:
                     event[key] = value
                 elif key == 'message' and isinstance(value, str) and value in SAFE_GUIDANCE:
                     event['guidance'] = value
+                elif key in {'historical_run', 'latest_run'} and isinstance(value, str) and re.fullmatch(r'[0-9a-f]{32}', value):
+                    event[key] = value
+                elif key == 'started_at' and isinstance(value, str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+[+]00:00', value):
+                    event[key] = value
+                elif key == 'stop_reason' and isinstance(value, str) and value in {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider'}:
+                    event[key] = value
+                elif key == 'effective_provider_timeout' and type(value) in (int, float) and math.isfinite(value) and value > 0:
+                    event[key] = value
+                elif key == 'configuration':
+                    event[key] = safe_configuration(value)
+                    if details.get('status') == 'configuration':
+                        self.configuration = event[key]
+                elif key == 'families':
+                    event[key] = safe_families(value)
+                elif key == 'recorded_status' and isinstance(value, str) and value in STATUSES:
+                    event[key] = value
                 elif key == 'stages' and isinstance(value, dict):
                     event[key] = {k: v for k, v in value.items()
                                   if k in STAGES and isinstance(v, str) and v in STATUSES}
+            item = event.get('item')
+            if type(item) is int and item > 0:
+                families = self.item_stages.setdefault(item, {})
+                def remember(stage, status):
+                    if stage.startswith('attributed_'):
+                        family, stage = 'attributed', stage.removeprefix('attributed_')
+                    else:
+                        family = event.get('family', 'original')
+                    if stage in {'conversion', 'transcription', 'enhancement', 'author_review', 'chapters', 'combined_raw', 'diarization', 'attribution'}:
+                        families.setdefault(family, {})[stage] = status
+                if 'stage' in event and 'stage_status' in event:
+                    remember(event['stage'], event['stage_status'])
+                for stage, status in event.get('stages', {}).items():
+                    remember(stage, status)
             if event.get('stage_status') == 'skipped':
                 event['cache_reused'] = True
             if event.get('status') in {'failed', 'blocked'} or event.get('stage_status') == 'failed':

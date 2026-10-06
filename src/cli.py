@@ -9,6 +9,7 @@ from pathlib import Path
 if __package__:
     from .interview_attribution import InterviewOptions, DIARIZATION_MODEL
     from .progress import CURRENT, Reporter, interruptions, LogError
+    from .provider_control import CURRENT_CONTROL, ProviderControl
     from .author_review import ReviewError, ReviewOptions
     from .author_workflow import AuthorOptions, AuthorWorkflowError
     from .chapters import ChapterOptions
@@ -28,6 +29,7 @@ if __package__:
 else:
     from interview_attribution import InterviewOptions, DIARIZATION_MODEL
     from progress import CURRENT, Reporter, interruptions, LogError
+    from provider_control import CURRENT_CONTROL, ProviderControl
     from author_review import ReviewError, ReviewOptions
     from author_workflow import AuthorOptions, AuthorWorkflowError
     from chapters import ChapterOptions
@@ -124,7 +126,7 @@ def _legacy_process(source, output, transcriber, args):
     return stages
 
 
-def main(argv=None, *, approved_review=None, interview_options_override=None,
+def _execute(argv=None, *, approved_review=None, interview_options_override=None,
          approved_attributed_review=None):
     parser = PrivateArgumentParser(prog='voice-transcribe', color=False, allow_abbrev=False,
                                    description='Convert local media and transcribe audio using OpenAI.')
@@ -160,6 +162,10 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
     parser.add_argument('--interviewee-name', help='Local display name; does not identify a voice.')
     parser.add_argument('--speaker-map', action='append', default=[],
                         help='User-confirmed mapping PART:REQUEST:LABEL=interviewer or =interviewee; repeat. Unmapped speakers remain unidentified.')
+    parser.add_argument('--diarization-chunk-seconds', type=_positive_timeout,
+                        help='Independent speaker-pass duration (1–600 seconds); omitted uses the original chunk duration.')
+    parser.add_argument('--confirm-speaker-mappings', action='store_true',
+                        help='Confirm supplied mappings were checked against the explicit new diarization chunk scopes.')
     parser.add_argument('--interview-model', default=DIARIZATION_MODEL,
                         help='Additional diarization model (gpt-4o-transcribe-diarize); --model still controls original transcription.')
     parser.add_argument('--media-type', choices=('auto', 'audio', 'video'), default='auto',
@@ -181,11 +187,17 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
                         help='SDK request timeout seconds (default: 120; not a whole-run deadline).')
     parser.add_argument('--provider-retries', type=int, choices=range(0, 6), default=2,
                         help='SDK retry limit 0–5 (default: 2). Retried requests may incur charges.')
+    parser.add_argument('--max-provider-requests', type=int,
+                        help='Maximum new SDK operations across all stages; requires --provider-retries 0. One is a bounded diagnostic, not a complete transcript.')
+    parser.add_argument('--max-run-seconds', type=_positive_timeout,
+                        help='Stop starting provider calls after this elapsed time; requires zero retries. In-flight I/O is timeout-bounded, not cancelled at this deadline.')
+    parser.add_argument('--provider-failure-limit', type=int, default=2,
+                        help='Stop admission after consecutive failures per endpoint/model (default: 2); definite account/configuration failures stop immediately.')
     args = parser.parse_args(argv)
     supplied_flags = {arg.split('=', 1)[0] for arg in (argv if argv is not None else sys.argv[1:])}
     if args.interview and (not args.workflow or args.extract_only):
         parser.usage_error('--interview requires --workflow and cannot use --extract-only.')
-    if not args.interview and supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model'}:
+    if not args.interview and supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model', '--diarization-chunk-seconds', '--confirm-speaker-mappings'}:
         parser.usage_error('Speaker naming options require --interview.')
     reporter = CURRENT.get()
     if reporter is not None:
@@ -232,18 +244,37 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
         parser.usage_error('--extract-only cannot request transcription hints; supply them when transcribing.')
 
     try:
+        if CURRENT_CONTROL.get() is None:
+            CURRENT_CONTROL.set(ProviderControl(max_requests=args.max_provider_requests,
+                max_seconds=args.max_run_seconds, failure_limit=args.provider_failure_limit,
+                retries=args.provider_retries))
         if interview_options_override is not None and (type(interview_options_override) is not InterviewOptions
                 or not args.workflow or args.interview_manifest is None or args.interview
                 or supplied_flags & {'--interviewer-name', '--interviewee-name', '--speaker-map', '--interview-model'}):
             raise ModelConfigurationError('Internal batch interview settings require an ordered workflow without competing speaker flags.')
         interview_options = interview_options_override or (InterviewOptions(args.interviewer_name, args.interviewee_name,
-            tuple(args.speaker_map), args.interview_model) if args.interview else None)
+            tuple(args.speaker_map), args.interview_model,
+            diarization_chunk_seconds=args.diarization_chunk_seconds,
+            mappings_reconfirmed=args.confirm_speaker_mappings) if args.interview else None)
+        if args.confirm_speaker_mappings and args.diarization_chunk_seconds is None:
+            raise ModelConfigurationError('Speaker mapping confirmation requires explicit diarization chunks.')
         selected_input = args.input if args.input is not None else args.input_folder
         if selected_input == '':
             raise PipelineError('Input path must not be empty; choose an accessible local file or folder.')
         context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)
         options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                        languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
+        if reporter is not None and not reporter.configuration:
+            reporter.emit(status='configuration', configuration={
+                'asr_model': options.model, 'editing_model': args.editing_model, 'author_model': args.author_model,
+                'diarization_model': interview_options.model if interview_options else DIARIZATION_MODEL,
+                'audio_chunk_seconds': options.chunk_seconds,
+                'diarization_chunk_seconds': (interview_options.diarization_chunk_seconds if interview_options else None) or options.chunk_seconds,
+                'provider_timeout': args.provider_timeout, 'provider_retries': args.provider_retries,
+                'max_provider_requests': args.max_provider_requests, 'max_run_seconds': args.max_run_seconds,
+                'provider_failure_limit': args.provider_failure_limit, 'interview': bool(interview_options),
+                'context_supplied': bool(args.context_file), 'glossary_supplied': bool(args.glossary_file),
+                'language_hint_count': len(options.languages)})
         if interview_options and (len(args.language) > 1 or any(len(code) != 2 for code in args.language)):
             raise ModelConfigurationError('Additional interview diarization accepts at most one ISO 639-1 language hint; omit hints for automatic detection.')
         editing_options = EditingOptions(model=args.editing_model)
@@ -304,12 +335,21 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
                                 stage=stage, stage_status=status)) if CURRENT.get() is not None or args.workflow else None) if pipeline_mode else None
     except (MediaError, PipelineError, ConfigurationError, OSError, ValueError, AuthorWorkflowError, ReviewError, TranscriptionError) as error:
         message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError, AuthorWorkflowError, ReviewError) else 'Cannot access local input/output; check permissions and free space.'
-        _report(status='failed', message=message,
+        control = CURRENT_CONTROL.get()
+        limited = control is not None and control.reason in {'request_limit', 'start_deadline'}
+        _report(status='incomplete' if limited else 'failed', message=message,
+                stop_reason=control.reason if control else None,
                 **({'stages': error.stages} if type(error) is PipelineError and error.stages else {}))
         return 1
 
-    failures = 0
+    failures = unattempted = incomplete = 0
     for index, item in enumerate(files, start=1):
+        control = CURRENT_CONTROL.get()
+        if control is not None and control.reason:
+            _report(item=index, status='not_attempted', stop_reason=control.reason)
+            failures += 1
+            unattempted += 1
+            continue
         try:
             if pipeline:
                 identity, stages = pipeline.process(item, transcriber=transcriber,
@@ -322,16 +362,33 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
         except Exception as error:
             failures += 1
             message = str(error) if type(error) in (MediaError, PipelineError, TranscriptionError) else 'Processing failed; check media validity, output access, and free space.'
-            _report(item=index, status='failed', message=message,
+            control = CURRENT_CONTROL.get()
+            limited = control is not None and control.reason in {'request_limit', 'start_deadline'}
+            incomplete += int(limited)
+            _report(item=index, status='incomplete' if limited else 'failed', message=message,
+                    stop_reason=control.reason if control else None,
                     stages=error.stages if type(error) is PipelineError else {})
-    _report(status='summary', processed=len(files), failed=failures)
+    _report(status='summary', processed=len(files) - unattempted, failed=failures - incomplete - unattempted,
+            incomplete=incomplete, not_attempted=unattempted)
     return 1 if failures else 0
+
+
+def main(argv=None, *, approved_review=None, interview_options_override=None,
+         approved_attributed_review=None):
+    token = CURRENT_CONTROL.set(CURRENT_CONTROL.get())
+    try:
+        return _execute(argv, approved_review=approved_review,
+            interview_options_override=interview_options_override,
+            approved_attributed_review=approved_attributed_review)
+    finally:
+        CURRENT_CONTROL.reset(token)
 
 
 def entrypoint(argv=None):
     reporter = Reporter(sys.stdout)
     reporter.context = {'scope': 'interview'}
     token = CURRENT.set(reporter)
+    control_token = CURRENT_CONTROL.set(None)
     try:
         with interruptions():
             code = main(argv)
@@ -344,6 +401,7 @@ def entrypoint(argv=None):
     finally:
         reporter.close()
         CURRENT.reset(token)
+        CURRENT_CONTROL.reset(control_token)
     return code or int(reporter.failed)
 
 

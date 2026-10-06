@@ -1,5 +1,6 @@
 """Offline workflow matrix, privacy, provenance and fail-closed draft gates."""
 
+import shutil
 import hashlib
 import json
 from types import SimpleNamespace
@@ -192,6 +193,8 @@ def test_regenerated_raw_invalidates_review_binding(synthetic_media, tmp_path, a
     job = output / identity
     old = json.loads((job / 'manifest.json').read_text())['stages']['author_review']
     (job / 'transcription.txt').unlink()
+    # Remove synthetic checkpoints to exercise a different new raw result.
+    shutil.rmtree(job / 'asr-chunks')
     author_provider.audio.transcriptions.create.return_value.text = 'Synthetic replacement.'
     with pytest.raises(PipelineError, match='settings changed'):
         Pipeline(output, resume=True, author_options=AuthorOptions()).process(source, transcriber=transcriber)

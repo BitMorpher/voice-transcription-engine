@@ -317,3 +317,60 @@ assert 'A question?' not in joined
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, 'Installed native batch staging/attribution smoke failed.'
     assert result.stderr == ''
+
+
+def test_wheel_recovery_checkpoint_controls_and_cli_privacy(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    script = work / 'recovery-smoke.py'
+    script.write_text('''
+import io, json, shutil, socket, wave
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+import voice_transcription_engine.cli as engine
+import voice_transcription_engine.pipeline as pipeline
+from voice_transcription_engine.transcriber import Transcriber
+from voice_transcription_engine.provider_control import CURRENT_CONTROL
+
+def blocked(*args, **kwargs):
+    raise AssertionError('No external provider calls allowed.')
+socket.socket.connect = blocked
+root = Path.cwd() / 'recovery-installed'
+root.mkdir()
+source = root / 'SYNTHETIC_PRIVATE_SOURCE.wav'
+with wave.open(str(source), 'wb') as wav:
+    wav.setparams((1, 2, 100, 0, 'NONE', 'not compressed'))
+    wav.writeframes(b'\\0\\0' * 250)
+pipeline.prepare_audio = lambda source, target, **kwargs: shutil.copyfile(source, target)
+provider = MagicMock()
+provider.audio.transcriptions.create.return_value = SimpleNamespace(text='SYNTHETIC_PRIVATE_WORDS')
+engine.Transcriber = lambda **kwargs: Transcriber(client=provider, **kwargs)
+output = root / 'out'
+args = ['--workflow', '--input', str(source), '--output-folder', str(output), '--stages', 'raw',
+        '--audio-chunk-seconds', '1', '--provider-retries', '0', '--max-provider-requests', '1']
+assert engine.entrypoint(args) == 1
+assert provider.audio.transcriptions.create.call_count == 1
+assert len(list(output.rglob('response.json'))) == 1
+assert not list(output.rglob('transcription.txt'))
+assert CURRENT_CONTROL.get() is None
+args[-1] = '2'
+assert engine.entrypoint(args + ['--resume']) == 0
+assert provider.audio.transcriptions.create.call_count == 3
+assert len(list(output.rglob('transcription.txt'))) == 1
+logs = ''.join(path.read_text() for path in output.rglob('*.jsonl'))
+assert 'SYNTHETIC_PRIVATE' not in logs and str(root) not in logs
+assert 'request_limit' in logs
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed recovery smoke failed.'
+    assert 'SYNTHETIC_PRIVATE' not in result.stdout + result.stderr
+    for command in ('voice-transcribe', 'voice-batch'):
+        executable = python.parent / (command + '.exe' if os.name == 'nt' else command)
+        invalid = ['--max-provider-requests', 'SYNTHETIC_PRIVATE_VALUE']
+        if command == 'voice-batch':
+            invalid = ['run', *invalid]
+        result = subprocess.run([str(executable), *invalid], cwd=work, env=environment,
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 2
+        assert 'SYNTHETIC_PRIVATE' not in result.stdout + result.stderr

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
+    from .chunk_cache import ChunkCache, descriptor, layout_for
+    from .provider_control import ProviderStopped
     from .review_reuse import reuse_approved_review
     from .author_review import source_segments
     from .author_workflow import AuthorWorkflowError, run_author_stages, _verified_bundle, _load_bound_report
@@ -28,6 +30,8 @@ if __package__:
     from .text_editing import words
     from .transcriber import TranscriptionError, _suppress_provider_logging
 else:
+    from chunk_cache import ChunkCache, descriptor, layout_for
+    from provider_control import ProviderStopped
     from review_reuse import reuse_approved_review
     from author_review import source_segments
     from author_workflow import AuthorWorkflowError, run_author_stages, _verified_bundle, _load_bound_report
@@ -64,6 +68,8 @@ class InterviewOptions:
     speaker_map: tuple[str, ...] = ()
     model: str = DIARIZATION_MODEL
     allow_unnamed: bool = False
+    diarization_chunk_seconds: float | None = None
+    mappings_reconfirmed: bool = False
 
     def __post_init__(self):
         if type(self.allow_unnamed) is not bool:
@@ -79,6 +85,14 @@ class InterviewOptions:
             raise ModelConfigurationError('Use distinct interviewer and interviewee display names.')
         if self.model != DIARIZATION_MODEL:
             raise ModelConfigurationError('Interview diarization requires gpt-4o-transcribe-diarize and diarized_json; the original ASR model stays separate.')
+        if self.diarization_chunk_seconds is not None:
+            duration = self.diarization_chunk_seconds
+            if type(duration) not in (int, float) or not math.isfinite(duration) or not 1 <= duration <= 600:
+                raise ModelConfigurationError('Diarization chunk duration must be between 1 and 600 seconds.')
+            if self.speaker_map and not self.mappings_reconfirmed:
+                raise ModelConfigurationError('Explicit diarization chunks require --confirm-speaker-mappings after listening to the new request scopes, or remove mappings.')
+        if type(self.mappings_reconfirmed) is not bool:
+            raise ModelConfigurationError('Invalid speaker mapping confirmation.')
         self.mappings()  # Validate without exposing supplied values.
 
     def mappings(self):
@@ -106,14 +120,16 @@ class InterviewOptions:
     def fingerprint(self):
         return _fingerprint({'contract': self.contract, 'interviewer': self.interviewer,
                              'interviewee': self.interviewee, 'model': self.model,
-                             'mapping': sorted(self.speaker_map)})
+                             'mapping': sorted(self.speaker_map),
+                             **({'diarization_chunk_seconds': float(self.diarization_chunk_seconds)}
+                                if self.diarization_chunk_seconds is not None else {})})
 
 
-def diarization_configuration(transcriber, model=DIARIZATION_MODEL):
+def diarization_configuration(transcriber, model=DIARIZATION_MODEL, chunk_seconds=None):
     # Original context/glossary are intentionally not sent to this model: it
     # supports no prompt. Names are local display metadata, not provider hints.
     return {'contract': 1, 'model': model, 'response_format': 'diarized_json',
-            'chunking_strategy': 'auto', 'chunk_seconds': float(transcriber.options.chunk_seconds),
+            'chunking_strategy': 'auto', 'chunk_seconds': float(transcriber.options.chunk_seconds if chunk_seconds is None else chunk_seconds),
             'max_upload_bytes': transcriber.max_bytes,
             'language': transcriber.options.languages[0] if len(transcriber.options.languages) == 1 else None}
 
@@ -154,24 +170,41 @@ def _complete_turn_text(body):
             and words(body['text']) in (plain_words, labelled_words))
 
 
-def diarize(transcriber, audio, configuration):
-    """Keep full provider responses; fail the whole pass if any request fails."""
+def _checkpoint(transcriber, audio, configuration, root, source_sha256, audio_sha256):
+    def validate(body, duration):
+        _validated_response(body, duration)
+    return ChunkCache(root, {'family': 'attributed', 'source_sha256': source_sha256,
+        'audio_sha256': audio_sha256, 'configuration': configuration},
+        layout_for(transcriber._wave_chunks(audio, chunk_seconds=configuration['chunk_seconds'])), validate)
+
+
+def diarize(transcriber, audio, configuration, *, checkpoint=None):
+    """Keep full validated responses; incomplete requests never complete a recording."""
     requests = []
     try:
-        for index, chunk in enumerate(transcriber._wave_chunks(audio), 1):
+        for index, chunk in enumerate(transcriber._wave_chunks(audio, chunk_seconds=configuration['chunk_seconds']), 1):
             emit_progress('diarization', 'running', chunk=index, chunks=chunk.total_chunks)
             try:
                 parameters = {k: configuration[k] for k in ('model', 'response_format', 'chunking_strategy')}
                 if configuration['language']:
                     parameters['language'] = configuration['language']
                 _suppress_provider_logging()
-                response = transcriber.client.audio.transcriptions.create(
-                    file=('audio.wav', chunk, 'audio/wav'), **parameters)
-                body = response.model_dump(mode='json') if hasattr(response, 'model_dump') else response
-                _validated_response(body, chunk.duration_seconds)
+                record = descriptor(index, chunk)
+                body = checkpoint.get(record) if checkpoint else None
+                reused = body is not None
+                if not reused:
+                    response = transcriber.client.audio.transcriptions.create(
+                        file=('audio.wav', chunk, 'audio/wav'), **parameters)
+                    body = response.model_dump(mode='json') if hasattr(response, 'model_dump') else response
+                    _validated_response(body, chunk.duration_seconds)
+                    if checkpoint:
+                        checkpoint.put(record, body)
                 requests.append({'request': index, 'offset_seconds': chunk.offset_seconds,
                                  'duration_seconds': chunk.duration_seconds, 'response': body})
-                emit_progress('diarization', 'complete', chunk=index, chunks=chunk.total_chunks)
+                emit_progress('diarization', 'skipped' if reused else 'complete', chunk=index, chunks=chunk.total_chunks)
+            except ProviderStopped:
+                emit_progress('diarization', 'not_attempted', chunk=index, chunks=chunk.total_chunks)
+                raise
             except Exception as error:
                 emit_progress('diarization', 'failed', chunk=index, chunks=chunk.total_chunks,
                               **classify(error))
@@ -180,6 +213,8 @@ def diarize(transcriber, audio, configuration):
                 chunk.close()
     except (OSError, EOFError):
         raise TranscriptionError('Prepared audio could not be read for diarization.') from None
+    if checkpoint:
+        checkpoint.verify()
     return {'version': 1, 'configuration': configuration, 'requests': requests}
 
 
@@ -238,7 +273,7 @@ class AttributedInterview:
     def verified_raw(self, transcriber):
         """Read-only family preflight for batch review/chapter gates; no ASR client."""
         self._sources_unchanged()
-        configuration = diarization_configuration(transcriber, self.options.model)
+        configuration = diarization_configuration(transcriber, self.options.model, self.options.diarization_chunk_seconds)
         binding = _fingerprint({'source': self.source_binding, 'names': self.options.fingerprint,
                                 'diarization': configuration})
         state = _read_json(self.job / 'manifest.json')
@@ -316,7 +351,9 @@ class AttributedInterview:
             self.cache_snapshots[cache / 'provider_responses.json'] = state['response_sha256']
             return payload, binding
         self._sources_unchanged()
-        payload = diarize(transcriber, part['audio'], configuration)
+        checkpoint = _checkpoint(transcriber, part['audio'], configuration,
+            self.output / 'diarization-chunks', part['source_sha256'], part['audio_sha256'])
+        payload = diarize(transcriber, part['audio'], configuration, checkpoint=checkpoint)
         self._sources_unchanged()
         text = _json(payload)
         _publish(cache, {'provider_responses.json': text, 'manifest.json': _json({
@@ -458,7 +495,7 @@ class AttributedInterview:
             reporter.context = {**previous_context, 'family': 'attributed'}
         try:
             self._sources_unchanged()
-            configuration = diarization_configuration(transcriber, self.options.model)
+            configuration = diarization_configuration(transcriber, self.options.model, self.options.diarization_chunk_seconds)
             binding = _fingerprint({'source': self.source_binding, 'names': self.options.fingerprint,
                                     'diarization': configuration})
             # Entire family checked before making a diarization request.
@@ -488,6 +525,9 @@ class AttributedInterview:
                     raise ValueError()
                 if os.path.lexists(cache):
                     self._cache(part, transcriber, configuration)
+                else:
+                    _checkpoint(transcriber, part['audio'], configuration,
+                        self.output / 'diarization-chunks', part['source_sha256'], part['audio_sha256'])
             payloads = [(part, *self._cache(part, transcriber, configuration)) for part in self.inputs]
             raw, provenance, provider_text = self._assemble(payloads)
             self._sources_unchanged()
@@ -553,6 +593,10 @@ class AttributedInterview:
                                   progress=self.progress, provenance=provenance)
             self._sources_unchanged()
             return summary
+        except ProviderStopped:
+            if active_stage is not None:
+                summary[active_stage] = 'not_attempted'
+            raise AttributionError('Provider admission stopped; completed checkpoints are retained.', stages=summary) from None
         except (ModelConfigurationError, TranscriptionError, AuthorWorkflowError) as error:
             if active_stage is not None and summary.get(active_stage) == 'pending':
                 summary[active_stage] = 'failed'

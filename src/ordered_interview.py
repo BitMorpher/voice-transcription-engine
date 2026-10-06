@@ -448,6 +448,15 @@ class OrderedInterview:
                     part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
                 )
             self.preflight()
+            if hasattr(transcriber, 'asr_checkpoint'):
+                # Validate all partial part checkpoints before any new ASR call.
+                for part, directory, identity in self.parts:
+                    job = directory / identity
+                    state = _read_json(job / 'manifest.json')
+                    if state['stages'].get('transcription', {}).get('status') != 'complete':
+                        transcriber.asr_checkpoint(job / 'audio.wav', checkpoint_root=job / 'asr-chunks',
+                            source_sha256=part['source_sha256'],
+                            audio_sha256=state['stages']['conversion']['sha256'])
             for part, directory, identity in self.parts:
                 emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
                 self.progress("part_transcription", "running")

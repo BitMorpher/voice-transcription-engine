@@ -4,10 +4,10 @@ CATEGORIES = {'authentication', 'permission', 'model_access', 'invalid_request',
               'rate_limit', 'timeout', 'connection', 'server', 'provider_unknown',
               'completion', 'validation', 'not_attempted'}
 GUIDANCE = {
-    'authentication': 'Check OPENAI_API_KEY locally; no further review chunks were requested.',
-    'permission': 'Check account/project permissions locally before retrying review.',
-    'model_access': 'Check the selected model and account access before retrying review.',
-    'invalid_request': 'Check model capabilities and request configuration before retrying review.',
+    'authentication': 'Check OPENAI_API_KEY locally before authorizing another provider run.',
+    'permission': 'Check account/project permissions locally before retrying.',
+    'model_access': 'Check the selected model and account access before retrying.',
+    'invalid_request': 'Check model capabilities and request configuration before retrying.',
     'quota': 'Check account billing/quota locally before retrying; do not repeat the batch blindly.',
     'rate_limit': 'Provider rate limit reached; wait and check limits before retrying.',
     'timeout': 'Provider request timed out; check connectivity and request timeout/retry bounds.',
@@ -16,7 +16,7 @@ GUIDANCE = {
     'provider_unknown': 'Provider failure type is unknown; inspect configuration locally before retrying.',
     'completion': 'Provider output was refused, truncated or malformed; no complete review is claimed.',
     'validation': 'Output failed schema, coverage or exact-source validation; preserve raw and failed reports.',
-    'not_attempted': 'This review chunk was not requested after a systemic provider failure.',
+    'not_attempted': 'This provider operation was not started because admission stopped.',
 }
 SYSTEMIC = {'authentication', 'permission', 'model_access', 'invalid_request', 'quota'}
 
@@ -30,6 +30,12 @@ def classify(error):
     """
     category, status = 'provider_unknown', None
     try:
+        if __package__:
+            from .provider_control import ProviderStopped
+        else:
+            from provider_control import ProviderStopped
+        if isinstance(error, ProviderStopped):
+            return {'error_category': 'not_attempted'}
         import openai
         if not isinstance(error, openai.APIError):
             return {'error_category': category}
