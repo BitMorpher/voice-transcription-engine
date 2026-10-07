@@ -95,10 +95,14 @@ def validate_edit(content, source, index):
                 or not isinstance(result['text'], str) or type(result['speaker_uncertain']) is not bool):
             raise ValueError()
         edited = result['text'].strip()
-        if not edited and source.strip():
-            raise ValueError()
     except (ValueError, TypeError):
         raise EditingError('Editing response was empty, malformed, or out of order; retain the original transcript.') from None
+    # The response envelope is valid; dropping all source content is a fidelity
+    # failure, not a recoverable schema error. Keep it outside the ValueError
+    # handler because EditingError also inherits ValueError.
+    if not edited and source.strip():
+        raise EditingError('Editing omitted all source content; no derivative was saved.',
+                           category='validation_source')
     if words(edited) != words(source):
         raise EditingError('Editing changed, invented, omitted, or reordered words or symbols; no derivative was saved.', category='validation_source')
     # Restore boundary whitespace so adjacent edited chunks cannot merge words.

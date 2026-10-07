@@ -283,3 +283,35 @@ def test_local_diarization_validation_is_distinct_from_provider_failure(tmp_path
     rows = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert rows[-1]['error_category'] == 'validation_diarization'
     assert 'SYNTHETIC_SECRET' not in stream.getvalue()
+
+
+@pytest.mark.parametrize('source', ['SYNTHETIC_SECRET source words.', '...'])
+@pytest.mark.parametrize('edited', ['', ' \n\t'])
+def test_empty_polish_is_source_omission_without_recovery_or_checkpoint(
+        tmp_path, provider, source, edited):
+    def respond(**parameters):
+        payload = json.loads(parameters['messages'][-1]['content'])
+        # A second response would succeed, proving the test detects unwanted
+        # recovery rather than merely exhausting repeated invalid responses.
+        text = edited if provider.chat.completions.create.call_count == 1 else payload['text']
+        return completion(json.dumps({'chunk_index': payload['chunk_index'],
+                                      'text': text, 'speaker_uncertain': False}))
+    provider.chat.completions.create.side_effect = respond
+    control = ProviderControl(retries=2)
+    token = CURRENT_CONTROL.set(control)
+    stream = io.StringIO()
+    reporting = CURRENT.set(Reporter(stream, heartbeat=0))
+    try:
+        with pytest.raises(TranscriptionError, match='omitted all source content'):
+            Transcriber(client=provider, provider_retries=2).enhance_transcription(
+                source, checkpoint_root=tmp_path)
+    finally:
+        CURRENT_CONTROL.reset(token)
+        CURRENT.reset(reporting)
+    assert provider.chat.completions.create.call_count == control.requests == 1
+    assert control.failures == 0
+    assert not list(tmp_path.rglob('response.json'))
+    rows = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert rows[-1]['error_category'] == 'validation_source'
+    assert not any(row.get('validation_retries') for row in rows)
+    assert 'SYNTHETIC_SECRET' not in stream.getvalue()
