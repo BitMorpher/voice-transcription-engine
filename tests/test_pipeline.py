@@ -1,3 +1,4 @@
+import shutil
 import json
 import hashlib
 from dataclasses import asdict
@@ -209,9 +210,10 @@ def test_editing_model_change_cannot_overwrite_derivative(synthetic_media, tmp_p
     derivative = output / identity / 'derivative_readability.txt'
     before = derivative.read_bytes()
     editor = EditingOptions(model='gpt-6.1-sol')
-    with pytest.raises(PipelineError, match='Unverified output'):
-        Pipeline(output, resume=True, editing_options=editor).process(
-            source, transcriber=Transcriber(client=provider, editing_options=editor), enhance=True)
+    _, stages = Pipeline(output, resume=True, editing_options=editor).process(
+        source, transcriber=Transcriber(client=provider, editing_options=editor), enhance=True)
+    assert stages['enhancement'] == 'complete'
+    assert len(list((output / identity).rglob('derivative_readability.txt'))) == 2
     assert derivative.read_bytes() == before
     assert provider.audio.transcriptions.create.call_count == 1
 
@@ -243,6 +245,8 @@ def test_regenerated_raw_cannot_reuse_derivative_of_different_bytes(
     derivative = job / 'derivative_readability.txt'
     original_derivative = derivative.read_bytes()
     (job / 'transcription.txt').unlink()
+    # Force a genuine new ASR result rather than exact checkpoint reassembly.
+    shutil.rmtree(job / 'asr-chunks')
     provider.audio.transcriptions.create.return_value = SimpleNamespace(text=replacement)
     with pytest.raises(PipelineError, match='Unverified output') as failure:
         Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
@@ -267,7 +271,7 @@ def test_identical_regenerated_raw_can_reuse_bound_derivative(synthetic_media, t
     _, stages = Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
     assert stages == {'conversion': 'skipped', 'transcription': 'complete', 'enhancement': 'skipped'}
     assert (job / 'derivative_readability.txt').read_bytes() == original
-    assert provider.audio.transcriptions.create.call_count == 2
+    assert provider.audio.transcriptions.create.call_count == 1
     assert provider.chat.completions.create.call_count == 1
     state = json.loads((job / 'manifest.json').read_text())
     assert state['stages']['enhancement']['transcription_sha256'] == digest(job / 'transcription.txt')
@@ -385,7 +389,9 @@ def test_symbol_preservation_contract_invalidates_bound_legacy_derivative(
         _, stages = Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
         assert stages['enhancement'] == 'complete'
         assert '€100' in target.read_text() and '$100' not in target.read_text()
-        assert provider.chat.completions.create.call_count == 2
+        # The new, current-contract request checkpoint still validates €100.
+        # Rebuild the derivative from it without another paid operation.
+        assert provider.chat.completions.create.call_count == 1
     assert provider.audio.transcriptions.create.call_count == 1
 
 

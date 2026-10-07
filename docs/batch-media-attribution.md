@@ -1,6 +1,8 @@
 # Batch media staging and optional speaker attribution
 
-The installed `voice-batch` CLI retains original transcripts and processing defaults.
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
+The installed `interview batch` CLI retains original transcripts and processing defaults.
 `inventory` and `check` inspect JSON and filesystem metadata only. `prepare` requires
 `--copy-local-files`; `run` requires `--send-to-openai`. Provider and human-review
 gates remain separate. Plans, speaker settings, staging and outputs are private user
@@ -31,7 +33,7 @@ not claims of conversion or original MIME type. The copied bytes do not change;
 original filenames remain untouched. Unsupported containers, missing streams,
 failed probes, malformed results or changed bytes fail staging without publishing
 an accepted ledger. Partial copies remain private for inspection; use a fresh batch
-after failed prepare. Source hydration still requires `--allow-hydration`.
+after failed prepare. Source hydration still requires `--download-cloud-files`.
 
 Entries containing extensionless videos use staging ledger version 2, binding the
 normalized suffix and minimal probe evidence to each copied content hash and the
@@ -45,8 +47,8 @@ sessions by the user.
 ## Per-entry attribution, with unknown identities by default
 
 ```bash
-voice-batch run --batch private/batches/session-001 --phase raw \
-  --send-to-openai --interview
+interview batch run --batch-folder private/batches/session-001 --step raw \
+  --send-to-openai --separate-speakers
 ```
 
 This explicitly adds `gpt-4o-transcribe-diarize` requests using `diarized_json` and
@@ -74,8 +76,8 @@ names or mappings, competing fields on disabled entries and unsupported models
 fail before provider calls. Omitted entries use unidentified-speaker attribution;
 `enabled: false` retains only the original family for that entry. Empty names are
 invalid; omitted or null names are allowed. Names alone do not identify a voice.
-An optional `--interview-model` accepts only `gpt-4o-transcribe-diarize`.
-Speaker options require `run --interview`; they do not silently enable extra ASR.
+An optional `--speaker-model` accepts only `gpt-4o-transcribe-diarize`.
+Speaker options require `run --separate-speakers`; they do not silently enable extra ASR.
 
 After listening to the recording, an entry with a supplied guest name can use
 `"speaker_map": ["1:1:B=interviewee"]`. Each key is recording-part index,
@@ -101,36 +103,40 @@ recording provenance and diarization cache contracts remain version 1.
 ## Independent stages and human approval
 
 ```bash
-voice-batch run --batch private/batches/session-001 --phase review \
-  --send-to-openai --interview --speaker-config private/config/speakers.json \
-  --provider-retries 0 --provider-timeout 30
-voice-batch run --batch private/batches/session-001 --phase chapters \
-  --select entry-a --human-reviewed --send-to-openai --interview \
-  --speaker-config private/config/speakers.json --chapters interview
+interview batch run --batch-folder private/batches/session-001 --step review \
+  --send-to-openai --separate-speakers --speaker-config private/config/speakers.json \
+  --request-retries 0 --request-timeout 30
+interview batch run --batch-folder private/batches/session-001 --step chapters \
+  --select entry-a --human-reviewed --send-to-openai --separate-speakers \
+  --speaker-config private/config/speakers.json --chapter-style interview
 ```
 
 Use the same selected families, ASR model, hints, chunk size and speaker settings
-across phases. Review requires verified complete raw for both requested families.
-It runs polish and review independently. Chapters require explicit entry selection,
-human review of both requested families, complete source/settings-bound reports
-and no high findings in either. Original review cannot approve attributed chapters.
+across phases. Review requires verified complete raw for each family it processes.
+If attributed raw is missing, original polish/review can still run; the attributed
+family is reported as blocked and the command exits nonzero. The reverse also
+applies when the attributed family and its shared source parts are intact.
+Chapters require explicit entry selection and actual human review, with an intact
+source/settings-bound report and no high findings for each family that proceeds. Original review cannot approve attributed chapters.
 Approvals capture exact manifest, raw, provenance and JSON/XLSX identities and are
-revalidated before any provider request. Chapter generations reuse the exact
+revalidated before that family’s provider requests. A blocked family never receives another family’s approval. Chapter generations reuse the exact
 accepted review bytes; they do not regenerate an unapproved review.
 
 An attributed family rejects conflicting completed polish/review/chapter settings
 before further requests; use fresh output for a deliberate editorial configuration
 change. Changing speaker mappings instead creates a new attributed source that
 requires its own complete review and human approval. There is no batch high-finding
-bypass. A failed attributed stage does not relabel completed original or attributed
+bypass. Missing/mismatched prerequisites are `blocked` with per-family guidance; no provider request is made to repair them during review/chapters. A failed attributed stage does not relabel completed original or attributed
 raw/review stages as failed. Complete earlier artifacts remain inspectable.
 
 The extra ASR pass and selected downstream stages can incur additional charges.
 SDK retries zero and a request timeout do not impose a whole-run budget. Batch
 processing may continue after ordinary failures; stop and inspect the first failure
-before bulk retries. Individual chunks are not durable checkpoints, so repeating
-failed stages may repeat successful requests. Safe logs exclude names, paths,
-transcripts, configuration values, probe output and arbitrary provider diagnostics.
+before bulk retries. Validated original ASR and speaker-pass chunks are durable
+checkpoints; matching resume reuses them. Failed text stages can repeat earlier
+successful requests. Safe logs exclude names, paths, transcripts, hint/mapping
+content, probe output and arbitrary diagnostics; allowlisted effective model and
+transport values are recorded.
 
 ## Isolated installation
 
@@ -140,8 +146,8 @@ Create a fresh dedicated environment rather than replacing an existing user tool
 uv venv --no-project --python 3.14 private/runtimes/session-engine-001
 uv pip install --python private/runtimes/session-engine-001/bin/python \
   --constraints private/config/runtime-constraints.txt \
-  "git+https://github.com/BitMorpher/voice-transcription-engine.git@<reviewed-commit>"
-private/runtimes/session-engine-001/bin/voice-batch --help
+  "git+https://github.com/BitMorpher/interview-studio.git@<reviewed-commit>"
+private/runtimes/session-engine-001/bin/interview batch --help
 ```
 
 Use a constraints file exported from that reviewed commit's lockfile. On Windows,
@@ -151,3 +157,7 @@ an existing tool environment and replace same-named entry points. The isolated
 commands above preserve existing tools and environments. Tests use synthetic media,
 mocked providers and installed-wheel entry points; they do not establish live
 speaker accuracy or publication clearance.
+
+## Recovering long speaker passes
+
+Use an explicit independent `--speaker-chunk-seconds` to experiment with shorter speaker requests while keeping original ASR settings/caches. Request checkpoints, admission bounds, mapping reconfirmation and recorded per-family status are described in [recovery controls](recovery-controls.md). Defaults remain unchanged and live quality is unverified.

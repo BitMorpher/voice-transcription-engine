@@ -1,6 +1,10 @@
 # Additive interview speaker attribution
 
-`voice-transcribe --workflow --interview` keeps the current output family and
+For a first run, start with [getting started](getting-started.md); the [pipeline guide](pipeline-guide.md) explains steps, outputs, and technical terms.
+
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
+`interview transcribe --author-workflow --separate-speakers` keeps the current output family and
 adds a separate attributed family. It uses actual provider speaker segments at
 transcription time; it does not ask a text editor to invent dialogue turns.
 Names alone cannot identify a voice. Initially, voices appear as scoped speaker
@@ -9,42 +13,42 @@ interviewer/interviewee names. Mapping identifies a user-confirmed claim; it doe
 not establish biometric identity or verify the provider's diarization.
 
 ```bash
-voice-transcribe --workflow --interview --input private/input/session.wav \
-  --output-folder private/output/session --stages raw \
+interview transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+  --output-folder private/output/session --steps raw \
   --interviewer-name "Example Host" --interviewee-name "Example Guest"
 
 # After listening and identifying the provider's A and B voices in request 1:
-voice-transcribe --workflow --interview --input private/input/session.wav \
-  --output-folder private/output/session --stages raw --resume \
+interview transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+  --output-folder private/output/session --steps raw --resume \
   --interviewer-name "Example Host" --interviewee-name "Example Guest" \
   --speaker-map 1:1:A=interviewer --speaker-map 1:1:B=interviewee
 
 # Select the same additional stages for both output families:
-voice-transcribe --workflow --interview --input private/input/session.wav \
-  --output-folder private/output/session --stages raw,polish,review --chapters both --resume \
+interview transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+  --output-folder private/output/session --steps raw,polish,review --chapter-style both --resume \
   --interviewer-name "Example Host" --interviewee-name "Example Guest" \
   --speaker-map 1:1:A=interviewer --speaker-map 1:1:B=interviewee
 
 # Ordered recordings from one interview are also supported:
-voice-transcribe --workflow --interview --interview-manifest private/input/interview.json \
-  --output-folder private/output/ordered-session --stages raw,review \
+interview transcribe --author-workflow --separate-speakers --recordings-list private/input/interview.json \
+  --output-folder private/output/ordered-session --steps raw,review \
   --interviewer-name "Example Host" --interviewee-name "Example Guest"
 ```
 
 See [ordered recording inputs](ordered-interviews.md) for the manifest contract.
-`--interview` requires `--workflow` and both distinct, nonempty names. Names are
+`--separate-speakers` requires `--author-workflow` and both distinct, nonempty names. Names are
 local display metadata and are not sent as voice hints to the provider. Name and
-mapping flags without `--interview`, duplicate or malformed mappings, unsupported
+mapping flags without `--separate-speakers`, duplicate or malformed mappings, unsupported
 models, extraction mode, and multiple language hints fail before provider setup.
-`voice-batch run --interview` also supports a private per-entry speaker configuration
-and unidentified voices when names are absent. The direct `voice-transcribe` CLI
+`interview batch run --separate-speakers` also supports a private per-entry speaker configuration
+and unidentified voices when names are absent. The direct `interview transcribe` CLI
 still requires both names. See [batch media and attribution](batch-media-attribution.md)
 for batch opt-in, configuration and independent human-review gates.
 
 ## Diarization versus mapping
 
-The original `--model` remains unchanged (default `gpt-transcribe`). The
-additional `--interview-model` currently accepts only
+The original `--transcription-model` remains unchanged (default `gpt-transcribe`). The
+additional `--speaker-model` currently accepts only
 `gpt-4o-transcribe-diarize`. That model returns `diarized_json` with segment text,
 speaker, start and end. `chunking_strategy=auto` is always sent, satisfying the
 provider requirement for requests longer than 30 seconds. This CLI exposes no
@@ -141,7 +145,7 @@ interview chapter banners retain their unassigned-role wording. Inspect JSON for
 precise source spans; chapter layout remains a human-review draft.
 
 Raw always remains available. The same selected stages run independently for both
-families; without `--interview` there are no extra diarization or author calls.
+families; without `--separate-speakers` there are no extra diarization or author calls.
 A complete attributed review never approves an original review, or vice versa.
 Both retain the complete-review and unresolved-high gates described in the
 [author workflow](author-workflow.md). `--draft-with-unresolved-high` remains an
@@ -164,12 +168,17 @@ does not report successful attribution as failed, and does not publish a chapter
 Names/mapping changes create a new attributed family and can reuse verified
 diarization responses with `--resume`; those display changes do not require
 another audio request. Stages and editorial models are bound independently to
-the exact source and provenance. Tampered, missing, symlinked, or conflicting
-completed artifacts fail without overwriting; changed provider/chunk settings
-require fresh output where an existing family conflicts. Failed diarization is
-retried for the whole recording: individual requests are not checkpointed, and
-successful requests in a failed recording may be charged again. Completed earlier
-recording caches remain reusable. Locks and atomic directory publication keep
+the exact source and provenance. Text model/effort changes retain the same verified
+attributed raw/audio job and select a separate derivative configuration. The first
+polish keeps `derivative_readability.txt`; subsequent configurations use recorded
+`enhancement_<hash>/derivative_readability.txt` paths. Manifest
+`derivative_versions` retains prior stage records and selects the requested
+configuration without overwriting its artifacts. Review/chapter bundles retain
+their unique directories and exact review gates. Tampered, missing, symlinked, or
+conflicting completed artifacts fail without overwriting. Validated speaker-pass responses are privately checkpointed, so matching retries
+reuse successful earlier requests within a failed recording. Failed or never-saved
+requests can repeat charges. Completed whole-recording caches remain reusable.
+See [recovery controls](recovery-controls.md) for binding and reconfirmation details. Locks and atomic directory publication keep
 interrupted writes from appearing complete; inspect a stale lock before removing
 it. Storage uses the same private permissions and repository output restrictions
 as the original pipeline.
@@ -180,8 +189,29 @@ Enabling this mode sends a **second audio transcription pass**. Selected polish
 and author review run again for the attributed source; narrative chapter
 arrangement can add model calls. Interview chapter excerpts remain deterministic.
 Retries may add charges. Review/chapter gates apply independently, and completed
-original outputs remain available if attribution fails. Start with `--stages raw`
+original outputs remain available if attribution fails. Start with `--steps raw`
 and inspect speaker turns before requesting further stages.
+
+Attributed polish groups at most 32 speech pieces and 6000 UTF-8 speech bytes per
+request by default, instead of requesting every nonempty turn separately. Long
+turns split at exact character boundaries and retain stable turn IDs and piece
+indices. The response must contain every piece exactly once in source order;
+local validation checks each piece's words and symbols. Empty and short turns,
+speaker identity, headers and part separators remain present. Headers come from
+the verified raw source and are restored locally, so grouping cannot merge voices
+or assign a new name. An all-empty group needs no model request. Each validated
+group is checkpointed independently; one failed group does not repeat earlier
+successful groups. Sanskrit spellings and personal names are never silently
+corrected into different words, and no memories or testimony may be invented.
+
+Matching legacy per-turn polish may be retained only after its source/configuration
+hashes, exact headers/separators and per-turn word fidelity pass validation. Old
+files remain intact; missing bindings or corruption block reuse. Model/effort
+changes select a new text version while preserving raw and audio caches. Use the
+explicit `--text-profile balanced` for Sol 6.1/low editing and the Sol 6.1/medium
+review candidate, or override the review model/effort to retain Astra. Assess subtle
+review decisions through [the isolated comparison](text-comparison.md); grouped
+request reduction is not evidence of better editorial judgment or a dollar saving.
 
 Only media content and supported transcription settings go to the additional
 ASR pass. Generic `audio.wav` upload names conceal local filenames. Names may be
@@ -204,3 +234,7 @@ Provider contract checked against official documentation and the locked
 `openai==3.24.0` SDK on 2026-10-05:
 [OpenAI speech-to-text guide](https://developers.openai.com/api/docs/guides/speech-to-text),
 [transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
+
+## Batch prerequisites and safe failure detail
+
+For `interview batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.

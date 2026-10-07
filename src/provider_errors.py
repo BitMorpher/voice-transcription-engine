@@ -4,10 +4,10 @@ CATEGORIES = {'authentication', 'permission', 'model_access', 'invalid_request',
               'rate_limit', 'timeout', 'connection', 'server', 'provider_unknown',
               'completion', 'validation', 'not_attempted'}
 GUIDANCE = {
-    'authentication': 'Check OPENAI_API_KEY locally; no further review chunks were requested.',
-    'permission': 'Check account/project permissions locally before retrying review.',
-    'model_access': 'Check the selected model and account access before retrying review.',
-    'invalid_request': 'Check model capabilities and request configuration before retrying review.',
+    'authentication': 'Check OPENAI_API_KEY locally before authorizing another provider run.',
+    'permission': 'Check account/project permissions locally before retrying.',
+    'model_access': 'Check the selected model and account access before retrying.',
+    'invalid_request': 'Check model capabilities and request configuration before retrying.',
     'quota': 'Check account billing/quota locally before retrying; do not repeat the batch blindly.',
     'rate_limit': 'Provider rate limit reached; wait and check limits before retrying.',
     'timeout': 'Provider request timed out; check connectivity and request timeout/retry bounds.',
@@ -16,9 +16,59 @@ GUIDANCE = {
     'provider_unknown': 'Provider failure type is unknown; inspect configuration locally before retrying.',
     'completion': 'Provider output was refused, truncated or malformed; no complete review is claimed.',
     'validation': 'Output failed schema, coverage or exact-source validation; preserve raw and failed reports.',
-    'not_attempted': 'This review chunk was not requested after a systemic provider failure.',
+    'not_attempted': 'This provider operation was not started because admission stopped.',
 }
+GUIDANCE.update({
+    'validation_schema': 'Response shape, JSON or request index was invalid; validated checkpoints are retained.',
+    'validation_coverage': 'Response did not acknowledge exact requested coverage; no complete review is claimed.',
+    'validation_source': 'Response changed source words or supplied a non-exact excerpt; retain original source and inspect private artifacts.',
+    'validation_diarization': 'Local speaker-response validation failed; no complete attribution is claimed.',
+})
+CATEGORIES.update(GUIDANCE)
 SYSTEMIC = {'authentication', 'permission', 'model_access', 'invalid_request', 'quota'}
+TIMEOUT_PHASES = {'connect', 'write', 'read', 'pool', 'unknown'}
+TIMEOUT_GUIDANCE = {
+    'connect': 'Connection establishment timed out; inspect connectivity and endpoint routing before another paid attempt.',
+    'write': 'Writing request data timed out; inspect the upload/network path before another paid attempt.',
+    'read': 'Waiting for response data timed out; provider processing and network causes remain unproven. Stop bulk retries.',
+    'pool': 'Waiting for a local connection slot timed out; inspect client connection usage before retrying.',
+    'unknown': 'The SDK reported a timeout without a reliable transport phase. Stop bulk retries; preserve the safe diagnostic.',
+}
+
+
+def timeout_phase(error):
+    """Inspect bounded exception links and known types only, never error text.
+
+    Follow Python's active causal chain: explicit cause wins over context, and
+    suppressed context is not evidence. Ambiguous, cyclic or truncated chains
+    remain unknown. Both transports supported by the pinned SDK are recognized.
+    """
+    import httpx2
+    transports = [httpx2]
+    try:
+        import httpx  # Optional legacy transport; absent from the default install.
+    except ImportError:
+        pass
+    else:
+        transports.append(httpx)
+    known = {kind: phase for module in transports
+             for kind, phase in ((module.ConnectTimeout, 'connect'), (module.WriteTimeout, 'write'),
+                                 (module.ReadTimeout, 'read'), (module.PoolTimeout, 'pool'))}
+    seen, phases = set(), set()
+    current = error
+    for _ in range(16):
+        if current is None:
+            return next(iter(phases)) if len(phases) == 1 else 'unknown'
+        if id(current) in seen or not isinstance(current, BaseException):
+            return 'unknown'
+        seen.add(id(current))
+        if type(current) in known:
+            phases.add(known[type(current)])
+        cause = BaseException.__cause__.__get__(current)
+        current = cause if cause is not None else (
+            None if BaseException.__suppress_context__.__get__(current)
+            else BaseException.__context__.__get__(current))
+    return 'unknown'
 
 
 def classify(error):
@@ -30,6 +80,25 @@ def classify(error):
     """
     category, status = 'provider_unknown', None
     try:
+        if __package__:
+            from .provider_control import ProviderStopped
+        else:
+            from provider_control import ProviderStopped
+        if isinstance(error, ProviderStopped):
+            return {'error_category': 'not_attempted'}
+        if __package__:
+            from .text_requests import ResponseValidationError
+        else:
+            from text_requests import ResponseValidationError
+        if isinstance(error, ResponseValidationError):
+            category = error.category
+            return {'error_category': category if isinstance(category, str) and category in CATEGORIES else 'validation'}
+        if __package__:
+            from .transcriber import TranscriptionError
+        else:
+            from transcriber import TranscriptionError
+        if type(error) is TranscriptionError and error.validation_category in CATEGORIES:
+            return {'error_category': error.validation_category}
         import openai
         if not isinstance(error, openai.APIError):
             return {'error_category': category}
@@ -51,6 +120,8 @@ def classify(error):
     except Exception:
         return {'error_category': 'provider_unknown'}
     result = {'error_category': category}
+    if category == 'timeout':
+        result['timeout_phase'] = timeout_phase(error)
     if status is not None:
         result['http_status'] = status
     return result

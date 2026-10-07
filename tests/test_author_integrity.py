@@ -64,10 +64,15 @@ def test_cache_source_model_settings_and_prompt_changes_fail_without_overwrite(
         monkeypatch.setattr('src.author_review._prompt', lambda: 'Synthetic changed prompt.')
     else:
         (job / 'transcription.txt').write_text('Synthetic changed raw.')
-    with pytest.raises(AuthorWorkflowError):
+    if mutation == 'source':
+        with pytest.raises(AuthorWorkflowError):
+            run(integrity_job, resume=True, options=options)
+        assert transcriber.client.chat.completions.create.call_count == calls
+    else:
         run(integrity_job, resume=True, options=options)
+        assert transcriber.client.chat.completions.create.call_count > calls
+        assert len(state['derivative_versions']['author_review']) == 2
     assert target.read_bytes() == before
-    assert transcriber.client.chat.completions.create.call_count == calls
     assert state['stages']['author_review']['status'] == 'complete'
 
 

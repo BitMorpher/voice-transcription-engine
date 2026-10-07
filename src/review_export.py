@@ -326,7 +326,7 @@ def _build(report):
     for sheet in (finding_sheet, source_sheet, coverage_sheet):
         sheet.auto_filter.ref = sheet.dimensions
         sheet.print_options.horizontalCentered = True
-    workbook.properties.creator = 'Voice Transcription Engine'
+    workbook.properties.creator = 'Interview Studio'
     workbook.properties.title = 'Author review report'
     workbook.properties.description = 'Human review suggestions with exact raw source references.'
     return workbook

@@ -10,12 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
+    from .derivative_versions import select_version, remember_version
     from .author_review import ReviewError, ReviewOptions, review_transcript, validate_review_report
     from .chapters import ChapterError, ChapterOptions, draft_chapters, render_chapter
     from .private_output import digest, write_private
     from .review_export import export_review
     from .source_provenance import author_binding, bind_report, bind_chapters, validate_binding
 else:
+    from derivative_versions import select_version, remember_version
     from author_review import ReviewError, ReviewOptions, review_transcript, validate_review_report
     from chapters import ChapterError, ChapterOptions, draft_chapters, render_chapter
     from private_output import digest, write_private
@@ -182,7 +184,12 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
         fingerprint = options.fingerprint(stage, raw_hash, review_hash)
         if provenance is not None:
             fingerprint = author_binding(fingerprint, provenance)
-        record = state['stages'].get(stage)
+        try:
+            record = select_version(job, state, stage, fingerprint, raw_hash)
+        except (ValueError, OSError, TypeError, AttributeError):
+            summary[stage] = 'failed'
+            raise AuthorWorkflowError('Author artifact changed or settings changed; retain outputs and use a new output folder.') from None
+        save()
         if resume and _verified_bundle(job, record, fingerprint, raw_hash, expected_names):
             if stage == 'author_review':
                 report, _ = _load_bound_report(job, record, raw, options.review_options, provenance=provenance)
@@ -199,7 +206,8 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
             raise AuthorWorkflowError('Author artifact changed or settings changed; use a new output folder. No artifact was overwritten.')
         try:
             if stage == 'author_review':
-                report = review_transcript(raw, transcriber.client, options.review_options)
+                report = review_transcript(raw, transcriber.client, options.review_options,
+                                           checkpoint_root=job / 'text-chunks')
                 if report.get('status') == 'complete':
                     validate_review_report(raw, report, options.review_options)
                 _raw_snapshot(job, raw_hash)
@@ -211,7 +219,8 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
                     export_review(report, directory / 'review_report.xlsx')
             else:
                 chapters = draft_chapters(raw, report, transcriber.client, options.chapter_options,
-                                          allow_unresolved_high=options.allow_unresolved_high)
+                                          allow_unresolved_high=options.allow_unresolved_high,
+                                          checkpoint_root=job / 'text-chunks')
                 _raw_snapshot(job, raw_hash)
                 _check_report_unchanged(job, state['stages']['author_review'], review_hash)
                 if provenance is not None:
@@ -232,6 +241,8 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
                 'model': report['model'] if stage == 'author_review' else chapters['model'],
                 'prompt_version': report['prompt_version'] if stage == 'author_review' else chapters['prompt_version'],
                 'schema_version': report['schema_version'] if stage == 'author_review' else chapters['schema_version'],
+                'reasoning_effort': (options.review_options.reasoning_effort if stage == 'author_review'
+                                     else options.chapter_options.reasoning_effort),
             }
             if stage == 'author_review':
                 state['stages'][stage]['prompt_sha256'] = report['prompt_sha256']
@@ -239,6 +250,7 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
                 state['stages'][stage]['prompt_sha256'] = chapters['prompt_sha256']
             if review_hash:
                 state['stages'][stage]['review_sha256'] = review_hash
+            remember_version(state, stage)
             save()
             summary[stage] = status
             progress(stage, status)
@@ -251,6 +263,7 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
         except Exception as error:
             state['stages'][stage] = {'status': 'failed', 'configuration_sha256': fingerprint,
                                       'transcription_sha256': raw_hash}
+            remember_version(state, stage)
             save()
             summary[stage] = 'failed'
             message = str(error) if type(error) is ChapterError else 'Author stage failed; inspect review findings and retain the raw transcript.'

@@ -6,11 +6,14 @@ import os
 import re
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 if __package__:
+    from .derivative_versions import (enhancement_path, select_version, remember_version, readability_speech,
+                                      editing_prompt_hash, LEGACY_READABILITY_PROMPT_SHA256)
     from .review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
-    from .progress import emit_progress
+    from .progress import CURRENT, emit_progress
     from . import transcriber as asr_engine
     from .author_review import source_segments
     from .author_workflow import (
@@ -24,8 +27,10 @@ if __package__:
     from .private_output import digest, output_directory, write_private
     from .source_provenance import author_binding, validate_chapter_binding
 else:
+    from derivative_versions import (enhancement_path, select_version, remember_version, readability_speech,
+                                     editing_prompt_hash, LEGACY_READABILITY_PROMPT_SHA256)
     from review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
-    from progress import emit_progress
+    from progress import CURRENT, emit_progress
     import transcriber as asr_engine
     from author_review import source_segments
     from author_workflow import (
@@ -47,6 +52,20 @@ SAFE_INPUT = (
     "ordered parts array of unique IDs and accessible nonempty local media files."
 )
 SAFE_CACHE = "Interview cache is invalid, changed, locked, or conflicts; use a new output folder. No artifact was overwritten."
+
+
+@contextmanager
+def _recording_progress(part, total):
+    """Keep request counters attached to their recording and session."""
+    reporter = CURRENT.get()
+    previous = reporter.context if reporter is not None else None
+    if reporter is not None:
+        reporter.context = {**previous, 'part': part, 'parts': total}
+    try:
+        yield
+    finally:
+        if reporter is not None:
+            reporter.context = previous
 
 
 def _hash(value):
@@ -170,6 +189,8 @@ class OrderedInterview:
         self.interview_options = interview_options
         self.resume, self.media_timeout, self.enhance = resume, media_timeout, enhance
         self.progress = progress or (lambda stage, status: None)
+        self.raw_identity = _hash({'contract': CONTRACT, 'manifest': self.document,
+                                   'asr': options.fingerprint})
         self.binding = _hash(
             {
                 "contract": CONTRACT,
@@ -268,7 +289,7 @@ class OrderedInterview:
         }
         return raw, provenance
 
-    def preflight(self):
+    def preflight(self, *, original=True, require_raw=False):
         """Check every existing cache/output before any provider request."""
         try:
             for part, directory, identity in self.parts:
@@ -280,6 +301,8 @@ class OrderedInterview:
                     if ancestor.is_symlink():
                         raise ValueError()
                 if not job.exists():
+                    if require_raw:
+                        raise ValueError()
                     continue
                 if not self.resume or os.path.lexists(job / ".lock"):
                     raise ValueError()
@@ -297,6 +320,8 @@ class OrderedInterview:
                     ("transcription", "transcription.txt"),
                 ]:
                     record = state["stages"].get(stage)
+                    if require_raw and (not isinstance(record, dict) or record.get('status') != 'complete'):
+                        raise ValueError()
                     if os.path.lexists(job / name) or (
                         isinstance(record, dict) and record.get("status") == "complete"
                     ):
@@ -313,6 +338,8 @@ class OrderedInterview:
                             and not (job / name).read_bytes().decode("utf-8").strip()
                         ):
                             raise ValueError()
+            if not original:
+                return
             if self.job.parent.is_symlink() or self.job.is_symlink():
                 raise ValueError()
             if self.job.exists():
@@ -341,8 +368,12 @@ class OrderedInterview:
 
     def _preflight_author(self, state, raw, provenance):
         pipeline = Pipeline(self.output, options=self.options, editing_options=self.editing_options)
+        if self.enhance:
+            select_version(self.job, state, 'enhancement',
+                           pipeline._enhancement_fingerprint(state['stages']['transcription']['sha256']),
+                           state['stages']['transcription']['sha256'])
         record = state["stages"].get("enhancement")
-        if self.enhance and (record or os.path.lexists(self.job / "derivative_readability.txt")):
+        if self.enhance and record:
             if not Pipeline._verified(
                 self.job,
                 state,
@@ -353,10 +384,13 @@ class OrderedInterview:
             ):
                 # Failed attempts with no output are safe to retry.
                 if (
-                    os.path.lexists(self.job / "derivative_readability.txt")
+                    os.path.lexists(enhancement_path(self.job, record))
                     or record.get("status") == "complete"
                 ):
                     raise ValueError()
+            elif record.get('status') == 'complete':
+                readability_speech(enhancement_path(self.job, record).read_bytes().decode('utf-8'),
+                                   raw, self.editing_options.chunk_bytes)
         review_hash = None
         for stage in ("author_review", "chapters"):
             record = state["stages"].get(stage)
@@ -382,6 +416,9 @@ class OrderedInterview:
             config = author_binding(
                 self.author_options.fingerprint(stage, raw_hash, review_hash), provenance
             )
+            record = select_version(self.job, state, stage, config, raw_hash)
+            if record is None:
+                continue
             if not _verified_bundle(self.job, record, config, raw_hash, names):
                 raise ValueError()
             if stage == "chapters":
@@ -394,7 +431,53 @@ class OrderedInterview:
                     self.job, record, raw, self.author_options.review_options, provenance=provenance
                 )
 
-    def process(self, *, transcriber, approved_review=None, approved_attributed_review=None):
+    def _reusable_polish(self, raw, provenance, configuration):
+        """Find only byte-verified, source-identical derivatives from prior generations."""
+        raw_hash = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+        for job in sorted(self.job.parent.iterdir()):
+            if job == self.job or not job.is_dir():
+                continue
+            state = _read_json(job / 'manifest.json')
+            if state.get('raw_identity_sha256') not in (None, self.raw_identity):
+                continue
+            saved_provenance = _read_json(job / 'provenance.json')
+            if saved_provenance.get('manifest_sha256') != provenance['manifest_sha256']:
+                continue
+            if state.get('text_configuration', {}).get('editing_prompt_sha256', LEGACY_READABILITY_PROMPT_SHA256) != self._editing_prompt_hash():
+                continue
+            if saved_provenance != provenance:
+                # Different ASR settings may legitimately produce different raw
+                # for the same recording manifest. Never reuse those derivatives.
+                if (state.get('provenance_sha256') != digest(job / 'provenance.json')
+                        or not Pipeline._verified(job, state, 'transcription', 'transcription.txt')):
+                    raise ValueError()
+                continue
+            if (job.is_symlink() or state.get('version') != 'ordered-interview-v1'
+                    or state.get('binding_sha256') != job.name
+                    or state.get('provenance_sha256') != digest(job / 'provenance.json')
+                    or (job / 'transcription.txt').is_symlink()
+                    or (job / 'transcription.txt').read_bytes() != raw.encode('utf-8')
+                    or not Pipeline._verified(job, state, 'transcription', 'transcription.txt')):
+                raise ValueError()
+            record = select_version(job, state, 'enhancement', configuration, raw_hash)
+            if record is None or record.get('status') != 'complete':
+                continue
+            if not Pipeline._verified(job, state, 'enhancement', 'derivative_readability.txt', configuration, raw_hash):
+                raise ValueError()
+            path = enhancement_path(job, record)
+            payload = path.read_bytes().decode('utf-8')
+            if hashlib.sha256(payload.encode('utf-8')).hexdigest() != record['sha256']:
+                raise ValueError()
+            readability_speech(payload, raw, self.editing_options.chunk_bytes)
+            return payload, record, path, digest(job / 'manifest.json'), digest(job / 'provenance.json'), job
+        return None
+
+    @staticmethod
+    def _editing_prompt_hash():
+        return editing_prompt_hash()
+
+    def process(self, *, transcriber, approved_review=None, approved_attributed_review=None,
+                attributed_only=False, require_raw=False):
         """Publish combined raw only after every part succeeds, then run author stages."""
         original_resume = self.resume
         lock = self.output / ".interview.lock"
@@ -424,7 +507,33 @@ class OrderedInterview:
                         validate_approved_review(approval, self.author_options, attributed=attributed)
             except AuthorWorkflowError as error:
                 raise PipelineError(str(error)) from None
-            self.preflight()
+            if attributed_only:
+                # Batch text phases may run this family independently. They must
+                # never buy missing ASR/diarization or touch original derivatives.
+                if self.interview_options is None or approved_review is not None:
+                    raise PipelineError(SAFE_APPROVAL)
+                self.preflight(original=False, require_raw=True)
+                if (transcriber.options.fingerprint != self.options.fingerprint
+                        or transcriber.editing_options.fingerprint != self.editing_options.fingerprint):
+                    raise PipelineError('Transcriber settings must match the interview configuration.')
+                if __package__:
+                    from .interview_attribution import AttributedInterview, AttributionError, input_record
+                else:
+                    from interview_attribution import AttributedInterview, AttributionError, input_record
+                inputs = [input_record(part['order'], directory / identity,
+                          _read_json(directory / identity / 'manifest.json'))
+                          for part, directory, identity in self.parts]
+                family = AttributedInterview(self.output, inputs, self.interview_options,
+                    resume=True, enhance=self.enhance, author_options=self.author_options,
+                    progress=self.progress)
+                family.verified_raw(transcriber)
+                try:
+                    stages = family.process(transcriber, approved_review=approved_attributed_review, require_raw=True)
+                except AttributionError as error:
+                    raise PipelineError(str(error), stages={'attributed_' + key: value
+                        for key, value in error.stages.items()}) from None
+                return self.binding, {'attributed_' + key: value for key, value in stages.items()}
+            self.preflight(require_raw=require_raw)
             existed = self.job.exists()
             # Initial validation enforces the caller's resume choice. Internal passes
             # can now reuse artifacts created during this same locked run.
@@ -434,39 +543,62 @@ class OrderedInterview:
                 or transcriber.editing_options.fingerprint != self.editing_options.fingerprint
             ):
                 raise PipelineError("Transcriber settings must match the interview configuration.")
-            # Validate/decode ALL parts locally before ASR, including later recordings.
-            for part, directory, identity in self.parts:
-                emit_progress('conversion', 'running', part=part['order'], parts=len(self.parts))
-                pipeline = Pipeline(
-                    directory,
-                    resume=self.resume,
-                    media_timeout=self.media_timeout,
-                    options=self.options,
-                    progress=self.progress,
-                )
-                pipeline.process(
-                    part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
-                )
-            self.preflight()
-            for part, directory, identity in self.parts:
-                emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
-                self.progress("part_transcription", "running")
-                Pipeline(
-                    directory, resume=True, media_timeout=self.media_timeout, options=self.options,
-                    progress=self.progress
-                ).process(
-                    part["path"],
-                    transcriber=transcriber,
-                    require_nonempty=True,
-                    expected_source_sha256=part["source_sha256"],
-                )
-                self.progress("part_transcription", "complete")
-            self.preflight()
-            emit_progress('combined_raw', 'running')
+            if require_raw:
+                # Batch text phases reuse only verified completed recordings.
+                # Do not enter audio conversion/ASR even if files change later.
+                for part, _, _ in self.parts:
+                    for stage in ('conversion', 'transcription'):
+                        emit_progress(stage, 'skipped', part=part['order'], parts=len(self.parts))
+                    emit_progress('part_transcription', 'skipped', part=part['order'], parts=len(self.parts))
+            else:
+                # Validate/decode ALL parts locally before ASR, including later recordings.
+                for part, directory, identity in self.parts:
+                    emit_progress('conversion', 'running', part=part['order'], parts=len(self.parts))
+                    pipeline = Pipeline(
+                        directory,
+                        resume=self.resume,
+                        media_timeout=self.media_timeout,
+                        options=self.options,
+                        progress=self.progress,
+                    )
+                    with _recording_progress(part['order'], len(self.parts)):
+                        pipeline.process(
+                            part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
+                        )
+                self.preflight()
+                if hasattr(transcriber, 'asr_checkpoint'):
+                    # Validate all partial part checkpoints before any new ASR call.
+                    for part, directory, identity in self.parts:
+                        job = directory / identity
+                        state = _read_json(job / 'manifest.json')
+                        if state['stages'].get('transcription', {}).get('status') != 'complete':
+                            transcriber.asr_checkpoint(job / 'audio.wav', checkpoint_root=job / 'asr-chunks',
+                                source_sha256=part['source_sha256'],
+                                audio_sha256=state['stages']['conversion']['sha256'])
+                for part, directory, identity in self.parts:
+                    emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
+                    self.progress("part_transcription", "running")
+                    with _recording_progress(part['order'], len(self.parts)):
+                        Pipeline(
+                            directory, resume=True, media_timeout=self.media_timeout, options=self.options,
+                            progress=self.progress
+                        ).process(
+                            part["path"],
+                            transcriber=transcriber,
+                            require_nonempty=True,
+                            expected_source_sha256=part["source_sha256"],
+                        )
+                    emit_progress('part_transcription', 'complete', part=part['order'], parts=len(self.parts))
+                    self.progress("part_transcription", "complete")
+                self.preflight()
             raw, provenance = self._combine()
+            reusable = None
+            if self.enhance:
+                config = Pipeline(self.output, options=self.options,
+                                  editing_options=self.editing_options)._enhancement_fingerprint(provenance['raw_sha256'])
+                reusable = self._reusable_polish(raw, provenance, config)
             if not self.job.exists():
                 self._publish(raw, provenance)
-            emit_progress('combined_raw', 'skipped' if existed else 'complete')
             state = _read_json(self.job / "manifest.json")
             summary = {"parts": "complete", "combined_raw": "skipped" if existed else "complete"}
 
@@ -485,23 +617,39 @@ class OrderedInterview:
                     self.output, options=self.options, editing_options=self.editing_options
                 )
                 config = pipeline._enhancement_fingerprint(raw_hash)
+                select_version(self.job, state, 'enhancement', config, raw_hash)
                 if Pipeline._verified(
                     self.job, state, "enhancement", "derivative_readability.txt", config, raw_hash
                 ):
                     summary["enhancement"] = "skipped"
                     self.progress("enhancement", "skipped")
                 else:
-                    self.progress("enhancement", "running")
-                    Pipeline._write_derivative(self.job, transcriber, raw_hash)
+                    if reusable is not None:
+                        if (digest(reusable[2]) != reusable[1]['sha256']
+                                or digest(reusable[5] / 'manifest.json') != reusable[3]
+                                or digest(reusable[5] / 'provenance.json') != reusable[4]):
+                            raise ValueError()
+                        write_private(self.job / 'derivative_readability.txt', reusable[0])
+                        if digest(self.job / 'transcription.txt') != raw_hash or digest(reusable[2]) != reusable[1]['sha256']:
+                            raise ValueError()
+                    else:
+                        self.progress("enhancement", "running")
+                        Pipeline._write_derivative(self.job, transcriber, raw_hash,
+                            checkpoint_root=output_directory(self.output / 'text-chunks' / 'original' / self.raw_identity / config))
                     state["stages"]["enhancement"] = {
                         "status": "complete",
                         "sha256": digest(self.job / "derivative_readability.txt"),
                         "configuration_sha256": config,
                         "transcription_sha256": raw_hash,
+                        'model': self.editing_options.model,
+                        'reasoning_effort': self.editing_options.reasoning_effort,
+                        'chunk_bytes': self.editing_options.chunk_bytes,
+                        'editing_prompt_sha256': self._editing_prompt_hash(),
                     }
+                    remember_version(state, 'enhancement')
                     save()
-                    summary["enhancement"] = "complete"
-                    self.progress("enhancement", "complete")
+                    summary["enhancement"] = "skipped" if reusable is not None else "complete"
+                    self.progress("enhancement", summary['enhancement'])
             author_error = None
             try:
                 run_author_stages(
@@ -575,6 +723,12 @@ class OrderedInterview:
             state = {
                 "version": "ordered-interview-v1",
                 "binding_sha256": self.binding,
+                'raw_identity_sha256': self.raw_identity,
+                'text_configuration': {'editing_model': self.editing_options.model,
+                    'editing_prompt_sha256': self._editing_prompt_hash(),
+                    'editing_reasoning_effort': self.editing_options.reasoning_effort,
+                    'review_model': self.author_options.review_options.model,
+                    'review_reasoning_effort': self.author_options.review_options.reasoning_effort},
                 "provenance_sha256": digest(temporary / "provenance.json"),
                 "boundaries_sha256": digest(temporary / "part_boundaries.txt"),
                 "human_review_required": True,

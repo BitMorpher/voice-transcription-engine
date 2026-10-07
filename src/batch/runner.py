@@ -1,4 +1,4 @@
-"""Serial failure isolation and separate review/chapter gates."""
+"""One ordered session per worker, with separate review/chapter gates."""
 
 from dataclasses import replace
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..author_review import ReviewOptions
 from ..chapters import ChapterOptions
-from ..author_workflow import AuthorOptions, _load_bound_report, _verified_bundle
+from ..author_workflow import AuthorOptions, AuthorWorkflowError, _load_bound_report, _verified_bundle
 from ..model_config import TranscriptionOptions, EditingOptions, load_hints
 from ..ordered_interview import OrderedInterview, _read_json
 from ..interview_attribution import AttributedInterview, input_record
@@ -17,17 +17,23 @@ from ..source_provenance import author_binding, validate_provenance
 from ..cli import main as engine_main
 from ..private_output import digest
 from ..progress import CURRENT
-from ..review_reuse import ApprovedReview
-from .plan import BatchError, require
+from ..provider_control import CURRENT_CONTROL
+from ..review_reuse import ApprovedReview, validate_approved_review
+from .plan import require
 from .storage import target, verify
+from .prerequisites import FamilyBlocked
 
 
-def gate(root, item, phase, options, author_options):
+def _gate_original(root, item, phase, options, author_options):
     """Require completed stages for these sources and exact ASR/review settings."""
     if phase == 'raw':
         return
     directory = target(root, item)
+    ordered = OrderedInterview(directory / 'input/interview.json', directory / 'output',
+        options=options, editing_options=EditingOptions(), author_options=author_options, resume=True)
+    ordered.preflight(original=False, require_raw=True)
     ledger = json.loads((directory / 'staging.json').read_text())['parts']
+    matching_raw = False
     for manifest in (directory / 'output/interviews').glob('*/manifest.json'):
         job = manifest.parent
         if job.is_symlink() or manifest.is_symlink():
@@ -62,6 +68,7 @@ def gate(root, item, phase, options, author_options):
             continue
         if phase == 'review':
             return
+        matching_raw = True
         review = state['stages'].get('author_review', {})
         fingerprint = author_binding(author_options.fingerprint('author_review', checksum), provenance)
         if not _verified_bundle(job, review, fingerprint, checksum,
@@ -69,19 +76,33 @@ def gate(root, item, phase, options, author_options):
             continue
         report, report_hash = _load_bound_report(job, review, raw, author_options.review_options,
                                       provenance=provenance)
-        if not any(finding['severity'] == 'high' for finding in report['findings']):
-            return ApprovedReview.capture(job, state, report_hash)
-    raise BatchError('Review needs completed raw; chapters need intact complete review without high findings.')
+        if any(finding['severity'] == 'high' for finding in report['findings']):
+            raise FamilyBlocked('high_findings')
+        return ApprovedReview.capture(job, state, report_hash)
+    raise FamilyBlocked('review_prerequisite' if matching_raw else 'raw_prerequisite')
+
+
+def gate(root, item, phase, options, author_options):
+    """Fail closed with a fixed prerequisite reason, never provider guidance."""
+    try:
+        return _gate_original(root, item, phase, options, author_options)
+    except FamilyBlocked:
+        raise
+    except Exception:
+        raise FamilyBlocked('raw_prerequisite' if phase == 'review' else 'review_prerequisite') from None
 
 
 def gate_attribution(root, item, phase, options, author_options, interview_options, args):
     if phase == 'raw' or interview_options is None:
         return None
+    reason = 'raw_prerequisite'
     try:
         directory = target(root, item)
-        editing = EditingOptions(model=args.editing_model)
+        editing = EditingOptions(model=args.editing_model,
+                                 reasoning_effort=getattr(args, 'editing_reasoning_effort', 'high'))
         ordered = OrderedInterview(directory / 'input/interview.json', directory / 'output',
             options=options, editing_options=editing, author_options=author_options, resume=True)
+        ordered.preflight(original=False, require_raw=True)
         inputs = [input_record(part['order'], folder / identity,
                                _read_json(folder / identity / 'manifest.json'))
                   for part, folder, identity in ordered.parts]
@@ -89,13 +110,15 @@ def gate_attribution(root, item, phase, options, author_options, interview_optio
         if phase == 'chapters':
             styles = ('interview', 'narrative') if args.chapters == 'both' else (args.chapters,)
             selected_author = replace(author_options, chapter_options=ChapterOptions(
-                model=args.author_model, styles=styles, person=args.narrative_person))
+                model=args.author_model, styles=styles, person=args.narrative_person,
+                reasoning_effort=getattr(args, 'review_reasoning_effort', 'high')))
         family = AttributedInterview(directory / 'output', inputs, interview_options,
             resume=True, enhance=True, author_options=selected_author)
         state, provenance = family.verified_raw(SimpleNamespace(options=options, editing_options=editing,
                                                                 max_bytes=DEFAULT_UPLOAD_BYTES))
         if phase == 'review':
             return None
+        reason = 'review_prerequisite'
         raw_hash = state['stages']['transcription']['sha256']
         record = state['stages'].get('author_review', {})
         fingerprint = author_binding(author_options.fingerprint('author_review', raw_hash), provenance)
@@ -104,26 +127,47 @@ def gate_attribution(root, item, phase, options, author_options, interview_optio
         raw = (family.job / 'transcription.txt').read_bytes().decode('utf-8')
         report, checksum = _load_bound_report(family.job, record, raw, author_options.review_options,
                                              provenance=provenance)
-        require(not any(f['severity'] == 'high' for f in report['findings']), 'Attributed review gate failed.')
+        if any(f['severity'] == 'high' for f in report['findings']):
+            raise FamilyBlocked('high_findings')
         return ApprovedReview.capture(family.job, state, checksum)
+    except FamilyBlocked:
+        raise
     except Exception:
-        raise BatchError('Attributed stages require matching complete raw and chapters require an intact reviewed bundle without high findings.') from None
+        raise FamilyBlocked(reason) from None
+
+
+def blocked(reporter, family, phase, reason):
+    reporter.emit(status='blocked', family=family, stage='prerequisite', stage_status='blocked',
+                  blocked_reason=reason, stages={
+                      'phase_result': 'blocked',
+                      'chapters' if phase == 'chapters' else 'author_review': 'blocked'})
 
 
 def run_one(root, item, args):
-    directory = verify(root, item)
+    reporter = CURRENT.get()
+    interview_options = getattr(args, 'interview_options_by_id', {}).get(item['id'])
+    families = ['original', 'attributed'] if interview_options else ['original']
+    try:
+        directory = verify(root, item)
+    except Exception:
+        if args.phase == 'raw':
+            raise
+        for family in families:
+            blocked(reporter, family, args.phase, 'staging_unverified')
+        return 'blocked'
     context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)
     options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                    languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
-    author_options = AuthorOptions(review=True, review_options=ReviewOptions(model=args.author_model))
-    interview_options = getattr(args, 'interview_options_by_id', {}).get(item['id'])
-    approved_review = gate(root, item, args.phase, options, author_options)
-    approved_attributed_review = gate_attribution(root, item, args.phase, options, author_options, interview_options, args)
+    author_options = AuthorOptions(review=True, review_options=ReviewOptions(model=args.author_model,
+        reasoning_effort=getattr(args, 'review_reasoning_effort', 'high')))
     command = ['--workflow', '--interview-manifest', str(directory / 'input/interview.json'),
                '--output-folder', str(directory / 'output'), '--resume', '--stages',
                'raw' if args.phase == 'raw' else 'raw,polish,review',
                '--model', args.model, '--editing-model', args.editing_model,
                '--author-model', args.author_model, '--audio-chunk-seconds', str(args.audio_chunk_seconds),
+               '--editing-reasoning-effort', getattr(args, 'editing_reasoning_effort', 'high'),
+               '--review-reasoning-effort', getattr(args, 'review_reasoning_effort', 'high'),
+               '--text-profile', getattr(args, 'text_profile', 'legacy'),
                '--media-timeout', str(args.media_timeout),
                '--provider-timeout', str(args.provider_timeout), '--provider-retries', str(args.provider_retries)]
     for flag, value in (('--context-file', args.context_file), ('--glossary-file', args.glossary_file)):
@@ -134,15 +178,49 @@ def run_one(root, item, args):
     if args.phase == 'chapters':
         command += ['--chapters', args.chapters, '--narrative-person', args.narrative_person]
     # No child stdout capture or raw SDK/error forwarding. The engine shares the safe reporter.
-    reporter = CURRENT.get()
     interval = reporter.heartbeat
     context = reporter.context
     reporter.context = {**context, 'scope': 'interview'}
     try:
-        code = engine_main(command + ['--heartbeat-seconds', str(interval)],
-                           approved_review=approved_review,
-                           interview_options_override=interview_options,
-                           approved_attributed_review=approved_attributed_review)
+        command += ['--heartbeat-seconds', str(interval)]
+        if args.phase == 'raw':
+            code = engine_main(command, interview_options_override=interview_options)
+            require(code == 0, 'Pipeline failed; completed caches remain available for resume.')
+            return 'complete'
+        results = []
+        for family in families:
+            reporter.context = {**context, 'scope': 'interview', 'family': family}
+            try:
+                approval = (gate(root, item, args.phase, options, author_options) if family == 'original'
+                    else gate_attribution(root, item, args.phase, options, author_options, interview_options, args))
+                if args.phase == 'chapters':
+                    try:
+                        validate_approved_review(approval, author_options, attributed=family == 'attributed')
+                    except AuthorWorkflowError:
+                        raise FamilyBlocked('review_prerequisite') from None
+            except FamilyBlocked as error:
+                blocked(reporter, family, args.phase, error.reason)
+                results.append('blocked')
+                continue
+            control = CURRENT_CONTROL.get()
+            if control and control.reason:
+                reporter.emit(status='not_attempted', stage='preflight', stage_status='not_attempted',
+                              stages={'phase_result': 'not_attempted'}, stop_reason=control.reason)
+                if control.cancelled.is_set():
+                    raise KeyboardInterrupt()
+                results.append('incomplete' if control.reason in {'request_limit', 'start_deadline'} else 'failed')
+                continue
+            reporter.emit(status='progress', stage='prerequisite', stage_status='complete')
+            code = engine_main(command, approved_review=approval if family == 'original' else None,
+                interview_options_override=interview_options if family == 'attributed' else None,
+                approved_attributed_review=approval if family == 'attributed' else None,
+                attributed_only=family == 'attributed', require_raw=True)
+            outcome = 'complete' if code == 0 else 'incomplete' if control and control.reason in {
+                'request_limit', 'start_deadline'} else 'failed'
+            reporter.emit(status='progress', stage='phase_result', stage_status=outcome)
+            results.append(outcome)
+            if control and control.cancelled.is_set():
+                raise KeyboardInterrupt()
+        return next((state for state in ('failed', 'incomplete', 'blocked') if state in results), 'complete')
     finally:
         reporter.context = context
-    require(code == 0, 'Pipeline failed; completed caches remain available for resume.')

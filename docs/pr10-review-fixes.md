@@ -1,12 +1,14 @@
 # PR #10 review fixes
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 Five review findings against `e64a271` were reproduced using synthetic recordings and mocked providers. The initial reproductions had 12 failures across all five findings, with two unchanged bare-CR cases passing. No real recordings or provider requests were used.
 
-- [Source binding before processing](https://github.com/BitMorpher/voice-transcription-engine/pull/10#discussion_r4179317343): every part conversion/transcription call carries its prevalidated source checksum. The pipeline rejects a mismatch before creating another job or converting new bytes, and rechecks immediately before ASR. A regression changes part 2 during part 1's request: only part 1 is transcribed, its result remains intact, and no combined output is published.
-- [Exact newline bytes](https://github.com/BitMorpher/voice-transcription-engine/pull/10#discussion_r4179317357): the shared UTF-8 writer disables platform newline translation. LF, CRLF, bare CR, Unicode and symbols retain exact bytes for exclusive writes and replacement metadata writes. Tests simulate Windows translation and verify part/combined hashes, polish/review/chapter generation and zero-call resume. Native Windows execution was not available.
-- [Chapter finding citations](https://github.com/BitMorpher/voice-transcription-engine/pull/10#discussion_r4179317370): chapter binding recomputes copied finding references as well as passage/quotation/omission references. Missing or altered finding citations fail resume even when the artifact checksum is updated; no provider calls or overwrites occur.
-- [Safe polish diagnostics](https://github.com/BitMorpher/voice-transcription-engine/pull/10#discussion_r4179317386): the exact sanitized `TranscriptionError` type retains fidelity/access/quota retry guidance. Unexpected exceptions and subclasses still receive a fixed privacy-safe fallback. CLI regressions check useful errors, retained raw text, and absence of private provider messages or paths.
-- [XLSX citation length](https://github.com/BitMorpher/voice-transcription-engine/pull/10#discussion_r4179317405): recording citation strings pass the existing XML/UTF-16 cell-size guard before reaching OpenPyXL. A 3,000-line source's oversized citation list fails without publishing a truncated workbook. A 2,730-line list roundtrips all 32,758 characters, and leading-equals source/part strings stay literal, never formulas. Oversized cells are rejected rather than split automatically.
+- [Source binding before processing](https://github.com/BitMorpher/interview-studio/pull/10#discussion_r4179317343): every part conversion/transcription call carries its prevalidated source checksum. The pipeline rejects a mismatch before creating another job or converting new bytes, and rechecks immediately before ASR. A regression changes part 2 during part 1's request: only part 1 is transcribed, its result remains intact, and no combined output is published.
+- [Exact newline bytes](https://github.com/BitMorpher/interview-studio/pull/10#discussion_r4179317357): the shared UTF-8 writer disables platform newline translation. LF, CRLF, bare CR, Unicode and symbols retain exact bytes for exclusive writes and replacement metadata writes. Tests simulate Windows translation and verify part/combined hashes, polish/review/chapter generation and zero-call resume. Native Windows execution was not available.
+- [Chapter finding citations](https://github.com/BitMorpher/interview-studio/pull/10#discussion_r4179317370): chapter binding recomputes copied finding references as well as passage/quotation/omission references. Missing or altered finding citations fail resume even when the artifact checksum is updated; no provider calls or overwrites occur.
+- [Safe polish diagnostics](https://github.com/BitMorpher/interview-studio/pull/10#discussion_r4179317386): the exact sanitized `TranscriptionError` type retains fidelity/access/quota retry guidance. Unexpected exceptions and subclasses still receive a fixed privacy-safe fallback. CLI regressions check useful errors, retained raw text, and absence of private provider messages or paths.
+- [XLSX citation length](https://github.com/BitMorpher/interview-studio/pull/10#discussion_r4179317405): recording citation strings pass the existing XML/UTF-16 cell-size guard before reaching OpenPyXL. A 3,000-line source's oversized citation list fails without publishing a truncated workbook. A 2,730-line list roundtrips all 32,758 characters, and leading-equals source/part strings stay literal, never formulas. Oversized cells are rejected rather than split automatically.
 
 ## Compatibility and pilot coordination
 
@@ -28,7 +30,7 @@ These are offline contract checks, not ASR accuracy or publication-suitability v
 
 ## Subsequent portable orchestration
 
-This document records the historical feature validation above. Current installed commands, serial selection/staging, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
+This document records the historical feature validation above. Current installed commands, ordered selection/staging and optional parallel interviews, safe durable progress logs and transport controls are documented in [batch orchestration](batch-orchestration.md) and the [current validation guide](batch-validation.md). Reproduce the current checks from the checkout:
 
 ```bash
 uv lock --check

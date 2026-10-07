@@ -1,5 +1,7 @@
 # Portable batch and progress validation
 
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 The implementation builds on the ordered-interview contract and adds `voice-batch`, installed package imports, safe execution logs and per-chunk/elapsed progress. The original ordered source fidelity and raw/review/chapter contracts remain enforced. See [runnable batch examples](batch-orchestration.md), [ordered parts](ordered-interviews.md), and [single-file author stages](author-workflow.md).
 
 ## Reproduce without personal media or paid requests
@@ -19,7 +21,7 @@ uv run --locked voice-batch --help
 
 ## Regression evidence
 
-The new tests cover metadata-only inventory, original plan order and exclusions, strict schemas/duplicate keys/source identities, explicit copy/provider/chapter gates, offline hydration opt-in, original source changes, independent serial failures, exclusive staging and locks, snapshot/manifest/media tampering, symlinks, automatic source/settings-bound resume, completed-review chapter success, changed-ASR gates and tampered review/raw/provenance protection. Tests also check chunk starts/completions, counters, verified reuse, heartbeats and elapsed waits, concurrent event ordering, arbitrary-value redaction, private file modes, closed-console durability, local log failure, timeout/retry bounds, safe SDK HTTP/category classification, systemic early review termination with explicit unattempted coverage, transient failure continuation, and interruption cleanup with retained summaries.
+The new tests cover metadata-only inventory, original plan order and exclusions, strict schemas/duplicate keys/source identities, explicit copy/provider/chapter gates, offline hydration opt-in, original source changes, independent failures with serial/default or explicit parallel processing, exclusive staging and locks, snapshot/manifest/media tampering, symlinks, automatic source/settings-bound resume, completed-review chapter success, changed-ASR gates and tampered review/raw/provenance protection. Tests also check chunk starts/completions, counters, verified reuse, heartbeats and elapsed waits, concurrent event ordering, arbitrary-value redaction, private file modes, closed-console durability, local log failure, timeout/retry bounds, safe SDK HTTP/category classification, systemic early review termination with explicit unattempted coverage, transient failure continuation, and interruption cleanup with retained summaries.
 
 `tests/test_installation.py` builds wheel/source archives offline, installs the wheel into a fresh environment without editable project imports, invokes both console scripts from a separate directory, and runs synthetic raw→polish/review→chapters→resume through the installed coordinator and packaged prompts. Dependencies are taken from the locked test environment. The new module namespace is asserted to come from the fresh wheel environment. `tests/test_documentation.py` checks local Markdown links and documented CLI flags/examples against declared arguments.
 
@@ -27,9 +29,9 @@ The GitHub Actions workflow runs the complete notebook-extra suite, lock/lint/bu
 
 ## Limits
 
-No actual ASR accuracy, provider response latency, recording verification or publication suitability is established by synthetic tests. SDK request timeout/retry settings preserve existing defaults; they are not a whole-run time limit. Heartbeats establish coordinator liveness only. Successful API chunks in a failed stage are not durably checkpointed, and resume can repeat charges. SIGTERM/keyboard interruption cleans up owned locks; abrupt termination may require manual stale-lock inspection. Logs are sanitized local files, not encrypted storage. Source archives and generated test/build outputs are retained privately and are not published with the PR.
+No actual ASR accuracy, provider response latency, recording verification or publication suitability is established by synthetic tests. SDK request timeout/retry settings preserve existing defaults; they are not a whole-run time limit. Heartbeats establish coordinator liveness only. Validated original ASR, speaker-pass and text-stage requests are checkpointed; failed attempts and retries can still incur charges. SIGTERM/keyboard interruption cleans up owned locks; abrupt termination may require manual stale-lock inspection. Logs are sanitized local files, not encrypted storage. Source archives and generated test/build outputs are retained privately and are not published with the PR.
 
-## Validation results for this change
+## Historical portable-batch validation results
 
 - Full notebook-extra suite: **555 passed**.
 - Separate default dependency environment: **554 passed, 1 expected optional-notebook skip**.
@@ -48,3 +50,34 @@ All three findings were applicable and addressed:
 - `Transcriber` accepts exact numeric timeout types and rejects `True`/`False`; both values have regressions.
 
 CLI syntax and stacked base history remain unchanged. No review replies or thread resolutions are posted by these implementation fixes.
+
+## Parallel interview validation
+
+The current batch CLI adds explicit `run --parallel-interviews N`, default 1. Parts within each interview retain their order; worker changes do not change cache identities. `--transcription-model` and `--speaker-model` are the preferred model flags, with published `--model` and `--interview-model` aliases preserved. The [parameter guide](cli-reference.md) documents every public flag, combinations, defaults, costs and examples. Earlier validation counts above describe the earlier feature, not the current suite.
+
+Parallel-feature local evidence on CPython 3.14.8 (before the family-gate follow-up below):
+
+- Full locked notebook-extra environment: **738 passed**.
+- Separate locked default-dependency environment: **737 passed, 1 expected notebook skip**.
+- Ruff, whitespace, offline lock consistency, installed dependency compatibility, both installed help commands, wheel/source builds, Markdown links/examples and complete public-option coverage passed.
+- Source and archive-content privacy scans found no personal paths, real credential patterns, media or private output artifacts. Notebook outputs remain empty. Distribution files remain ignored and private.
+
+Twenty-one session regressions use barriers/events and invented PCM, with no paid providers. They prove actual overlap and a ceiling of two simultaneous fake operations, serial part/family request order, isolated outputs, byte-identical completed resume, one shared request allowance, endpoint/model failure stopping, completion after a deadline without reopening admission, local tampering isolation, approved review-byte reuse, safe per-item logging/heartbeats, log-failure stopping, runtime/parser validation and recorded mixed-family status. Main-thread SIGTERM and repeated signals retain already returned checkpoints, deny later starts, preserve unattempted selection rows, and keep the batch lock until workers finish. Serial preparation interruption retains its exit/status behavior.
+
+An additional installed-wheel regression runs parallel interviews with a shared allowance, recovery and status from outside the checkout, with sockets blocked. The public-parameter coverage test prevents new flags from silently losing reference documentation or batch help text. Existing fidelity, speaker mapping, symlink/cache checks and author gates remain covered by the full suite.
+
+These checks establish software behavior on synthetic inputs. They do not identify the cause of a live network/provider timeout, prove a model is faster/cheaper, measure live accuracy, establish a requests-per-minute limit or promise a dollar cap. Already admitted I/O and local preparation may prolong cancellation cleanup. No real interview was read, hydrated, uploaded or processed, and no existing runtime, batch or cache was changed.
+
+## Independent family gates and timeout evidence
+
+Current local validation on the same CPython 3.14.8 and unchanged lockfile:
+
+- Full notebook-extra environment: **766 passed**.
+- Separate default-dependency environment: **761 passed, 5 expected skips**: one optional notebook test and four legacy HTTPX transport cases. The default HTTPX2 transport cases run in both environments.
+- Ruff, whitespace, offline lock consistency, installed dependency compatibility, wheel/source builds, installed console help and Markdown link/parameter checks passed. Source/archive privacy scans found no personal paths, private session identifiers, credentials or media; notebook outputs remain empty.
+
+New regressions use the pinned SDK with local mock transports to distinguish connect, write, read and pool timeouts without inspecting exception messages. Unknown, conflicting, suppressed, cyclic and overlong exception chains remain unknown. A hostile exception cannot expose its text through classification. Tests cover the default install without optional HTTPX, review-report/progress propagation, and rejection of injected diagnostic fields.
+
+Synthetic batch cases prove that a missing attributed prerequisite preserves eligible original review, an invalid combined original does not block intact attribution, and corrupt shared part artifacts block both. They check parallel request allowances, cached repeat runs, per-family blocked summaries/status, isolated text failures, missing human approval, high findings and exact approved review-byte reuse. Text phases require complete raw and cannot purchase missing ASR or diarization. The full suite also retains cancellation, failure-stop, installed-wheel and security coverage.
+
+These results establish the software contracts only. The new timeout phase describes reliable transport evidence when available; it does not diagnose a live provider/network root cause or retroactively classify older logs. No paid provider call, real recording read/upload, runtime upgrade, batch/cache mutation, merge or deployment was performed for this change. Check the draft PR's CI against its exact head commit before review.

@@ -30,5 +30,8 @@ jobs:
       - run: uv run --locked --extra notebook pytest -q
       - run: uv run --locked ruff check .
       - run: uv build
+      - run: uv run --locked interview --help
+      - run: uv run --locked interview transcribe --help
+      - run: uv run --locked interview batch --help
       - run: uv run --locked voice-transcribe --help
       - run: uv run --locked voice-batch --help

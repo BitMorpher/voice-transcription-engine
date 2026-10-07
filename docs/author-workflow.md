@@ -1,5 +1,9 @@
 # Author workflow: local media to source-bound review and chapter drafts
 
+For a first run, start with [getting started](getting-started.md); the [pipeline guide](pipeline-guide.md) explains steps, outputs, and technical terms.
+
+For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
+
 The author workflow takes a local audio or video recording, retains the automatic raw transcript, optionally produces a lightly polished derivative, reviews the raw text for passages needing human attention, and produces selectable chapter drafts. It is intended to help an author compare treatments of devotional oral history while preserving testimony and uncertainty.
 
 The raw transcript is the original automatic API result, assembled in audio-chunk order. It is never overwritten by polishing, review, or chapter generation. Automatic transcription can omit or misrecognize words, names, languages, and speaker turns. Check it against the recording before relying on an excerpt as spoken verbatim. Exact-source checks below establish correspondence to this automatic text; they do not establish correspondence to the recording, truth, or suitability for publication.
@@ -10,17 +14,17 @@ Follow the [README setup instructions](../README.md#requirements-and-setup): Pyt
 
 ```bash
 # Audio: default stages are raw, polish, review. No chapters by default.
-uv run --locked voice-transcribe --workflow \
+uv run --locked interview transcribe --author-workflow \
   --input private/input/synthetic.wav --media-type audio \
   --output-folder private/author-default
 
 # Video: prepare its first audio stream locally, then use the same stages.
-uv run --locked voice-transcribe --workflow \
+uv run --locked interview transcribe --author-workflow \
   --input private/input/synthetic.mp4 --media-type video \
   --output-folder private/author-video
 
 # Auto-detect supported extensions; scan a mixed folder nonrecursively.
-uv run --locked voice-transcribe --workflow \
+uv run --locked interview transcribe --author-workflow \
   --input private/input --media-type auto \
   --output-folder private/author-folder
 ```
@@ -33,36 +37,41 @@ Both audio and video are normalized to mono 16 kHz, 16-bit PCM WAV. Video uses t
 
 | Option | Behavior |
 | --- | --- |
-| `--workflow` | Select the author workflow through the existing `voice-transcribe` CLI. |
+| `--author-workflow` | Select the author workflow through the existing `interview transcribe` CLI. |
 | `--media-type auto\|audio\|video` | Validate the local media selection; default `auto`. |
-| `--stages raw,polish,review` | Default selection. Accepts a comma-separated subset of `raw`, `polish`, `review`, `chapters`, without duplicates or spaces. Raw is always retained even if omitted from the list. |
-| `--chapters none\|interview\|narrative\|both` | Default `none`. Selecting a style also enables review and chapter generation, even if they were omitted from `--stages`. The `chapters` stage requires a style selection. |
+| `--steps raw,polish,review` | Default selection. Accepts a comma-separated subset of `raw`, `polish`, `review`, `chapters`, without duplicates or spaces. Raw is always retained even if omitted from the list. |
+| `--chapter-style none\|interview\|narrative\|both` | Default `none`. Selecting a style also enables review and chapter generation, even if they were omitted from `--steps`. The `chapters` stage requires a style selection. |
 | `--narrative-person first\|third` | Default `first`; controls conservative testimony framing, described below. |
-| `--author-model gpt-6-astra` | Review and narrative-arrangement model. Also accepts `gpt-6.1-sol`; default Astra with high reasoning. |
+| `--review-model gpt-6-astra` | Review and narrative-arrangement model. Also accepts `gpt-6.1-sol`; default Astra with high reasoning. |
 | `--editing-model gpt-6-astra` | Separate polishing model; also accepts `gpt-6.1-sol`. |
-| `--model gpt-transcribe` | ASR model. Existing model and hint options remain available; see the README. |
+| `--editing-reasoning-effort low\|medium\|high` | Polish effort, default `high`; separate from review. |
+| `--review-reasoning-effort low\|medium\|high` | Review and narrative-arrangement effort, default `high`; alias `--author-reasoning-effort`. |
+| `--text-profile legacy\|balanced` | Default `legacy` retains Astra/high. Explicit `balanced` chooses Sol 6.1/low polish and Sol 6.1/medium review candidate. Explicit model/effort flags override each field. |
+| `--transcription-model gpt-transcribe` | ASR model. Existing model and hint options remain available; see the README. |
 | `--resume` | Verify source, configuration, prompts, and artifact checksums before skipping complete stages. |
 | `--draft-with-unresolved-high` | Explicitly permit visibly labeled chapter drafts despite unresolved high-priority findings. Requires a chapter style. Does not bypass a failed or incomplete review. |
 
 Stages execute in dependency order: conversion, raw transcription, optional polish, review, then chapters. Listing them in another order does not change that order. Raw-only processing needs no author-model request:
 
 ```bash
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw \
+uv run --locked interview transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw \
   --output-folder private/author-raw
 
 # Review raw text without creating a polished derivative.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw,review \
+uv run --locked interview transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw,review \
   --output-folder private/author-review
 
 # Create a separate polish and review report, retaining the raw text.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw,polish,review \
+uv run --locked interview transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw,polish,review \
   --output-folder private/author-polish-review
 ```
 
 Workflow polishing changes only punctuation, capitalization, and paragraph layout. Editing contract 3 checks the ordered case-insensitive Unicode word and symbol sequence, preserving repetitions, disfluencies, numbers, meaningful marks, join controls, and symbol identity/order. Equivalent NFC spellings may compare equal; the raw bytes remain unchanged. Added questions, speaker identities, paraphrases, and word omissions fail validation. Punctuation can still alter interpretation, so the derivative needs human review. Review and chapters use the verified raw snapshot, never the polished derivative as their sole source.
+
+Use `--text-profile balanced` as the explicit starting configuration for a quality/cost comparison. Sol 6.1 medium review must be checked for subtle context, uncertain attribution, criticism and serious allegations before adopting it for a full batch. Retain Astra where that comparison supports its value. The review model and effort also apply to narrative arrangement; deterministic interview excerpts need no model. See the [isolated comparison guide](text-comparison.md), which starts offline and keeps paid cases separate.
 
 ## Review rubric and human decisions
 
@@ -108,20 +117,20 @@ Make a private copy of the workbook before entering human dispositions and revie
 
 ```bash
 # Both styles, after review; default gate blocks unresolved high findings.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.mp4 --stages raw,polish,review \
-  --chapters both --output-folder private/author-chapters
+uv run --locked interview transcribe --author-workflow \
+  --input private/input/synthetic.mp4 --steps raw,polish,review \
+  --chapter-style both --output-folder private/author-chapters
 
 # Inspect the saved report first. Explicitly request warned drafts on retry.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.mp4 --stages raw,polish,review \
-  --chapters both --draft-with-unresolved-high \
+uv run --locked interview transcribe --author-workflow \
+  --input private/input/synthetic.mp4 --steps raw,polish,review \
+  --chapter-style both --draft-with-unresolved-high \
   --output-folder private/author-chapters --resume
 
 # Conservative third-person testimony framing, with the ordinary high gate.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw,review \
-  --chapters narrative --narrative-person third \
+uv run --locked interview transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw,review \
+  --chapter-style narrative --narrative-person third \
   --output-folder private/author-third-person
 ```
 
@@ -156,30 +165,30 @@ The manifest adds `author_review` and `chapters` records to the existing version
 
 Complete bundles are published by an atomic directory rename with a unique UUID. Failed/incomplete review attempts remain inspectable in their own bundles; retry publishes a new attempt without overwriting the old report. A failed chapter request retains raw text and the review; a chapter generation failure publishes no partial draft bundle. Manifest updates are atomic. Owner-only directory/file permissions apply on supported local filesystems; this is not encrypted storage.
 
-Use the same source, output directory, model/hint settings, stage settings, and `--resume` to skip verified stages. You can add previously unrun stages, or retry failed stages while retaining verified earlier work. A completed stage with changed prompts/settings, changed/missing bundle artifacts, a symlink, or a mismatched raw hash is a conflict. Use a fresh output directory to compare a changed completed configuration. Do not hand-edit manifests or raw text to bypass checks. Original raw and existing derivatives/bundles are never replaced.
+Use the same source, output directory, model/hint settings, stage settings, and `--resume` to skip verified stages. You can add previously unrun stages, or retry failed stages while retaining verified earlier work. Changing text model/effort selects a separate retained derivative version; changing only review settings can reuse matching polish. Stage records select the exact requested configuration, and earlier files/bundles remain intact. A changed/missing completed bundle, symlink, mismatched raw hash or invalid configuration record is still a conflict. Retain conflicting artifacts and use a fresh output directory to investigate or compare safely. Do not hand-edit manifests or raw text to bypass checks. Original raw and existing derivatives/bundles are never replaced.
 
-API chunks are not checkpointed within a stage. Retrying failed ASR, polishing, review, or narrative arrangement can repeat requests and charges. Review retries review the complete source again rather than trusting an incomplete report. CLI progress includes only item positions, opaque IDs, stage statuses, and fixed guidance; it omits raw text, names, private paths, credentials, provider payloads, and tracebacks. Failure returns a nonzero exit code while other input files can continue. The job lock prevents concurrent workflow runs; arbitrary external edits are checked by source snapshots/checksums but are not prevented by the lock.
+Validated original ASR and interview speaker-pass responses are checkpointed and reused on matching resume. Polishing, review and narrative arrangement now checkpoint validated individual requests. Matching resume validates and reuses successful responses, requests missing/failed chunks, and rebuilds coverage over the complete source; an incomplete report alone never establishes completion. Invalid attempts and bounded recovery can still incur charges. CLI progress includes only item positions, opaque IDs, stage statuses, and fixed guidance; it omits raw text, names, private paths, credentials, provider payloads, and tracebacks. Failure returns a nonzero exit code while other input files can continue. The job lock prevents concurrent workflow runs; arbitrary external edits are checked by source snapshots/checksums but are not prevented by the lock.
 
 ## Local extraction and existing commands
 
-Extraction remains a separate entirely local operation; `--workflow --extract-only` is rejected. Resume can reuse a verified extraction later:
+Extraction remains a separate entirely local operation; `--author-workflow --prepare-audio` is rejected. Resume can reuse a verified extraction later:
 
 ```bash
-uv run --locked voice-transcribe --extract-only \
+uv run --locked interview transcribe --prepare-audio \
   --input private/input/synthetic.mp4 --output-folder private/prepared
 
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.mp4 --stages raw,review \
+uv run --locked interview transcribe --author-workflow \
+  --input private/input/synthetic.mp4 --steps raw,review \
   --output-folder private/prepared --resume
 ```
 
-Existing `--pipeline`, `--input_folder`/`--input-folder`, `--output_folder`/`--output-folder`, `--enhance_for_reading`/`--enhance-for-reading`, and legacy audio folder output names remain compatible. Legacy `--format_as_interview` is still the faithful dialogue-layout alias in audio mode; it is distinct from the new source-bound chapter option and is unavailable in pipeline/workflow mode. Author-specific options require `--workflow`.
+Existing `--pipeline`, `--input_folder`/`--input-folder`, `--output_folder`/`--output-folder`, `--enhance_for_reading`/`--polish-text`, and legacy audio folder output names remain compatible. Legacy `--format_as_interview` is still the faithful dialogue-layout alias in audio mode; it is distinct from the new source-bound chapter option and is unavailable in pipeline/workflow mode. Author-specific options require `--author-workflow`.
 
 ## Privacy and hosted processing
 
 The **input path is local**, and FFmpeg conversion/extraction runs on the computer. The full workflow sends normalized audio and supplied ASR hints to the hosted OpenAI API. Polish, review, and narrative arrangement send transcript text in additional paid requests. Interview rendering is local after review. Review requests include neighboring context; chapter requests include source units. Neither choosing `--media-type` nor choosing a private output directory makes these hosted stages local inference.
 
-Text requests use structured JSON output, high reasoning, bounded completion budgets, and `store=false`. Local validation still handles refusals, non-stop completions and invalid responses. `store=false` does not waive provider data controls or promise zero retention. See official [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [current model parameters](https://developers.openai.com/api/docs/guides/latest-model), [speech-to-text](https://developers.openai.com/api/docs/guides/speech-to-text), and [API data controls](https://developers.openai.com/api/docs/guides/your-data).
+Text requests use structured JSON output, the selected reasoning effort, bounded completion budgets, and `store=false`. The default remains high; low, medium and high are the supported CLI efforts. Local validation still handles refusals, non-stop completions and invalid responses. Choosing a less costly model does not repair wrong source offsets or weaken validation. `store=false` does not waive provider data controls or promise zero retention. See official [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [current model parameters](https://developers.openai.com/api/docs/guides/latest-model), [speech-to-text](https://developers.openai.com/api/docs/guides/speech-to-text), and [API data controls](https://developers.openai.com/api/docs/guides/your-data).
 
 All media, reports, drafts, manifests, review copies, and credentials belong under ignored `private/` or `data/`, or outside all repositories. The CLI refuses checkout output outside those designated trees. Hashes can link known sources; treat them as private too. Ignore rules do not prevent forced Git staging or sharing. This feature neither accesses private Drive files nor publishes/uploads results to Drive or GitHub. No real recordings or paid model calls are used by the offline test suite.
 
@@ -203,23 +212,27 @@ Run the [offline verification commands](../README.md#offline-verification). Prov
 
 ## Continuations recorded in separate files
 
-Folder batch mode creates independent jobs. For several recordings from one interview, supply [an ordered interview manifest](ordered-interviews.md) with `--workflow --interview-manifest`. It retains raw parts, combines them without rewriting in explicit order, and runs these author stages once on the combined interview, with recording-level text provenance in JSON/XLSX and chapter citations.
+Folder batch mode creates independent jobs. For several recordings from one interview, supply [an ordered interview manifest](ordered-interviews.md) with `--author-workflow --recordings-list`. It retains raw parts, combines them without rewriting in explicit order, and runs these author stages once on the combined interview, with recording-level text provenance in JSON/XLSX and chapter citations.
 
 
 ## Batch selection and execution monitoring
 
-For serial independent interviews, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands now emit flushed safe stage/part/chunk events and elapsed idle heartbeats, with exclusive local JSONL logs. Source paths, user IDs, hints and transcript/provider text are excluded. Use the engine's matching source/settings with `--resume`; the batch coordinator adds resume automatically. No failed-stage API chunk checkpoint is claimed.
+For independent interviews with optional parallel processing, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands now emit flushed safe stage/part/chunk events and elapsed idle heartbeats, with exclusive local JSONL logs. Source paths, user IDs, hints and transcript/provider text are excluded. Use the engine's matching source/settings with `--resume`; the batch coordinator adds resume automatically. Validated original ASR, speaker-pass, polish, review and narrative requests are checkpointed in pipeline/workflow and batch mode. See [recovery controls](recovery-controls.md).
 
 ```bash
-uv run --locked voice-transcribe --workflow \
-  --interview-manifest private/input/interview_manifest.json --stages raw \
+uv run --locked interview transcribe --author-workflow \
+  --recordings-list private/input/interview_manifest.json --steps raw \
   --output-folder private/ordered-output --resume \
-  --heartbeat-seconds 30 --provider-timeout 120 --provider-retries 2
-uv run --locked voice-batch verify --batch private/batches/demo-001
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --select entry-a --phase review --send-to-openai
-uv run --locked voice-batch status --batch private/batches/demo-001
+  --status-interval 30 --request-timeout 120 --request-retries 2
+uv run --locked interview batch verify --batch-folder private/batches/demo-001
+uv run --locked interview batch run --batch-folder private/batches/demo-001 \
+  --select entry-a --step review --send-to-openai
+uv run --locked interview batch status --batch-folder private/batches/demo-001
 ```
 
 
 For batch chapters, the explicit human gate now binds the exact approved review bundle used for drafting. `src/review_reuse.py` verifies and transfers that bundle byte for byte into a chapter generation before author stages; a new chapter configuration does not request a fresh review after approval. Changed/conflicting bundles stop drafting. Narrative completion/property/refusal/truncation errors emit terminal safe `completion` events, while schema/source-coverage failures emit `validation` events for the failed chunk.
+
+## Batch prerequisites and safe failure detail
+
+For `interview batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.

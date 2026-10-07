@@ -10,17 +10,21 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 
 if __package__:
+    from .chunk_cache import ChunkCacheError
+    from .text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from .provider_errors import classify, SYSTEMIC
     from .progress import emit_progress
     from . import prompts
-    from .model_config import EDITING_MODELS
+    from .model_config import EDITING_MODELS, REASONING_EFFORTS
     from .text_editing import split_text
     from .transcriber import _suppress_provider_logging
 else:
+    from chunk_cache import ChunkCacheError
+    from text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from provider_errors import classify, SYSTEMIC
     from progress import emit_progress
     import prompts
-    from model_config import EDITING_MODELS
+    from model_config import EDITING_MODELS, REASONING_EFFORTS
     from text_editing import split_text
     from transcriber import _suppress_provider_logging
 
@@ -66,7 +70,7 @@ REASONS = {
 }
 
 
-class ReviewError(RuntimeError):
+class ReviewError(ResponseValidationError):
     """Safe review error that never contains source text or provider payloads."""
 
 
@@ -128,7 +132,7 @@ class ReviewOptions:
             raise ReviewError('Unsupported author-review model; use a documented editing model.')
         if type(self.chunk_bytes) is not int or not 64 <= self.chunk_bytes <= 6000:
             raise ReviewError('Author-review chunks must be between 64 and 6000 UTF-8 bytes.')
-        if self.reasoning_effort not in ('low', 'medium', 'high'):
+        if self.reasoning_effort not in REASONING_EFFORTS:
             raise ReviewError('Author-review reasoning effort must be low, medium, or high.')
 
     @property
@@ -187,12 +191,14 @@ def _validate(content, chunk, raw):
         if (not isinstance(result, dict) or set(result) != expected
                 or type(result['chunk_index']) is not int
                 or result['chunk_index'] != chunk['chunk_index']
-                or type(result['fully_reviewed']) is not bool or not result['fully_reviewed']
+                or type(result['fully_reviewed']) is not bool
                 or type(result['reviewed_start']) is not int
                 or type(result['reviewed_end']) is not int
-                or result['reviewed_start'] != core_start or result['reviewed_end'] != core_end
                 or not isinstance(result['findings'], list)):
             raise ValueError()
+        if (not result['fully_reviewed'] or result['reviewed_start'] != core_start
+                or result['reviewed_end'] != core_end):
+            raise ReviewError('Author-review response did not cover the exact core.', category='validation_coverage')
         validated = []
         for finding in result['findings']:
             if (not isinstance(finding, dict)
@@ -208,11 +214,15 @@ def _validate(content, chunk, raw):
                     or not 0 <= start < end <= context_end - context_start
                     or start >= core_end or end <= core_start
                     or not finding['excerpt'].strip()
-                    or raw[context_start + start:context_start + end] != finding['excerpt']):
+):
                 raise ValueError()
+            if raw[context_start + start:context_start + end] != finding['excerpt']:
+                raise ReviewError('Author-review excerpt was not exact source text.', category='validation_source')
             validated.append({**finding, 'start': context_start + start,
                               'end': context_start + end})
         return validated
+    except ResponseValidationError:
+        raise
     except (ValueError, TypeError, KeyError):
         raise ReviewError('Author-review response failed schema, coverage, or exact-source validation.') from None
 
@@ -235,6 +245,7 @@ def validate_review_report(raw, report, options=None):
                 or report['prompt_version'] != PROMPT_VERSION
                 or report['prompt_sha256'] != _hash(_prompt())
                 or report['model'] not in EDITING_MODELS
+                or ('reasoning_effort' in report and report['reasoning_effort'] not in REASONING_EFFORTS)
                 or not isinstance(report['findings'], list)):
             raise ValueError()
         coverage = report['coverage']
@@ -260,6 +271,7 @@ def validate_review_report(raw, report, options=None):
             raise ValueError()
         if options is not None:
             if (report['model'] != options.model
+                    or ('reasoning_effort' in report and report['reasoning_effort'] != options.reasoning_effort)
                     or report['settings_fingerprint'] != options.fingerprint
                     or coverage['chunks'] != [{**chunk, 'status': 'complete'}
                                                for chunk in _chunks(raw, options.chunk_bytes)]):
@@ -290,7 +302,7 @@ def validate_review_report(raw, report, options=None):
         raise ReviewError('Cached author review failed complete-source or configuration validation.') from None
 
 
-def review_transcript(raw, client, options=None):
+def review_transcript(raw, client, options=None, *, checkpoint_root=None):
     """Review original text, retaining valid findings when later chunks fail.
 
     No raw or provider data is logged. A complete empty report means every core
@@ -302,28 +314,29 @@ def review_transcript(raw, client, options=None):
     raw_hash = _hash(raw)
     chunks, findings = [], {}
     requests = list(_chunks(raw, options.chunk_bytes))
+    parameters, validators = [], []
     for chunk in requests:
-        emit_progress('author_review', 'running', chunk=chunk['chunk_index'], chunks=len(requests))
-        text = raw[chunk['context_start']:chunk['context_end']]
-        payload = {'chunk_index': chunk['chunk_index'], 'text': text,
+        payload = {'chunk_index': chunk['chunk_index'],
+                   'text': raw[chunk['context_start']:chunk['context_end']],
                    'core_start': chunk['start'] - chunk['context_start'],
                    'core_end': chunk['end'] - chunk['context_start']}
+        parameters.append(dict(model=options.model,
+            messages=[{'role': 'system', 'content': prompt},
+                      {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
+            response_format=review_schema(chunk['chunk_index']),
+            extra_body={'reasoning_effort': options.reasoning_effort,
+                        'max_completion_tokens': 32768, 'store': False}))
+        validators.append(lambda content, chunk=chunk: _validate(content, chunk, raw))
+    cache = TextRequestCache(checkpoint_root,
+        text_binding('author_review', raw, options.fingerprint, validator_contract=1),
+        parameters, validators) if checkpoint_root else None
+    for chunk in requests:
+        index = chunk['chunk_index']
+        emit_progress('author_review', 'running', chunk=index, chunks=len(requests))
         try:
             _suppress_provider_logging()
-            response = client.chat.completions.create(
-                model=options.model,
-                messages=[{'role': 'system', 'content': prompt},
-                          {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
-                response_format=review_schema(chunk['chunk_index']),
-                extra_body={'reasoning_effort': options.reasoning_effort,
-                            'max_completion_tokens': 32768, 'store': False},
-            )
-            if len(response.choices) != 1:
-                raise ReviewError('Author-review returned an invalid completion.')
-            choice = response.choices[0]
-            if choice.finish_reason != 'stop' or getattr(choice.message, 'refusal', None):
-                raise ReviewError('Author-review output was refused or incomplete.')
-            validated = _validate(choice.message.content, chunk, raw)
+            validated = validated_chat(client, parameters[index - 1], validators[index - 1],
+                stage='author_review', cache=cache, index=index)
             for finding in validated:
                 key = (finding['start'], finding['end'], finding['category'])
                 # Repeated overlap findings retain the higher priority without
@@ -333,22 +346,22 @@ def review_transcript(raw, client, options=None):
                 if previous is None or ranks[finding['severity']] > ranks[previous['severity']]:
                     findings[key] = finding
             chunks.append({**chunk, 'status': 'complete'})
-        except ReviewError as error:
-            category = 'completion' if str(error) in {
-                'Author-review returned an invalid completion.',
-                'Author-review output was refused or incomplete.'} else 'validation'
-            # Never echo an arbitrary ReviewError raised by an injected client.
+        except ChunkCacheError:
+            raise  # Integrity failures never become retryable provider failures.
+        except ResponseValidationError as error:
             chunks.append({**chunk, 'status': 'failed',
                            'error': 'Author-review output failed completion, schema, coverage, or exact-source validation.',
-                           'error_category': category})
+                           **classify(error)})
         except Exception as error:
             failure = classify(error)
             chunks.append({**chunk, 'status': 'failed',
                            'error': 'Author-review provider request failed; check access and retry.',
                            **failure})
-        failure = {key: chunks[-1][key] for key in ('error_category', 'http_status') if key in chunks[-1]}
+        if chunks[-1].get('error_category') == 'not_attempted':
+            chunks[-1]['attempted'] = False
+        failure = {key: chunks[-1][key] for key in ('error_category', 'http_status', 'timeout_phase') if key in chunks[-1]}
         emit_progress('author_review', chunks[-1]['status'], chunk=chunk['chunk_index'], chunks=len(requests), **failure)
-        if failure.get('error_category') in SYSTEMIC:
+        if failure.get('error_category') in SYSTEMIC | {'not_attempted'}:
             # Preserve full attempted/unattempted coverage without charging more
             # chunks for a definite global configuration/account failure.
             for remaining in requests[len(chunks):]:
@@ -358,6 +371,8 @@ def review_transcript(raw, client, options=None):
                 emit_progress('author_review', 'blocked', chunk=remaining['chunk_index'],
                               chunks=len(requests), error_category='not_attempted')
             break
+    if cache:
+        cache.verify()
     completed = sum(chunk['status'] == 'complete' for chunk in chunks)
     status = 'complete' if completed == len(chunks) else ('incomplete' if completed else 'failed')
     output_findings = []
@@ -374,6 +389,7 @@ def review_transcript(raw, client, options=None):
         })
     return {
         'status': status, 'raw_sha256': raw_hash, 'model': options.model,
+        'reasoning_effort': options.reasoning_effort,
         'prompt_version': PROMPT_VERSION, 'prompt_sha256': _hash(prompt),
         'schema_version': REVIEW_CONTRACT, 'settings_fingerprint': options.fingerprint,
         'offset_unit': 'Unicode characters; zero-based; end exclusive',

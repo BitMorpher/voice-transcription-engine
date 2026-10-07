@@ -7,6 +7,7 @@ import shutil
 import site
 import subprocess
 import sys
+import wave
 import zipfile
 
 import pytest
@@ -47,22 +48,81 @@ def test_wheel_namespace_prompts_and_console_scripts(wheel_environment):
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert 'voice_transcription_engine/cli.py' in names
-        assert 'voice_transcription_engine/console_progress.py' in names
+        assert 'voice_transcription_engine/studio_cli.py' in names
         assert 'voice_transcription_engine/batch/runner.py' in names
+        assert 'voice_transcription_engine/batch/concurrency.py' in names
         assert any(name.startswith('voice_transcription_engine/prompts/') and name.endswith('.txt') for name in names)
         assert 'cli.py' not in names
         assert not any('private/' in name or '.env' in name or 'batch-plan' in name for name in names)
+        metadata = archive.read('interview_studio-0.1.0.dist-info/METADATA').decode()
+        assert 'Name: interview-studio\n' in metadata
+        assert 'https://github.com/BitMorpher/interview-studio' in metadata
+        scripts = archive.read('interview_studio-0.1.0.dist-info/entry_points.txt').decode()
+        for declaration in ('interview = voice_transcription_engine.studio_cli:main',
+                            'voice-transcribe = voice_transcription_engine.cli:entrypoint',
+                            'voice-batch = voice_transcription_engine.batch.cli:main'):
+            assert declaration in scripts
     result = subprocess.run([str(python), '-c',
         'import voice_transcription_engine.cli as c; print(c.__file__)'],
         cwd=work, env=environment, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0
     assert str(work / 'runtime') in result.stdout
-    for command in ('voice-transcribe', 'voice-batch'):
+    for command, arguments in (('voice-transcribe', []), ('voice-batch', []),
+                               ('interview', []), ('interview', ['transcribe']),
+                               ('interview', ['batch']), ('interview', ['compare-text'])):
         executable = python.parent / (command + '.exe' if os.name == 'nt' else command)
-        result = subprocess.run([str(executable), '--help'], cwd=work, env=environment,
+        result = subprocess.run([str(executable), *arguments, '--help'], cwd=work, env=environment,
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 0 and command in result.stdout
         assert result.stderr == ''
+
+
+@pytest.mark.parametrize('command', ['interview', 'voice-transcribe'])
+@pytest.mark.parametrize('display', [['--plain'], ['--quiet'], ['--progress', 'json', '--no-color']])
+def test_installed_display_controls_keep_local_extraction_logs(wheel_environment, command, display):
+    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+        pytest.skip('FFmpeg/ffprobe required for installed media smoke.')
+    work, python, environment, _ = wheel_environment
+    source = work / 'synthetic-private-display.wav'
+    if not source.exists():
+        with wave.open(str(source), 'wb') as audio:
+            audio.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+            audio.writeframes(b'\0\0' * 4000)
+    mode = 'plain' if '--plain' in display else 'quiet' if '--quiet' in display else 'json'
+    output = work / f'display-{command}-{mode}'
+    executable = python.parent / (command + '.exe' if os.name == 'nt' else command)
+    arguments = ([str(executable), 'transcribe'] if command == 'interview' else [str(executable)])
+    result = subprocess.run([*arguments, '--prepare-audio', '--input', str(source),
+                             '--output-folder', str(output), *display],
+                            cwd=work, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0 and result.stderr == ''
+    rows = [json.loads(line) for line in next((output / 'execution-logs').glob('*.jsonl')).read_text().splitlines()]
+    assert rows[-1]['completed'] == 1 and rows[-1]['failed'] == 0
+    assert source.name not in result.stdout and str(source) not in result.stdout
+    if mode == 'quiet':
+        assert result.stdout == ''
+    elif mode == 'plain':
+        assert 'Prepared audio' in result.stdout and '1 succeeded' in result.stdout
+        assert '\x1b' not in result.stdout and '\r' not in result.stdout
+    else:
+        assert [json.loads(line) for line in result.stdout.splitlines()] == rows
+
+
+def test_installed_wheel_synthetic_comparison_and_replay(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    executable = python.parent / ('interview.exe' if os.name == 'nt' else 'interview')
+    output = work / 'synthetic-comparison'
+    arguments = [str(executable), 'compare-text', '--output-dir', str(output)]
+    first = subprocess.run(arguments, cwd=work, env=environment,
+                           capture_output=True, text=True, timeout=30)
+    assert first.returncode == 0, first.stderr
+    results = list(output.rglob('completed.json'))
+    assert results
+    snapshots = {path: path.read_bytes() for path in results}
+    replay = subprocess.run([*arguments, '--resume'], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=30)
+    assert replay.returncode == 0, replay.stderr
+    assert all(path.read_bytes() == data for path, data in snapshots.items())
 
 
 def test_wheel_synthetic_pipeline_and_resume(wheel_environment):
@@ -77,6 +137,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 import voice_transcription_engine.cli as engine
 from voice_transcription_engine.batch.cli import main as batch
+from voice_transcription_engine.studio_cli import main as interview
 from voice_transcription_engine.transcriber import Transcriber
 from importlib.resources import files
 
@@ -95,6 +156,8 @@ def response(**kwargs):
     name = kwargs['response_format']['json_schema']['name']
     if name == 'faithful_transcript_edit':
         body = dict(chunk_index=p['chunk_index'], text=p['text'], speaker_uncertain=False)
+    elif name == 'faithful_turn_group_edit':
+        body = dict(group_index=p['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in p['turns']])
     elif name == 'source_grounded_author_review':
         body = dict(chunk_index=p['chunk_index'], fully_reviewed=True, reviewed_start=p['core_start'],
                     reviewed_end=p['core_end'], findings=[])
@@ -118,9 +181,10 @@ for phase in ('raw', 'review', 'chapters'):
         args += ['--select', 'entry-a', '--human-reviewed']
     assert batch(args) == 0
 calls = client.chat.completions.create.call_count
-assert batch(args) == 0
+assert interview(['batch', *args]) == 0
 assert client.chat.completions.create.call_count == calls
 assert client.audio.transcriptions.create.call_count == 1
+assert interview(['batch', 'verify', '--batch', 'batch']) == 0
 assert sum(call.kwargs['response_format']['json_schema']['name'] == 'source_grounded_author_review'
            for call in client.chat.completions.create.call_args_list) == 1
 assert {path.read_bytes() for path in Path('batch').rglob('review_report.json')} == reviewed_reports
@@ -137,6 +201,72 @@ assert len(list(Path('batch').rglob('chapter_drafts.json'))) == 1
     assert result.stderr == ''
 
 
+def test_wheel_parallel_interviews_shared_allowance_and_aliases(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    work = work / 'parallel-smoke'
+    work.mkdir()
+    script = work / 'parallel.py'
+    script.write_text('''
+import contextlib, io, json, shutil, socket, threading, wave
+from pathlib import Path
+from types import SimpleNamespace
+import voice_transcription_engine.cli as engine
+import voice_transcription_engine.pipeline as pipeline
+from voice_transcription_engine.batch.cli import main as batch
+from voice_transcription_engine.progress import CURRENT
+from voice_transcription_engine.transcriber import Transcriber
+
+def blocked(*args, **kwargs):
+    raise AssertionError('Synthetic providers only; no network.')
+socket.socket.connect = blocked
+pipeline.prepare_audio = lambda source, target, **kwargs: shutil.copyfile(source, target)
+engine.require_ffmpeg = lambda: None
+entries = []
+for item in range(1, 4):
+    source = Path(f'synthetic-{item}.wav')
+    with wave.open(str(source), 'wb') as wav:
+        wav.setparams((1, 2, 100, 0, 'NONE', 'not compressed'))
+        wav.writeframes(item.to_bytes(2, 'little') * 120)
+    manifest = Path(f'ordered-{item}.json')
+    manifest.write_text(json.dumps(dict(version=1, interview_id=f'synthetic-{item}',
+        parts=[dict(id='one', path=source.name, media_type='audio')])))
+    entries.append(dict(id=f'entry-{item}', manifest=manifest.name))
+Path('plan.json').write_text(json.dumps(dict(version=1, interviews=entries)))
+calls, barrier, mutex = [], threading.Barrier(2), threading.Lock()
+def response(**parameters):
+    with mutex:
+        calls.append((CURRENT.get().context['item'], parameters['model']))
+        ordinal = len(calls)
+    if ordinal <= 2:
+        barrier.wait(timeout=5)
+    return SimpleNamespace(text='SYNTHETIC_PRIVATE_WORDS')
+provider = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=response)))
+engine.Transcriber = lambda **kwargs: Transcriber(client=provider, **kwargs)
+output = io.StringIO()
+with contextlib.redirect_stdout(output):
+    assert batch(['prepare', '--plan', 'plan.json', '--batch', 'batch', '--copy-local-files']) == 0
+    args = ['run', '--batch', 'batch', '--send-to-openai', '--parallel-interviews', '2',
+            '--transcription-model', 'gpt-transcribe', '--audio-chunk-seconds', '1', '--provider-retries', '0']
+    assert batch(args + ['--max-provider-requests', '2']) == 1
+    assert len(calls) == 2
+    assert len(list(Path('batch').rglob('response.json'))) == 2
+    assert batch(args) == 0
+    assert len(calls) == 6
+    before = {p: p.read_bytes() for p in Path('batch').rglob('*') if p.is_file() and 'output' in p.parts}
+    assert batch(args) == 0 and len(calls) == 6
+    assert all(p.read_bytes() == data for p, data in before.items())
+    assert batch(['status', '--batch', 'batch']) == 0
+assert not list(Path('batch').rglob('*.lock'))
+assert 'SYNTHETIC_PRIVATE_WORDS' not in output.getvalue() and str(Path.cwd()) not in output.getvalue()
+rows = [json.loads(line) for line in output.getvalue().splitlines()]
+assert any(row.get('configuration', {}).get('parallel_interviews') == 2 for row in rows)
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed wheel parallel/recovery smoke failed.'
+    assert result.stderr == ''
+
+
 def test_wheel_interview_family_and_private_cli(wheel_environment):
     work, python, environment, _ = wheel_environment
     script = work / 'interview-smoke.py'
@@ -148,6 +278,7 @@ from unittest.mock import MagicMock
 import voice_transcription_engine.cli as engine
 from voice_transcription_engine.transcriber import Transcriber
 from voice_transcription_engine.interview_attribution import DIARIZATION_MODEL
+from voice_transcription_engine.studio_cli import main as interview
 
 def blocked(*a, **kw):
     raise AssertionError('No real network allowed.')
@@ -169,6 +300,8 @@ def chat(**kw):
     name = kw['response_format']['json_schema']['name']
     if name == 'faithful_transcript_edit':
         body = dict(chunk_index=supplied['chunk_index'], text=supplied['text'], speaker_uncertain=False)
+    elif name == 'faithful_turn_group_edit':
+        body = dict(group_index=supplied['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
     elif name == 'source_grounded_author_review':
         body = dict(chunk_index=supplied['chunk_index'], fully_reviewed=True,
                     reviewed_start=supplied['core_start'], reviewed_end=supplied['core_end'], findings=[])
@@ -195,7 +328,7 @@ assert len(list(out.rglob('derivative_readability.txt'))) == 2
 original = next(path for path in out.iterdir() if (path / 'transcription.txt').is_file())
 before = (original / 'transcription.txt').read_bytes()
 calls = client.audio.transcriptions.create.call_count, client.chat.completions.create.call_count
-assert engine.entrypoint(args + ['--resume']) == 0
+assert interview(['transcribe', *args, '--resume']) == 0
 assert calls == (client.audio.transcriptions.create.call_count, client.chat.completions.create.call_count)
 assert before == (original / 'transcription.txt').read_bytes()
 ''')
@@ -260,6 +393,8 @@ def chat(**kw):
     name = kw['response_format']['json_schema']['name']
     if name == 'faithful_transcript_edit':
         body = dict(chunk_index=p['chunk_index'], text=p['text'], speaker_uncertain=False)
+    elif name == 'faithful_turn_group_edit':
+        body = dict(group_index=p['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in p['turns']])
     elif name == 'source_grounded_author_review':
         body = dict(chunk_index=p['chunk_index'], fully_reviewed=True,
             reviewed_start=p['core_start'], reviewed_end=p['core_end'], findings=[])
@@ -318,3 +453,104 @@ assert 'A question?' not in joined
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, 'Installed native batch staging/attribution smoke failed.'
     assert result.stderr == ''
+
+
+def test_wheel_recovery_checkpoint_controls_and_cli_privacy(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    script = work / 'recovery-smoke.py'
+    script.write_text('''
+import io, json, shutil, socket, wave
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+import voice_transcription_engine.cli as engine
+import voice_transcription_engine.pipeline as pipeline
+from voice_transcription_engine.transcriber import Transcriber
+from voice_transcription_engine.provider_control import CURRENT_CONTROL
+from voice_transcription_engine.studio_cli import main as interview
+
+def blocked(*args, **kwargs):
+    raise AssertionError('No external provider calls allowed.')
+socket.socket.connect = blocked
+root = Path.cwd() / 'recovery-installed'
+root.mkdir()
+source = root / 'SYNTHETIC_PRIVATE_SOURCE.wav'
+with wave.open(str(source), 'wb') as wav:
+    wav.setparams((1, 2, 100, 0, 'NONE', 'not compressed'))
+    wav.writeframes(b'\\0\\0' * 250)
+pipeline.prepare_audio = lambda source, target, **kwargs: shutil.copyfile(source, target)
+provider = MagicMock()
+provider.audio.transcriptions.create.return_value = SimpleNamespace(text='SYNTHETIC_PRIVATE_WORDS')
+engine.Transcriber = lambda **kwargs: Transcriber(client=provider, **kwargs)
+output = root / 'out'
+args = ['--workflow', '--input', str(source), '--output-folder', str(output), '--stages', 'raw',
+        '--audio-chunk-seconds', '1', '--provider-retries', '0', '--max-provider-requests', '1']
+assert engine.entrypoint(args) == 1
+assert provider.audio.transcriptions.create.call_count == 1
+assert len(list(output.rglob('response.json'))) == 1
+assert not list(output.rglob('transcription.txt'))
+assert CURRENT_CONTROL.get() is None
+args[-1] = '2'
+assert interview(['transcribe', *args, '--resume']) == 0
+assert provider.audio.transcriptions.create.call_count == 3
+assert len(list(output.rglob('transcription.txt'))) == 1
+logs = ''.join(path.read_text() for path in output.rglob('*.jsonl'))
+assert 'SYNTHETIC_PRIVATE' not in logs and str(root) not in logs
+assert 'request_limit' in logs
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed recovery smoke failed.'
+    assert 'SYNTHETIC_PRIVATE' not in result.stdout + result.stderr
+    for command in ('voice-transcribe', 'voice-batch'):
+        executable = python.parent / (command + '.exe' if os.name == 'nt' else command)
+        invalid = ['--max-provider-requests', 'SYNTHETIC_PRIVATE_VALUE']
+        if command == 'voice-batch':
+            invalid = ['run', *invalid]
+        result = subprocess.run([str(executable), *invalid], cwd=work, env=environment,
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 2
+        assert 'SYNTHETIC_PRIVATE' not in result.stdout + result.stderr
+
+
+def test_wheel_text_checkpoint_restart(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    script = work / 'text-checkpoint-smoke.py'
+    script.write_text('''
+import json, socket
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from voice_transcription_engine.author_review import ReviewOptions, review_transcript
+
+def blocked(*args, **kwargs):
+    raise AssertionError('Offline only.')
+socket.socket.connect = blocked
+client = MagicMock()
+raw = 'Synthetic exact source.\\n' * 12
+root = Path('installed-text-checkpoints')
+options = ReviewOptions(chunk_bytes=64)
+def respond(**parameters):
+    payload = json.loads(parameters['messages'][-1]['content'])
+    body = dict(chunk_index=payload['chunk_index'], fully_reviewed=True,
+                reviewed_start=payload['core_start'], reviewed_end=payload['core_end'], findings=[])
+    return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+        message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+def fail_late(**parameters):
+    if json.loads(parameters['messages'][-1]['content'])['chunk_index'] == 2:
+        raise RuntimeError('SYNTHETIC_PRIVATE_PROVIDER')
+    return respond(**parameters)
+client.chat.completions.create.side_effect = fail_late
+assert review_transcript(raw, client, options, checkpoint_root=root)['status'] == 'incomplete'
+calls = client.chat.completions.create.call_count
+client.chat.completions.create.side_effect = respond
+assert review_transcript(raw, client, options, checkpoint_root=root)['status'] == 'complete'
+assert client.chat.completions.create.call_count == calls + 1
+calls = client.chat.completions.create.call_count
+assert review_transcript(raw, client, options, checkpoint_root=root)['status'] == 'complete'
+assert client.chat.completions.create.call_count == calls
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed text checkpoint restart failed.'
+    assert result.stdout == result.stderr == ''
