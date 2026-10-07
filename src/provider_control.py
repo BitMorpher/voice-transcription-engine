@@ -14,7 +14,8 @@ else:
     from progress import CURRENT, call_text_operation
 
 CURRENT_CONTROL = ContextVar('provider_control', default=None)
-STOP_REASONS = {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider', 'interrupted'}
+STOP_REASONS = {'request_limit', 'start_deadline', 'provider_failures', 'validation_failures',
+                'systemic_provider', 'interrupted'}
 
 
 class ProviderStopped(RuntimeError):
@@ -22,25 +23,51 @@ class ProviderStopped(RuntimeError):
 
 
 class ProviderControl:
-    def __init__(self, *, max_requests=None, max_seconds=None, failure_limit=2, retries=2,
+    def __init__(self, *, max_requests=None, max_seconds=None, failure_limit=2,
+                 validation_failure_limit=3, retries=2,
                  clock=time.monotonic):
         if (max_requests is not None and (type(max_requests) is not int or max_requests < 1)
                 or max_seconds is not None and (type(max_seconds) not in (int, float)
                     or not math.isfinite(max_seconds) or max_seconds <= 0)
                 or type(failure_limit) is not int or failure_limit < 1
+                or type(validation_failure_limit) is not int or validation_failure_limit < 1
                 or type(retries) is not int or not 0 <= retries <= 5
                 or (max_requests is not None or max_seconds is not None) and retries != 0):
             raise ValueError('Provider request/time limits require --provider-retries 0 and positive limits.')
         self.max_requests, self.max_seconds = max_requests, max_seconds
         self.failure_limit, self.clock = failure_limit, clock
+        self.validation_failure_limit = validation_failure_limit
         self.validation_retries = min(1, retries)
         self.cooldown_until = self.next_slot = 0.0
         self.started = clock()
         self.requests = self.failures = 0
         self.failure_streaks = {}
+        self.validation_failures = 0
+        self.validation_failures_by_scope = {}
         self.reason = None
         self.lock = threading.RLock()
         self.cancelled = threading.Event()
+
+    def validation_failed(self, stage, model):
+        """Count terminal text failures once, after allowed local recovery.
+
+        The run stops when one stage/model reaches its cumulative threshold.
+        Neither SDK success nor another scope erases these observations. Already
+        admitted I/O drains and can save verified checkpoints. No response body
+        or user-controlled scope value is emitted.
+        """
+        scope = (stage, model if isinstance(model, str) else None)
+        with self.lock:
+            self.validation_failures += 1
+            count = self.validation_failures_by_scope.get(scope, 0) + 1
+            self.validation_failures_by_scope[scope] = count
+            if self.reason is None and count >= self.validation_failure_limit:
+                self.reason = 'validation_failures'
+            reporter = CURRENT.get()
+            if reporter:
+                reporter.emit(status='progress', validation_failures=self.validation_failures,
+                              scope_validation_failures=count,
+                              stop_reason=self.reason)
 
     def cancel(self):
         """Deny subsequent calls while already admitted I/O drains normally."""

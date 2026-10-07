@@ -126,7 +126,7 @@ def test_review_report_records_effort_with_legacy_report_compatibility():
     def response(**kwargs):
         payload = json.loads(kwargs['messages'][-1]['content'])
         result = {'chunk_index': payload['chunk_index'], 'fully_reviewed': True,
-                  'reviewed_start': payload['core_start'], 'reviewed_end': payload['core_end'],
+                  'contract_version': payload['contract_version'], 'reviewed_piece_ids': payload['core_piece_ids'],
                   'findings': []}
         return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(
             content=json.dumps(result), refusal=None))])

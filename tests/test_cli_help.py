@@ -135,3 +135,11 @@ def test_nested_engine_keeps_batch_display_mode(monkeypatch):
         reporter.set_output.assert_called_once_with('plain')
     finally:
         CURRENT.reset(token)
+
+
+@pytest.mark.parametrize('build,base', [(transcription_parser, ['--input', 'unused']),
+                                       (batch_parser, ['run'])])
+def test_validation_failure_limit_default_and_explicit_setting(build, base):
+    assert build().parse_args(base).validation_failure_limit == 3
+    assert build().parse_args([*base, '--validation-failure-limit', '1']).validation_failure_limit == 1
+    assert '--validation-failure-limit' in build().format_help()

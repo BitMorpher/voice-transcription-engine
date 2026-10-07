@@ -236,3 +236,8 @@ For batch chapters, the explicit human gate now binds the exact approved review 
 ## Batch prerequisites and safe failure detail
 
 For `interview batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.
+
+
+### Exact quote references (review v2)
+
+Review requests now provide byte-bounded exact evidence pieces and explicit core IDs. The model returns quotes with contiguous piece references; Python resolves a unique exact source occurrence and calculates the final offsets. Complete coverage requires an exact ordered core-ID acknowledgement and the request's contract version. Ambiguous/altered quotes and incomplete acknowledgement fail closed; an acknowledgement does not guarantee semantic review quality. Repeated terminal text failures close shared admission with `--validation-failure-limit` (default 3). See [recovery controls](recovery-controls.md#review-evidence-contract-and-validation-stop) for scope, retries, parallel draining, privacy, legacy report compatibility and the narrow proposed canary.

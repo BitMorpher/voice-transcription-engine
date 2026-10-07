@@ -269,7 +269,7 @@ def test_actual_review_report_contract_exports_with_mocked_model(tmp_path):
         payload = json.loads(kwargs['messages'][-1]['content'])
         content = json.dumps({
             'chunk_index': payload['chunk_index'], 'fully_reviewed': True,
-            'reviewed_start': payload['core_start'], 'reviewed_end': payload['core_end'],
+            'contract_version': payload['contract_version'], 'reviewed_piece_ids': payload['core_piece_ids'],
             'findings': [],
         })
         return SimpleNamespace(choices=[SimpleNamespace(
@@ -313,7 +313,7 @@ def test_recording_citation_cell_limit_rejects_incomplete_export(tmp_path):
     def respond(**kwargs):
         data = json.loads(kwargs['messages'][-1]['content'])
         body = {'chunk_index': data['chunk_index'], 'fully_reviewed': True, 'findings': [],
-                'reviewed_start': data['core_start'], 'reviewed_end': data['core_end']}
+                'contract_version': data['contract_version'], 'reviewed_piece_ids': data['core_piece_ids']}
         return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
             message=SimpleNamespace(content=json.dumps(body), refusal=None))])
     client.chat.completions.create.side_effect = respond
@@ -330,7 +330,7 @@ def test_recording_citations_below_cell_limit_and_literal_formula_prefixes(tmp_p
     def respond(**kwargs):
         data = json.loads(kwargs['messages'][-1]['content'])
         body = {'chunk_index': data['chunk_index'], 'fully_reviewed': True, 'findings': [],
-                'reviewed_start': data['core_start'], 'reviewed_end': data['core_end']}
+                'contract_version': data['contract_version'], 'reviewed_piece_ids': data['core_piece_ids']}
         return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
             message=SimpleNamespace(content=json.dumps(body), refusal=None))])
     client.chat.completions.create.side_effect = respond

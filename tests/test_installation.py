@@ -127,8 +127,9 @@ def response(**kwargs):
     elif name == 'faithful_turn_group_edit':
         body = dict(group_index=p['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in p['turns']])
     elif name == 'source_grounded_author_review':
-        body = dict(chunk_index=p['chunk_index'], fully_reviewed=True, reviewed_start=p['core_start'],
-                    reviewed_end=p['core_end'], findings=[])
+        p['text'] = ''.join(p['text'] for p in p['evidence_pieces'])
+        body = dict(chunk_index=p['chunk_index'], fully_reviewed=True, contract_version=p['contract_version'],
+                    reviewed_piece_ids=p['core_piece_ids'], findings=[])
     else:
         body = dict(chunk_index=p['chunk_index'], passages=[dict(unit_ids=[u['unit_id']],
                     text=u['text'].strip(), kind='verbatim_excerpt') for u in p['source_units']], coverage_omissions=[])
@@ -271,8 +272,9 @@ def chat(**kw):
     elif name == 'faithful_turn_group_edit':
         body = dict(group_index=supplied['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
     elif name == 'source_grounded_author_review':
+        supplied['text'] = ''.join(p['text'] for p in supplied['evidence_pieces'])
         body = dict(chunk_index=supplied['chunk_index'], fully_reviewed=True,
-                    reviewed_start=supplied['core_start'], reviewed_end=supplied['core_end'], findings=[])
+                    contract_version=supplied['contract_version'], reviewed_piece_ids=supplied['core_piece_ids'], findings=[])
     else:
         body = dict(chunk_index=supplied['chunk_index'], passages=[
             dict(unit_ids=[unit['unit_id']], text=unit['text'].strip(), kind='verbatim_excerpt')
@@ -364,8 +366,9 @@ def chat(**kw):
     elif name == 'faithful_turn_group_edit':
         body = dict(group_index=p['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in p['turns']])
     elif name == 'source_grounded_author_review':
+        p['text'] = ''.join(p['text'] for p in p['evidence_pieces'])
         body = dict(chunk_index=p['chunk_index'], fully_reviewed=True,
-            reviewed_start=p['core_start'], reviewed_end=p['core_end'], findings=[])
+            contract_version=p['contract_version'], reviewed_piece_ids=p['core_piece_ids'], findings=[])
     else:
         raise AssertionError('Deterministic interview chapters need no arrangement call.')
     return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
@@ -501,7 +504,7 @@ options = ReviewOptions(chunk_bytes=64)
 def respond(**parameters):
     payload = json.loads(parameters['messages'][-1]['content'])
     body = dict(chunk_index=payload['chunk_index'], fully_reviewed=True,
-                reviewed_start=payload['core_start'], reviewed_end=payload['core_end'], findings=[])
+                contract_version=payload['contract_version'], reviewed_piece_ids=payload['core_piece_ids'], findings=[])
     return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
         message=SimpleNamespace(content=json.dumps(body), refusal=None))])
 def fail_late(**parameters):

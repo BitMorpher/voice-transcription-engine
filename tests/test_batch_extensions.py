@@ -200,12 +200,13 @@ def interview_client():
         elif name == 'faithful_turn_group_edit':
             body = dict(group_index=supplied['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
         elif name == 'source_grounded_author_review':
+            supplied['text'] = ''.join(p['text'] for p in supplied['evidence_pieces'])
             attributed = 'unidentified' in supplied['text'] or 'user_confirmed_mapping' in supplied['text']
             high = client.high_family == ('attributed' if attributed else 'original')
             findings = [dict(category='allegation', severity='high', reason_code='serious_allegation',
-                excerpt=supplied['text'], start=0, end=len(supplied['text']))] if high else []
+                excerpt=supplied['text'], piece_ids=[p['piece_id'] for p in supplied['evidence_pieces']])] if high else []
             body = dict(chunk_index=supplied['chunk_index'], fully_reviewed=True,
-                reviewed_start=supplied['core_start'], reviewed_end=supplied['core_end'], findings=findings)
+                contract_version=supplied['contract_version'], reviewed_piece_ids=supplied['core_piece_ids'], findings=findings)
         else:
             body = dict(chunk_index=supplied['chunk_index'], passages=[dict(unit_ids=[u['unit_id']],
                 text=u['text'].strip(), kind='verbatim_excerpt') for u in supplied['source_units']], coverage_omissions=[])

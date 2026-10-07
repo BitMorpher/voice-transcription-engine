@@ -29,7 +29,7 @@ def reviewer():
     def respond(**parameters):
         payload = json.loads(parameters['messages'][-1]['content'])
         return completion(json.dumps({'chunk_index': payload['chunk_index'], 'fully_reviewed': True,
-            'reviewed_start': payload['core_start'], 'reviewed_end': payload['core_end'], 'findings': []}))
+            'contract_version': payload['contract_version'], 'reviewed_piece_ids': payload['core_piece_ids'], 'findings': []}))
     client.chat.completions.create.side_effect = respond
     return client
 

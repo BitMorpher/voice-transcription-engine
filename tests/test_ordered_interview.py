@@ -34,6 +34,7 @@ def interview_provider(provider):
                 "speaker_uncertain": True,
             }
         elif name == "source_grounded_author_review":
+            supplied['text'] = ''.join(p['text'] for p in supplied['evidence_pieces'])
             findings = []
             if provider.priority:
                 code = "serious_allegation" if provider.priority == "high" else "personal_opinion"
@@ -43,15 +44,14 @@ def interview_provider(provider):
                         "severity": provider.priority,
                         "reason_code": code,
                         "excerpt": supplied["text"],
-                        "start": 0,
-                        "end": len(supplied["text"]),
+                        "piece_ids": [p["piece_id"] for p in supplied["evidence_pieces"]],
                     }
                 ]
             body = {
                 "chunk_index": supplied["chunk_index"],
                 "fully_reviewed": True,
-                "reviewed_start": supplied["core_start"],
-                "reviewed_end": supplied["core_end"],
+                "contract_version": supplied["contract_version"],
+                "reviewed_piece_ids": supplied["core_piece_ids"],
                 "findings": findings,
             }
         else:

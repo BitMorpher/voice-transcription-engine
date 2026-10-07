@@ -48,12 +48,13 @@ def interview_provider():
             body = dict(group_index=supplied['group_index'], edits=[
                 {**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
         elif name == 'source_grounded_author_review':
+            supplied['text'] = ''.join(p['text'] for p in supplied['evidence_pieces'])
             findings = []
             if client.high:
                 findings = [dict(category='allegation', severity='high', reason_code='serious_allegation',
-                                 excerpt=supplied['text'], start=0, end=len(supplied['text']))]
+                                 excerpt=supplied['text'], piece_ids=[p['piece_id'] for p in supplied['evidence_pieces']])]
             body = dict(chunk_index=supplied['chunk_index'], fully_reviewed=True,
-                        reviewed_start=supplied['core_start'], reviewed_end=supplied['core_end'], findings=findings)
+                        contract_version=supplied['contract_version'], reviewed_piece_ids=supplied['core_piece_ids'], findings=findings)
         else:
             body = dict(chunk_index=supplied['chunk_index'], passages=[
                 dict(unit_ids=[unit['unit_id']], text=unit['text'].strip(), kind='verbatim_excerpt')
@@ -551,6 +552,8 @@ def test_failure_summaries_preserve_completed_attributed_stages(synthetic_media,
         def broken_chat(**kw):
             body = json.loads(kw['messages'][-1]['content'])
             name = kw['response_format']['json_schema']['name']
+            if name == 'source_grounded_author_review':
+                body['text'] = ''.join(p['text'] for p in body['evidence_pieces'])
             attributed = 'user_confirmed_mapping' in body.get('text', '') or 'unidentified' in body.get('text', '')
             if (failure == 'review' and attributed and name == 'source_grounded_author_review'
                     or failure == 'polish' and any(t['text'] == 'A question?' for t in body.get('turns', []))):
