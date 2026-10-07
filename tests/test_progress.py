@@ -66,6 +66,15 @@ def test_heartbeat_context_elapsed_and_stop(tmp_path):
     assert not reporter.thread.is_alive()
 
 
+def test_heartbeat_clears_chunk_totals_from_previous_stage_or_item():
+    reporter = Reporter(io.StringIO())
+    reporter.emit(status='progress', item=1, stage='transcription', stage_status='complete', chunk=8, chunks=8)
+    reporter.emit(status='progress', item=1, stage='enhancement', stage_status='running', chunk=1)
+    assert reporter.active['chunk'] == 1 and 'chunks' not in reporter.active
+    reporter.emit(status='progress', item=2, stage='preflight', stage_status='running')
+    assert 'chunk' not in reporter.active and 'chunks' not in reporter.active
+
+
 def test_closed_console_keeps_logging(tmp_path):
     class Closed:
         def write(self, line):

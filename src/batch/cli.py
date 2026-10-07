@@ -41,6 +41,13 @@ def parser():
     value.add_argument('--media-timeout', type=_positive_timeout, default=3600)
     value.add_argument('--provider-timeout', type=_positive_timeout, default=120)
     value.add_argument('--provider-retries', type=int, choices=range(6), default=2)
+    display = value.add_mutually_exclusive_group()
+    display.add_argument('--progress', choices=('auto', 'plain', 'json'), default='auto',
+                         help='Progress output: live on terminals, JSON when redirected (default: auto).')
+    display.add_argument('--plain', dest='progress', action='store_const', const='plain',
+                         help='Append-only readable progress; no colors or terminal controls.')
+    value.add_argument('--quiet', action='store_true', help='Suppress console progress; retain private JSONL logs.')
+    value.add_argument('--no-color', action='store_true', help='Disable colors (also honors NO_COLOR).')
     value.add_argument('--heartbeat-seconds', type=_positive_timeout, default=30)
     value.add_argument('--log-directory', type=Path, help='Private execution logs; defaults to batch/execution-logs.')
     value.add_argument('--context-file')
@@ -146,6 +153,8 @@ def execute(args, reporter):
 def main(argv=None):
     args = parser().parse_args(argv)
     reporter = Reporter(sys.stdout, heartbeat=args.heartbeat_seconds)
+    reporter.context = {'scope': 'batch'}
+    reporter.configure_console(mode=args.progress, no_color=args.no_color, quiet=args.quiet)
     token = CURRENT.set(reporter)
     try:
         with interruptions():

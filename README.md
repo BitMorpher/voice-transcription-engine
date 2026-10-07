@@ -104,7 +104,34 @@ uv run --locked voice-batch run --batch private/batches/demo-001 \
 uv run --locked voice-batch status --batch private/batches/demo-001
 ```
 
-Installed commands flush safe JSON events immediately, including stage/part/chunk counts, elapsed time, verified cache reuse and idle heartbeats. They write exclusive private `execution-<run>.jsonl` logs under output/batch `execution-logs/`; choose `--log-directory` and `--heartbeat-seconds` when needed. Events never serialize private source paths, IDs, transcript text, hints, credentials or arbitrary errors. Heartbeats indicate coordinator liveness, not provider completion; no overall percent is invented. Recognized SDK failures expose allowlisted categories and HTTP status codes; definite account/model/request/quota failures stop further review chunks for that interview, with unattempted coverage clearly recorded. `--provider-timeout 120 --provider-retries 2` preserves the existing SDK defaults; retries can repeat charges and are not a whole-run deadline. Keyboard/SIGTERM interruption retains completed artifacts and releases locks; batch resume is automatic and direct engine resume uses `--resume`. Batch chapters retain the exact JSON/XLSX review bundle accepted by the human gate across chapter generations; they never request a fresh review after approval.
+Installed commands show a live dashboard in an interactive terminal. One overall bar measures finished items (`X/Y`), with succeeded, failed, errors, blocked, active and queued counts. Each active item shows its current stage and known recording-part/chunk position. Item numbers retain their position in the original plan or sorted input list; selecting items 2 and 7 still uses a total of 2. Processing remains serial, so one item is active at a time. Stage durations vary: the bar measures item outcomes, not elapsed work, and no stage percentage or ETA is invented. This follows the [Evil Martians progress-display guidance](https://evilmartians.com/chronicles/cli-ux-best-practices-3-patterns-for-improving-progress-displays): measurable counts, one overall bar, and a clean permanent record of outcomes.
+
+For example, during a four-item run (illustrative):
+
+```text
+Batch · raw  elapsed 2:14
+━━━━━━━━━━━━╸────────────────────────  2/4 items finished
+1 succeeded · 1 failed · 1 errors · 0 blocked · 1 active · 1 queued
+Item 3    Transcribing audio    part 2/3 · chunk 4/8
+```
+
+`Failed` counts failed items; `errors` counts distinct reported stage/chunk failures, or one item/run failure when no stage failure was reported. Repeated stage/item failure reports do not inflate the error count. An item may succeed despite a recoverable stage error. Blocked and interrupted work stay separate from successes. The transient dashboard clears on exit, leaving completed outcomes, safe error guidance, and a final summary. Completed stages use past-tense labels, and verified caches are labeled as reused.
+
+Both commands support these display options:
+
+- `--progress auto` (default): live terminal dashboard; safe JSONL on redirected output or a dumb terminal.
+- `--progress json`: safe JSONL even on a terminal, for existing scripts and integrations.
+- `--plain` or `--progress plain`: readable append-only stage updates, outcomes and summary, without color or terminal controls.
+- `--quiet`: suppress console progress, including reported failures, while retaining private execution logs and the exit status. Argument usage errors still appear.
+- `--no-color` or the `NO_COLOR` environment variable: disable colors; live terminal updates still work.
+
+```bash
+uv run --locked voice-batch run --batch private/batches/demo-001 --phase raw --send-to-openai --plain
+uv run --locked voice-transcribe --extract-only --input private/input/synthetic.mp4 \
+  --output-folder private/output --progress json
+```
+
+Console formatting does not change the exclusive private `execution-<run>.jsonl` logs under output/batch `execution-logs/`; choose `--log-directory` and `--heartbeat-seconds` when needed. Events flush immediately and never serialize private source paths, IDs, transcript text, hints, credentials or arbitrary errors. Heartbeats indicate coordinator liveness, not provider completion, and show how long it has been since the last event without advancing measured work. Recognized SDK failures expose allowlisted categories and HTTP status codes; definite account/model/request/quota failures stop further review chunks for that interview, with unattempted coverage clearly recorded. `--provider-timeout 120 --provider-retries 2` preserves the existing SDK defaults; retries can repeat charges and are not a whole-run deadline. Keyboard/SIGTERM interruption retains completed artifacts and releases locks; batch resume is automatic and direct engine resume uses `--resume`. Batch chapters retain the exact JSON/XLSX review bundle accepted by the human gate across chapter generations; they never request a fresh review after approval.
 
 ## Author review and chapter comparison
 
@@ -150,7 +177,7 @@ The default output directory is ignored `private/output`. In a Git checkout, the
 - Text is published atomically only after every chunk succeeds. Any failed or malformed chunk fails the whole transcription stage; there is no full-file fallback, error text in the transcript, or silent successful partial transcript.
 - The original audio is streamed into exact PCM frame chunks capped at both 20 MiB and five minutes by default, below the documented 25 MB upload limit. The duration cap is an application choice, configurable with `--audio-chunk-seconds` from 1 to 600 seconds, rather than a claim about the model's duration limit. Every frame, including the final short tail, is processed in order. Fixed boundaries can split speech mid-sentence and affect recognition quality; check the transcript against the recording.
 - A private lock prevents concurrent processing of the same job. If a process is killed, verify that it has stopped before manually deleting its job's `.lock`. A crash between publishing an artifact and recording its checksum produces a safe conflict; use a fresh output directory.
-- Installed JSON progress reports show item indices, execution IDs, stage/part/chunk statuses, elapsed time and fixed sanitized guidance; private durable logs and idle heartbeats use the same allowlist. All parser errors use fixed diagnostics and declared option names, never supplied values; usage always identifies the CLI as `voice-transcribe`. Recognized flags with accidental `=value`, ambiguous/unknown options, invalid numbers and missing/conflicting options receive safe guidance and `--help`. Errors report a nonzero exit status and processing continues for other files. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
+- Installed commands render terminal progress from the same allowlisted events used by JSON output and private durable logs. JSON reports show item indices, execution IDs, stage/part/chunk statuses, elapsed time and fixed sanitized guidance. All parser errors use fixed diagnostics and declared option names, never supplied values; usage always identifies the CLI as `voice-transcribe`. Recognized flags with accidental `=value`, ambiguous/unknown options, invalid numbers and missing/conflicting options receive safe guidance and `--help`. Errors report a nonzero exit status and processing continues for other files. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
 
 ## Existing audio folder workflow
 

@@ -174,6 +174,13 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
                         help='Review/chapter model (default: gpt-6-astra).')
     parser.add_argument('--draft-with-unresolved-high', action='store_true',
                         help='Explicitly allow labeled drafts with unresolved high-priority findings.')
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument('--progress', choices=('auto', 'plain', 'json'), default='auto',
+                         help='Progress output: live on terminals, JSON when redirected (default: auto).')
+    display.add_argument('--plain', dest='progress', action='store_const', const='plain',
+                         help='Append-only readable progress; no colors or terminal controls.')
+    parser.add_argument('--quiet', action='store_true', help='Suppress console progress; retain private JSONL logs.')
+    parser.add_argument('--no-color', action='store_true', help='Disable colors (also honors NO_COLOR).')
     parser.add_argument('--log-directory', help='Private JSONL logs (default: output/execution-logs).')
     parser.add_argument('--heartbeat-seconds', type=_positive_timeout, default=30,
                         help='Idle heartbeat interval in seconds (default: 30).')
@@ -189,6 +196,7 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
         parser.usage_error('Speaker naming options require --interview.')
     reporter = CURRENT.get()
     if reporter is not None:
+        reporter.configure_console(mode=args.progress, no_color=args.no_color, quiet=args.quiet)
         reporter.heartbeat = args.heartbeat_seconds
         try:
             reporter.start(args.log_directory or Path(args.output_folder) / 'execution-logs')
@@ -256,6 +264,10 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
                 allow_unresolved_high=args.draft_with_unresolved_high,
             )
         if args.interview_manifest is not None:
+            if reporter is not None:
+                if 'item' not in reporter.context:
+                    reporter.context = {**reporter.context, 'item': 1, 'selected': 1}
+                _report(status='running', item=1, selected=1, stage='preflight', stage_status='running')
             interview = OrderedInterview(args.interview_manifest, args.output_folder,
                 options=options, editing_options=editing_options, author_options=author_options,
                 resume=args.resume, media_timeout=args.media_timeout,
@@ -287,6 +299,8 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
             raise PipelineError('Unsupported input type or extension.')
         if not files:
             raise PipelineError('No supported media files were found (folders are scanned nonrecursively).')
+        if reporter is not None and 'item' not in reporter.context:
+            reporter.context = {**reporter.context, 'selected': len(files)}
         if args.workflow and args.media_type != 'auto':
             allowed = AUDIO_EXTENSIONS if args.media_type == 'audio' else MEDIA_EXTENSIONS - AUDIO_EXTENSIONS
             if any(item.suffix.lower() not in allowed for item in files):
@@ -310,6 +324,11 @@ def main(argv=None, *, approved_review=None, interview_options_override=None,
 
     failures = 0
     for index, item in enumerate(files, start=1):
+        if reporter is not None:
+            # Keep every lower-level chunk event attached to its owning input item.
+            if reporter.context.get('scope') != 'batch':
+                reporter.context = {**reporter.context, 'item': index}
+            _report(item=index, status='running', stage='preflight', stage_status='running')
         try:
             if pipeline:
                 identity, stages = pipeline.process(item, transcriber=transcriber,

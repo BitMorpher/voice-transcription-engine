@@ -207,6 +207,32 @@ def test_batch_parse_privacy(capsys):
     assert 'SYNTHETIC_SECRET' not in capsys.readouterr().err
 
 
+def test_plain_batch_nested_interviews_keep_selection_total(staged, monkeypatch, capsys):
+    from src.progress import CURRENT
+    root, _ = staged
+    def nested_engine(root, item, args):
+        reporter = CURRENT.get()
+        context = reporter.context
+        reporter.context = {**context, 'scope': 'interview'}
+        try:
+            reporter.configure_console(mode='auto')
+            reporter.emit(status='running', selected=1)
+            reporter.emit(status='progress', stage='transcription', stage_status='running', chunk=1, chunks=2)
+            reporter.emit(status='complete')
+            reporter.emit(status='summary', processed=1, failed=0)
+        finally:
+            reporter.context = context
+    monkeypatch.setattr('src.batch.cli.shutil.which', lambda _: 'synthetic-tool')
+    monkeypatch.setattr('src.batch.cli.run_one', nested_engine)
+    assert main(['run', '--batch', str(root), '--send-to-openai', '--plain',
+                 '--select', 'entry-1', '--select', 'entry-3']) == 0
+    text = capsys.readouterr().out
+    assert 'Item 1' in text and 'Item 3' in text and 'Item 2' not in text
+    assert '2/2 items finished' in text and '2 succeeded' in text
+    assert '3/2' not in text and '1/1' not in text and '\x1b' not in text
+    assert 'synthetic-private' not in text and str(root) not in text
+
+
 def test_installed_style_entrypoint_extract_resume(synthetic_media, tmp_path, capsys):
     source = synthetic_media('synthetic.wav')
     output = tmp_path / 'output'

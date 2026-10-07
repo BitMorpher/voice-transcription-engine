@@ -282,6 +282,8 @@ class AttributedInterview:
                 raise ValueError()
 
     def _cache(self, part, transcriber, configuration):
+        emit_progress('diarization', 'running', family='attributed',
+                      part=part['order'], parts=len(self.inputs))
         binding = _fingerprint({'source': part['source_sha256'], 'audio': part['audio_sha256'],
                                 'configuration': configuration})
         cache = self.output / 'diarization-cache' / binding
@@ -323,6 +325,8 @@ class AttributedInterview:
             'version': 1, 'binding_sha256': binding,
             'response_sha256': hashlib.sha256(text.encode()).hexdigest()})})
         self.cache_snapshots[cache / 'provider_responses.json'] = hashlib.sha256(text.encode()).hexdigest()
+        emit_progress('diarization', 'complete', family='attributed',
+                      part=part['order'], parts=len(self.inputs))
         return payload, binding
 
     def _assemble(self, payloads):
@@ -489,6 +493,7 @@ class AttributedInterview:
                 if os.path.lexists(cache):
                     self._cache(part, transcriber, configuration)
             payloads = [(part, *self._cache(part, transcriber, configuration)) for part in self.inputs]
+            emit_progress('attribution', 'running')
             raw, provenance, provider_text = self._assemble(payloads)
             self._sources_unchanged()
             if state is None:

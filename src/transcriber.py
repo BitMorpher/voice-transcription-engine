@@ -133,7 +133,9 @@ class Transcriber:
         if prepared:
             return self._transcribe_wave(source)
         with tempfile.TemporaryDirectory(prefix='voice-transcription-') as temporary:
+            emit_progress('conversion', 'running')
             audio = prepare_audio(source, Path(temporary) / 'audio.wav', timeout=self.media_timeout)
+            emit_progress('conversion', 'complete')
             return self._transcribe_wave(audio)
 
     def _transcribe_wave(self, audio_path):

@@ -462,9 +462,11 @@ class OrderedInterview:
                 )
                 self.progress("part_transcription", "complete")
             self.preflight()
+            emit_progress('combined_raw', 'running')
             raw, provenance = self._combine()
             if not self.job.exists():
                 self._publish(raw, provenance)
+            emit_progress('combined_raw', 'skipped' if existed else 'complete')
             state = _read_json(self.job / "manifest.json")
             summary = {"parts": "complete", "combined_raw": "skipped" if existed else "complete"}
 

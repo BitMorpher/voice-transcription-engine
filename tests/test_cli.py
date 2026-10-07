@@ -235,3 +235,39 @@ def test_explicit_whitespace_folder_is_not_trimmed(monkeypatch, synthetic_media,
     source.rename(folder / source.name)
     monkeypatch.chdir(tmp_path)
     assert main(['--extract-only', '--input', ' ', '--output-folder', str(tmp_path / 'output')]) == 0
+
+
+@pytest.mark.parametrize('display', [['--plain'], ['--progress', 'plain'], ['--progress', 'json'], ['--quiet']])
+def test_installed_display_modes_preserve_item_identity_and_failures(monkeypatch, tmp_path, capsys, display):
+    from src.cli import entrypoint
+    inputs = tmp_path / 'inputs'
+    inputs.mkdir()
+    for name in ('SYNTHETIC_SECRET-a.wav', 'SYNTHETIC_SECRET-b.wav'):
+        (inputs / name).touch()
+    mock = MagicMock()
+    def transcribe(path):
+        from src.progress import emit_progress
+        emit_progress('transcription', 'running', chunk=1, chunks=1)
+        if path.endswith('-a.wav'):
+            emit_progress('transcription', 'failed', chunk=1, chunks=1, error_category='quota')
+            raise RuntimeError('SYNTHETIC_SECRET')
+        emit_progress('transcription', 'complete', chunk=1, chunks=1)
+        return 'SYNTHETIC_PRIVATE_TRANSCRIPT'
+    mock.transcribe.side_effect = transcribe
+    monkeypatch.setattr('src.cli.Transcriber', lambda **kwargs: mock)
+    monkeypatch.setattr('src.cli.require_ffmpeg', lambda: None)
+    output = tmp_path / 'output'
+    assert entrypoint(['--input-folder', str(inputs), '--output-folder', str(output), *display]) == 1
+    text = capsys.readouterr().out
+    rows = [json.loads(line) for line in next((output / 'execution-logs').glob('*.jsonl')).read_text().splitlines()]
+    assert [(row['item'], row['stage_status']) for row in rows if row.get('chunk') == 1] == [
+        (1, 'running'), (1, 'failed'), (2, 'running'), (2, 'complete')]
+    assert 'SYNTHETIC_' not in text and str(tmp_path) not in text
+    if '--quiet' in display:
+        assert text == ''
+    elif 'json' in display:
+        assert [json.loads(line) for line in text.splitlines()] == rows
+    else:
+        assert 'Item 1' in text and 'Item 2' in text
+        assert '1 succeeded' in text and '1 failed' in text and '1 errors' in text
+        assert '\x1b' not in text and '\r' not in text

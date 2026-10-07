@@ -81,6 +81,26 @@ class Reporter:
         self.stop = threading.Event()
         self.thread = None
         self.run = uuid.uuid4().hex
+        self.console = None
+        self.console_configured = False
+        self.quiet = False
+
+    def configure_console(self, *, mode='auto', no_color=False, quiet=False):
+        # Nested engine runs share the parent's rendering mode and dashboard.
+        if self.console_configured:
+            return
+        self.console_configured = True
+        self.quiet = quiet
+        terminal = (self.stream is not None and getattr(self.stream, 'isatty', lambda: False)()
+                    and os.environ.get('TERM') != 'dumb')
+        if not quiet and self.stream is not None and (mode == 'plain' or mode == 'auto' and terminal):
+            if __package__:
+                from .console_progress import HumanProgress
+            else:
+                from console_progress import HumanProgress
+            self.console = HumanProgress(self.stream, live=mode == 'auto' and terminal,
+                                         no_color=no_color or 'NO_COLOR' in os.environ,
+                                         scope=self.context.get('scope', 'interview'))
 
     def start(self, directory):
         if self.log is not None:
@@ -136,8 +156,11 @@ class Reporter:
                 event['idle_seconds'] = round(now - self.last, 3)
             else:
                 self.last = now
-                if event.get('stage') != self.active.get('stage'):
+                if 'item' in event and event['item'] != self.active.get('item'):
+                    self.active = {}
+                if any(key in event and event[key] != self.active.get(key) for key in ('stage', 'part', 'family')):
                     self.active.pop('chunk', None)
+                    self.active.pop('chunks', None)
                 self.active.update({k: event[k] for k in ('stage', 'stage_status', 'item', 'part', 'parts', 'chunk', 'chunks') if k in event})
             self.sequence += 1
             line = json.dumps(event, sort_keys=True) + '\n'
@@ -154,9 +177,12 @@ class Reporter:
                         pass
                     self.log = None
                     raise LogError('Local execution logging failed; check permissions and free space.') from None
-            if self.stream is not None:
+            if self.stream is not None and not self.quiet:
                 try:
-                    self.stream.write(line)
+                    if self.console is not None:
+                        self.console.consume(event)
+                    else:
+                        self.stream.write(line)
                     self.stream.flush()
                 except (OSError, ValueError):
                     if self.stream is sys.stdout:
@@ -177,6 +203,11 @@ class Reporter:
         self.stop.set()
         if self.thread is not None:
             self.thread.join()
+        if self.console is not None:
+            try:
+                self.console.close()
+            except (OSError, ValueError):
+                pass
         if self.log is not None:
             try:
                 self.log.close()

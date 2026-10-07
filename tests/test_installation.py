@@ -47,6 +47,7 @@ def test_wheel_namespace_prompts_and_console_scripts(wheel_environment):
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert 'voice_transcription_engine/cli.py' in names
+        assert 'voice_transcription_engine/console_progress.py' in names
         assert 'voice_transcription_engine/batch/runner.py' in names
         assert any(name.startswith('voice_transcription_engine/prompts/') and name.endswith('.txt') for name in names)
         assert 'cli.py' not in names
