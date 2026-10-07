@@ -30,17 +30,17 @@ From the checkout root after `uv sync --locked`:
 
 ```bash
 # Raw transcription only: one combined interview, no editorial model calls.
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --recordings-list private/input/interview_manifest.json \
   --steps raw --output-folder private/ordered-output
 
 # Default raw + faithful polish + author review (JSON and XLSX).
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --recordings-list private/input/interview_manifest.json \
   --output-folder private/ordered-output --resume
 
 # Add both chapter styles; review always runs before chapter drafting.
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --recordings-list private/input/interview_manifest.json \
   --steps raw,polish,review,chapters --chapter-style both \
   --output-folder private/ordered-output --resume
@@ -84,14 +84,14 @@ One output-root lock prevents two invocations from writing the same interview ou
 For independent interviews with optional parallel processing, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands provide an updating terminal panel by default, readable messages with `--progress plain`, or safe stage/part/chunk events with `--progress json`; redirected auto output remains JSON. Exclusive local JSONL logs and idle heartbeats are retained in every display mode. Source paths, user IDs, hints and transcript/provider text are excluded. Use matching source/settings with `--resume`; the batch coordinator resumes automatically. Validated original ASR, speaker-pass, polish, review, and narrative requests are checkpointed. See [recovery controls](recovery-controls.md).
 
 ```bash
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --recordings-list private/input/interview_manifest.json --steps raw \
   --output-folder private/ordered-output --resume \
   --status-interval 30 --request-timeout 120 --request-retries 2
-uv run --locked voice-batch verify --batch-folder private/batches/demo-001
-uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+uv run --locked interview batch verify --batch-folder private/batches/demo-001
+uv run --locked interview batch run --batch-folder private/batches/demo-001 \
   --select entry-a --step review --send-to-openai
-uv run --locked voice-batch status --batch-folder private/batches/demo-001
+uv run --locked interview batch status --batch-folder private/batches/demo-001
 ```
 
 
@@ -99,4 +99,4 @@ When the batch chapter coordinator creates a new chapter generation, it transfer
 
 ## Batch prerequisites and safe failure detail
 
-For `voice-batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.
+For `interview batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.

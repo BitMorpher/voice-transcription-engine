@@ -13,7 +13,7 @@ Use one staged interview with verified complete original ASR. Retain the existin
 A full one-interview 120-second speaker experiment uses no diagnostic caps:
 
 ```bash
-voice-batch run --batch-folder private/batches/demo-001 --select entry-a --step raw \
+interview batch run --batch-folder private/batches/demo-001 --select entry-a --step raw \
   --separate-speakers --speaker-config private/config/speakers-unmapped.json \
   --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
   --speaker-chunk-seconds 120 --parallel-interviews 1 \

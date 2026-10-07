@@ -4,7 +4,7 @@ For a first run, start with [getting started](getting-started.md); the [pipeline
 
 For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
 
-`voice-transcribe --author-workflow --separate-speakers` keeps the current output family and
+`interview transcribe --author-workflow --separate-speakers` keeps the current output family and
 adds a separate attributed family. It uses actual provider speaker segments at
 transcription time; it does not ask a text editor to invent dialogue turns.
 Names alone cannot identify a voice. Initially, voices appear as scoped speaker
@@ -13,24 +13,24 @@ interviewer/interviewee names. Mapping identifies a user-confirmed claim; it doe
 not establish biometric identity or verify the provider's diarization.
 
 ```bash
-voice-transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+interview transcribe --author-workflow --separate-speakers --input private/input/session.wav \
   --output-folder private/output/session --steps raw \
   --interviewer-name "Example Host" --interviewee-name "Example Guest"
 
 # After listening and identifying the provider's A and B voices in request 1:
-voice-transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+interview transcribe --author-workflow --separate-speakers --input private/input/session.wav \
   --output-folder private/output/session --steps raw --resume \
   --interviewer-name "Example Host" --interviewee-name "Example Guest" \
   --speaker-map 1:1:A=interviewer --speaker-map 1:1:B=interviewee
 
 # Select the same additional stages for both output families:
-voice-transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+interview transcribe --author-workflow --separate-speakers --input private/input/session.wav \
   --output-folder private/output/session --steps raw,polish,review --chapter-style both --resume \
   --interviewer-name "Example Host" --interviewee-name "Example Guest" \
   --speaker-map 1:1:A=interviewer --speaker-map 1:1:B=interviewee
 
 # Ordered recordings from one interview are also supported:
-voice-transcribe --author-workflow --separate-speakers --recordings-list private/input/interview.json \
+interview transcribe --author-workflow --separate-speakers --recordings-list private/input/interview.json \
   --output-folder private/output/ordered-session --steps raw,review \
   --interviewer-name "Example Host" --interviewee-name "Example Guest"
 ```
@@ -40,8 +40,8 @@ See [ordered recording inputs](ordered-interviews.md) for the manifest contract.
 local display metadata and are not sent as voice hints to the provider. Name and
 mapping flags without `--separate-speakers`, duplicate or malformed mappings, unsupported
 models, extraction mode, and multiple language hints fail before provider setup.
-`voice-batch run --separate-speakers` also supports a private per-entry speaker configuration
-and unidentified voices when names are absent. The direct `voice-transcribe` CLI
+`interview batch run --separate-speakers` also supports a private per-entry speaker configuration
+and unidentified voices when names are absent. The direct `interview transcribe` CLI
 still requires both names. See [batch media and attribution](batch-media-attribution.md)
 for batch opt-in, configuration and independent human-review gates.
 
@@ -211,4 +211,4 @@ Provider contract checked against official documentation and the locked
 
 ## Batch prerequisites and safe failure detail
 
-For `voice-batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.
+For `interview batch` review/chapters, each requested output family passes its own prerequisites. A blocked family does not prevent another eligible family from proceeding; it receives no approval from that family. Shared original part integrity, complete source-bound review, high-finding rules and actual human chapter approval remain required. Text phases never buy missing audio to satisfy a gate. Original-only review omits interview mode and the speaker configuration. See [batch orchestration](batch-orchestration.md) for mixed complete/blocked status and [recovery controls](recovery-controls.md) for timeout phases and the rule to stop after a failed diagnostic. The direct transcription workflow retains its own stage/dependency behavior.

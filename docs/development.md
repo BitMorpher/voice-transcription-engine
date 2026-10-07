@@ -6,7 +6,11 @@ uv sync --locked
 uv run --locked pytest -q
 uv run --locked ruff check .
 uv build
+uv run --locked interview --help
+uv run --locked interview transcribe --help
+uv run --locked interview batch --help
 uv run --locked voice-transcribe --help
+uv run --locked voice-batch --help
 # Include the optional notebook compatibility roundtrip:
 uv sync --locked --extra notebook
 uv run --locked --extra notebook pytest -q
@@ -16,4 +20,6 @@ Tests generate synthetic tones and color video in temporary folders, mock all pr
 
 Builds produce ignored `dist/` wheel and source archives using the pinned backend. The source archive includes the lock, Python pin and complete offline tests. Source archives may include operating-system ownership metadata; keep them private until inspected. Review archive contents before sharing; no generated media, transcripts, keys, local environment or personal paths belong in a distribution. A clean environment can be checked without disturbing `.venv` using `UV_PROJECT_ENVIRONMENT=private/clean-venv uv sync --locked`. The lock covers declared dependencies across supported Python versions; the validated runtime is CPython 3.14.8 on macOS arm64, not a full operating-system/Python matrix.
 
-Modules: `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Author stages use `src/author_workflow.py`, `src/author_review.py`, `src/review_export.py`, `src/chapters.py`, and packaged versioned prompts; see the [architecture table](author-workflow.md#implementation-and-verification). The wheel packages these source modules under `voice_transcription_engine`; installed entrypoints use relative imports and packaged prompts. `src/batch/` separates plan validation, staging/integrity, phase gates and CLI orchestration; `src/progress.py` handles allowlisted execution logs and idle heartbeats. `src/terminal_progress.py` turns those safe events into readable messages and a live status panel.
+Modules: `src/studio_cli.py` dispatches the unified `interview transcribe` and `interview batch` commands without changing their options or state; `src/cli.py` manages commands, `src/media.py` prepares local audio, `src/pipeline.py` tracks stages, `src/transcriber.py` streams bounded API chunks, `src/private_output.py` writes private artifacts, `src/model_config.py` validates model/hint settings, and `src/text_editing.py` checks bounded faithful edits. Author stages use `src/author_workflow.py`, `src/author_review.py`, `src/review_export.py`, `src/chapters.py`, and packaged versioned prompts; see the [architecture table](author-workflow.md#implementation-and-verification). The wheel packages these source modules under `voice_transcription_engine`; installed entrypoints use relative imports and packaged prompts. `src/batch/` separates plan validation, staging/integrity, phase gates and CLI orchestration; `src/progress.py` handles allowlisted execution logs and idle heartbeats. `src/terminal_progress.py` turns those safe events into readable messages and a live status panel.
+
+The distribution is `interview-studio`; the `voice_transcription_engine` import namespace is intentionally preserved for installed integrations and prompts. `tests/test_studio_cli.py` covers dispatch, help, private diagnostics and child mode gates. Installed-wheel tests exercise both old and new commands, including legacy-created output reuse without extra provider calls. Historical validation notes retain the commands used at the time. See [migration](migration.md) for installation collisions and path handling.

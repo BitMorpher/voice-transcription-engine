@@ -1,8 +1,10 @@
-# Voice Transcription Engine
+# Interview Studio
 
-Turn local audio or video recordings into transcripts, then optionally polish their layout, review passages that need human attention, and draft chapters. The command keeps the original automatic transcript alongside every derived output.
+Turn local audio or video recordings into transcripts, then optionally polish their layout, review passages that need human attention, and draft chapters. Interview Studio keeps the original automatic transcript alongside every derived output, including optional speaker-attributed transcripts. Interview-technique coaching is planned and is not implemented.
 
 Audio preparation runs on your computer. Transcription and optional text processing use the hosted OpenAI API and can incur charges. This project does not run a local speech model.
+
+Formerly **Voice Transcription Engine**. Use `interview transcribe` and `interview batch`; the existing `voice-transcribe` and `voice-batch` commands remain supported with the same options. See the [migration guide](docs/migration.md) for safe installation and compatibility.
 
 ## Start here
 
@@ -14,10 +16,10 @@ Choose the input structure before running a command:
 
 | Your recordings | Use | Result |
 | --- | --- | --- |
-| One audio/video file | `voice-transcribe --pipeline --input ...` | One original transcript. |
-| A folder of unrelated recordings | `voice-transcribe --pipeline --input-folder ...` | One separate job per supported file. |
-| Several recordings from **one interview** | `voice-transcribe --author-workflow --recordings-list ...` | Separate part transcripts and one combined interview in your declared order. |
-| Several **independent interviews**, each with one or more recordings | `voice-batch` with `--batch-plan` | Prepared copies, separate interview results, and optional parallel processing. |
+| One audio/video file | `interview transcribe --pipeline --input ...` | One original transcript. |
+| A folder of unrelated recordings | `interview transcribe --pipeline --input-folder ...` | One separate job per supported file. |
+| Several recordings from **one interview** | `interview transcribe --author-workflow --recordings-list ...` | Separate part transcripts and one combined interview in your declared order. |
+| Several **independent interviews**, each with one or more recordings | `interview batch` with `--batch-plan` | Prepared copies, separate interview results, and optional parallel processing. |
 
 A folder does not combine its files into one interview. An ordered recordings list is a small JSON file whose array defines the order. A batch plan is a JSON file listing independent interviews. The [getting started guide](docs/getting-started.md#choose-the-right-input) includes examples of both files.
 
@@ -32,8 +34,8 @@ uv python install 3.14.8
 uv sync --locked
 ffmpeg -version
 ffprobe -version
-uv run --locked voice-transcribe --help
-uv run --locked voice-batch --help
+uv run --locked interview transcribe --help
+uv run --locked interview batch --help
 ```
 
 Setup can download Python and packages; it does not install FFmpeg or configure credentials. `--locked` uses the committed dependency versions. See [setup](docs/setup.md) for credentials, runtime-only installs, notebooks, and dependency maintenance.
@@ -44,16 +46,16 @@ Keep real recordings under ignored `private/input/` or outside all repositories.
 
 ```bash
 # Prepare audio locally and request the original transcript.
-uv run --locked voice-transcribe --pipeline \
+uv run --locked interview transcribe --pipeline \
   --input private/input/example.mp4 --output-folder private/output
 ```
 
 For a local-only first step, use `--prepare-audio`. To continue the same job later, add `--resume`:
 
 ```bash
-uv run --locked voice-transcribe --prepare-audio \
+uv run --locked interview transcribe --prepare-audio \
   --input private/input/example.mp4 --output-folder private/output
-uv run --locked voice-transcribe --pipeline \
+uv run --locked interview transcribe --pipeline \
   --input private/input/example.mp4 --output-folder private/output --resume
 ```
 
@@ -72,10 +74,10 @@ Bars count completed or verified reused work. A request in progress does not cou
 The author workflow defaults to `raw,polish,review`; it does not create chapters unless you select a chapter style:
 
 ```bash
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --input private/input/example.wav --output-folder private/author-output
 # Same workflow, but review raw text without a polished derivative:
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --input private/input/example.wav --steps raw,review \
   --output-folder private/review-output
 ```
@@ -87,14 +89,14 @@ Polish changes punctuation, capitalization, and layout in a separate file. Revie
 Prepare a fresh private batch folder once, then run one step at a time. Copying sources and sending material to OpenAI each require their named opt-in flags:
 
 ```bash
-uv run --locked voice-batch check --batch-plan private/config/batch-plan.json
-uv run --locked voice-batch prepare --batch-plan private/config/batch-plan.json \
+uv run --locked interview batch check --batch-plan private/config/batch-plan.json
+uv run --locked interview batch prepare --batch-plan private/config/batch-plan.json \
   --batch-folder private/batches/example --copy-local-files
-uv run --locked voice-batch run --batch-folder private/batches/example \
+uv run --locked interview batch run --batch-folder private/batches/example \
   --step raw --send-to-openai
-uv run --locked voice-batch run --batch-folder private/batches/example \
+uv run --locked interview batch run --batch-folder private/batches/example \
   --step review --send-to-openai
-uv run --locked voice-batch status --batch-folder private/batches/example
+uv run --locked interview batch status --batch-folder private/batches/example
 ```
 
 Batch runs resume automatically. Add `--parallel-interviews 2` to overlap two independent interviews after confirming successful processing and your account limits. Their recordings stay in order. Parallelism increases concurrent work; it does not set a rate or spending limit. Read the [batch guide](docs/batch-orchestration.md) for selection, copying, verification, and chapter approval.
@@ -103,7 +105,7 @@ Batch runs resume automatically. Add `--parallel-interviews 2` to overlap two in
 
 Pipeline output lives in `private/output/<opaque-job-id>/`; the original text is `transcription.txt`. Ordered interviews use `parts/` for individual recordings and `interviews/` for combined results. Batch output lives under `item-NNNN/output/`, where the number is the interview's original position in the plan. The [pipeline guide](docs/pipeline-guide.md#find-your-results) explains the output files.
 
-`voice-transcribe --resume` checks sources, settings, and saved files before reusing completed work. Repeat a matching `voice-batch run` command to resume its batch. Changed or damaged completed artifacts cause a conflict; retain them and use a fresh output folder for a deliberate restart. A failed later step keeps earlier validated work. Do not edit manifests or machine-generated review bundles to bypass checks.
+`interview transcribe --resume` checks sources, settings, and saved files before reusing completed work. Repeat a matching `interview batch run` command to resume its batch. Changed or damaged completed artifacts cause a conflict; retain them and use a fresh output folder for a deliberate restart. A failed later step keeps earlier validated work. Do not edit manifests or machine-generated review bundles to bypass checks.
 
 ## Privacy and further guides
 

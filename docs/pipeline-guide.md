@@ -65,10 +65,10 @@ Choose another display when useful:
 
 ```bash
 # Readable messages for a terminal that should not redraw a panel.
-uv run --locked voice-transcribe --pipeline --input private/input/example.wav \
+uv run --locked interview transcribe --pipeline --input private/input/example.wav \
   --output-folder private/output --resume --progress plain
 # Structured events for a script or redirected output.
-uv run --locked voice-batch status --batch-folder private/batches/example --progress json
+uv run --locked interview batch status --batch-folder private/batches/example --progress json
 ```
 
 `auto` keeps JSON events when output is redirected or live terminal control is unavailable. `plain` prints readable scrolling messages. `json` prints sanitized JSON lines. `--status-interval` controls idle heartbeat frequency; it does not change request timeouts.
@@ -95,7 +95,7 @@ find private/interview-output/interviews -type f -name transcription.txt
 find private/batches/example -path '*/interviews/*/transcription.txt'
 ```
 
-Inspect those paths locally; shell output can contain private information. For repeated generations, consult the matching private `manifest.json` for its configuration and recorded stage artifact paths. Terminal events and `voice-batch status` identify execution/position and outcomes rather than disclosing source filenames.
+Inspect those paths locally; shell output can contain private information. For repeated generations, consult the matching private `manifest.json` for its configuration and recorded stage artifact paths. Terminal events and `interview batch status` identify execution/position and outcomes rather than disclosing source filenames.
 
 | Artifact | How to use it |
 | --- | --- |
@@ -114,9 +114,9 @@ Keep machine-generated manifests, raw text, reports, and staged files unchanged.
 **Resume** continues the same processing with matching source paths, models, hints, and section durations. Direct pipeline/workflow commands require `--resume`. Batch run always resumes automatically. The tool validates saved stages and request checkpoints before skipping them, then requests missing work. A reused section consumes no new provider operation.
 
 ```bash
-uv run --locked voice-transcribe --pipeline --input private/input/example.mp4 \
+uv run --locked interview transcribe --pipeline --input private/input/example.mp4 \
   --output-folder private/output --resume
-uv run --locked voice-batch run --batch-folder private/batches/example \
+uv run --locked interview batch run --batch-folder private/batches/example \
   --step raw --send-to-openai
 ```
 
@@ -138,7 +138,7 @@ For batches, chapter drafting requires explicit `--select` IDs, `--human-reviewe
 
 ```bash
 # Run only after listening to recordings and examining this entry's exact report.
-uv run --locked voice-batch run --batch-folder private/batches/example \
+uv run --locked interview batch run --batch-folder private/batches/example \
   --step chapters --select entry-a --human-reviewed \
   --chapter-style both --send-to-openai
 ```

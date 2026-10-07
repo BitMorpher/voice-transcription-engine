@@ -2,7 +2,7 @@
 
 For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
 
-The installed `voice-batch` CLI retains original transcripts and processing defaults.
+The installed `interview batch` CLI retains original transcripts and processing defaults.
 `inventory` and `check` inspect JSON and filesystem metadata only. `prepare` requires
 `--copy-local-files`; `run` requires `--send-to-openai`. Provider and human-review
 gates remain separate. Plans, speaker settings, staging and outputs are private user
@@ -47,7 +47,7 @@ sessions by the user.
 ## Per-entry attribution, with unknown identities by default
 
 ```bash
-voice-batch run --batch-folder private/batches/session-001 --step raw \
+interview batch run --batch-folder private/batches/session-001 --step raw \
   --send-to-openai --separate-speakers
 ```
 
@@ -103,10 +103,10 @@ recording provenance and diarization cache contracts remain version 1.
 ## Independent stages and human approval
 
 ```bash
-voice-batch run --batch-folder private/batches/session-001 --step review \
+interview batch run --batch-folder private/batches/session-001 --step review \
   --send-to-openai --separate-speakers --speaker-config private/config/speakers.json \
   --request-retries 0 --request-timeout 30
-voice-batch run --batch-folder private/batches/session-001 --step chapters \
+interview batch run --batch-folder private/batches/session-001 --step chapters \
   --select entry-a --human-reviewed --send-to-openai --separate-speakers \
   --speaker-config private/config/speakers.json --chapter-style interview
 ```
@@ -146,8 +146,8 @@ Create a fresh dedicated environment rather than replacing an existing user tool
 uv venv --no-project --python 3.14 private/runtimes/session-engine-001
 uv pip install --python private/runtimes/session-engine-001/bin/python \
   --constraints private/config/runtime-constraints.txt \
-  "git+https://github.com/BitMorpher/voice-transcription-engine.git@<reviewed-commit>"
-private/runtimes/session-engine-001/bin/voice-batch --help
+  "git+https://github.com/BitMorpher/interview-studio.git@<reviewed-commit>"
+private/runtimes/session-engine-001/bin/interview batch --help
 ```
 
 Use a constraints file exported from that reviewed commit's lockfile. On Windows,

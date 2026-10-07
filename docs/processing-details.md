@@ -29,12 +29,12 @@ The default output directory is ignored `private/output`. In a Git checkout, the
 - Text is published atomically only after every chunk succeeds. Any failed or malformed chunk fails the whole transcription stage; there is no full-file fallback, error text in the transcript, or silent successful partial transcript.
 - The original audio is streamed into exact PCM frame chunks capped at both 20 MiB and five minutes by default, below the documented 25 MB upload limit. The duration cap is an application choice, configurable with `--audio-chunk-seconds` from 1 to 600 seconds, rather than a claim about the model's duration limit. Every frame, including the final short tail, is processed in order. Fixed boundaries can split speech mid-sentence and affect recognition quality; check the transcript against the recording.
 - A private lock prevents concurrent processing of the same job. If a process is killed, verify that it has stopped before manually deleting its job's `.lock`. A crash between publishing an artifact and recording its checksum produces a safe conflict; use a fresh output directory.
-- Structured progress events (`--progress json`, redirected auto output, and private JSONL logs) show item indices, execution IDs, stage/part/chunk statuses, elapsed time and fixed sanitized guidance. The live panel/plain messages render the same safe events in simple words. All parser errors use fixed diagnostics and declared option names, never supplied values; usage always identifies the CLI as `voice-transcribe`. Recognized flags with accidental `=value`, ambiguous/unknown options, invalid numbers and missing/conflicting options receive safe guidance and `--help`. Errors report a nonzero exit status. Local failures remain isolated; provider admission stops after consecutive failures (default 2), definite account/configuration failures, or explicit start/request limits. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
+- Structured progress events (`--progress json`, redirected auto output, and private JSONL logs) show item indices, execution IDs, stage/part/chunk statuses, elapsed time and fixed sanitized guidance. The live panel/plain messages render the same safe events in simple words. All parser errors use fixed diagnostics and declared option names, never supplied values; usage identifies the fixed command as `interview transcribe` (or `voice-transcribe` for the compatibility entrypoint). Recognized flags with accidental `=value`, ambiguous/unknown options, invalid numbers and missing/conflicting options receive safe guidance and `--help`. Errors report a nonzero exit status. Local failures remain isolated; provider admission stops after consecutive failures (default 2), definite account/configuration failures, or explicit start/request limits. No transcript, source name/path, key, raw provider error, FFmpeg diagnostic, or traceback is logged. Identify failing source items by their position in the sorted supported input list; inspect private artifacts locally. There is no unsafe debug switch.
 
 ## Existing audio folder workflow
 
 ```bash
-uv run --locked voice-transcribe --input_folder private/input --output_folder private/audio-transcripts
+uv run --locked interview transcribe --input_folder private/input --output_folder private/audio-transcripts
 ```
 
 This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` names. Video files remain skipped unless you select pipeline mode. Existing output files, including same-stem collisions, fail rather than overwrite. Resume manifests apply only to pipeline mode.
@@ -44,9 +44,9 @@ This mode processes WAV/MP3/M4A files and preserves `<stem>_transcription.txt` n
 The configured default transcription model is **`gpt-transcribe`**. Optional faithful editing defaults to **`gpt-6-astra`** with high reasoning. These defaults prioritize the project's documented quality goal; they are not an empirical quality claim or benchmark on your recordings. No real audio or paid calls were used to evaluate these models. Check current model availability and pricing before processing real recordings.
 
 ```bash
-uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --transcription-model gpt-transcribe
+uv run --locked interview transcribe --pipeline --input private/input/synthetic.mp4 --transcription-model gpt-transcribe
 # Optional known context and literal terms, supplied by you:
-uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 \
+uv run --locked interview transcribe --pipeline --input private/input/synthetic.mp4 \
   --context-file private/hints/context.txt --glossary-file private/hints/glossary.txt \
   --language en --language fr
 ```
@@ -62,9 +62,9 @@ Application safety limits: context ≤8192 UTF-8 bytes, at most 100 glossary ter
 ## Optional faithful text editing
 
 ```bash
-uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 --polish-text
+uv run --locked interview transcribe --pipeline --input private/input/synthetic.mp4 --polish-text
 # Explicit alternative from the current documented model family:
-uv run --locked voice-transcribe --pipeline --input private/input/synthetic.mp4 \
+uv run --locked interview transcribe --pipeline --input private/input/synthetic.mp4 \
   --polish-text --editing-model gpt-6.1-sol
 ```
 
