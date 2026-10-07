@@ -19,6 +19,7 @@ else:
 
 
 VALIDATION_CATEGORIES = {'validation_schema', 'validation_coverage', 'validation_source',
+                         'validation_quote_missing', 'validation_quote_ambiguous',
                          'validation_diarization', 'completion'}
 
 
@@ -106,6 +107,8 @@ def validated_chat(client, parameters, validate, *, stage, cache=None, index=1):
             result = validate(content)
         except ResponseValidationError as error:
             if error.category not in {'validation_schema', 'validation_coverage'} or attempt >= recoveries:
+                if control:
+                    control.validation_failed(stage, parameters.get('model'))
                 raise
             emit_progress(stage, 'failed', chunk=index, error_category=error.category)
             emit_progress(stage, 'running', chunk=index, validation_retries=attempt + 1)

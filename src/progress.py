@@ -40,7 +40,7 @@ STATUSES = {'started', 'progress', 'running', 'complete', 'failed', 'summary', '
             'skipped', 'interrupted', 'blocked', 'staged', 'verified', 'incomplete', 'pending',
             'not_attempted', 'configuration', 'latest'}
 COUNTERS = {'item', 'part', 'parts', 'chunk', 'chunks', 'processed', 'failed', 'selected',
-            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions', 'validation_retries', 'finished', 'batch_position'}
+            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions', 'validation_retries', 'finished', 'batch_position', 'validation_failures', 'scope_validation_failures'}
 GUIDANCE = ('Check local input permissions, media validity, output space and cache integrity; '
             'for provider stages check OPENAI_API_KEY, model access, quota and connectivity. '
             'Completed caches are retained; repeat interview batch run with matching settings, or use --resume with interview transcribe. '
@@ -85,7 +85,7 @@ def safe_configuration(value):
               'diarization_model': {'gpt-4o-transcribe-diarize'},
               'editing_model': {'gpt-6-astra', 'gpt-6.1-sol'}, 'author_model': {'gpt-6-astra', 'gpt-6.1-sol'}}
     durations = {'audio_chunk_seconds', 'diarization_chunk_seconds', 'provider_timeout', 'max_run_seconds'}
-    counts = {'provider_retries', 'max_provider_requests', 'provider_failure_limit', 'language_hint_count', 'parallel_interviews'}
+    counts = {'provider_retries', 'max_provider_requests', 'provider_failure_limit', 'validation_failure_limit', 'language_hint_count', 'parallel_interviews'}
     flags = {'interview', 'context_supplied', 'glossary_supplied'}
     for key, data in value.items():
         if key in models and isinstance(data, str) and data in models[key]:
@@ -376,7 +376,7 @@ class Reporter:
                     event[key] = value
                 elif key == 'started_at' and isinstance(value, str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+[+]00:00', value):
                     event[key] = value
-                elif key == 'stop_reason' and isinstance(value, str) and value in {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider', 'interrupted'}:
+                elif key == 'stop_reason' and isinstance(value, str) and value in {'request_limit', 'start_deadline', 'provider_failures', 'validation_failures', 'systemic_provider', 'interrupted'}:
                     event[key] = value
                 elif key == 'effective_provider_timeout' and type(value) in (int, float) and math.isfinite(value) and value > 0:
                     event[key] = value

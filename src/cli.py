@@ -259,6 +259,8 @@ def transcription_parser(*, studio=False):
                            metavar='SECONDS', help='Stop starting new requests after this many seconds; requires zero retries. Requests already running are not cancelled; omit for full runs.')
     execution.add_argument('--failure-limit', '--provider-failure-limit', dest='provider_failure_limit', type=int, default=2,
                            metavar='COUNT', help='Stop new requests after consecutive failures for one service/model (default: 2); account/configuration failures stop immediately.')
+    execution.add_argument('--validation-failure-limit', type=int, default=3,
+                           metavar='COUNT', help='Stop new requests after this many terminal text-validation failures in one stage/model across workers (default: 3); counts after recovery, never resets on SDK success.')
     compatibility = parser.add_argument_group('Compatibility')
     compatibility.add_argument('--format-as-interview', '--format_as_interview', dest='format_as_interview', action='store_true',
                                help='Legacy audio-folder layout option; never assigns speaker roles. Use --polish-text for new commands. Underscore spellings remain accepted.')
@@ -323,6 +325,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
         if CURRENT_CONTROL.get() is None:
             CURRENT_CONTROL.set(ProviderControl(max_requests=args.max_provider_requests,
                 max_seconds=args.max_run_seconds, failure_limit=args.provider_failure_limit,
+                validation_failure_limit=args.validation_failure_limit,
                 retries=args.provider_retries))
         if interview_options_override is not None and (type(interview_options_override) is not InterviewOptions
                 or not args.workflow or args.interview_manifest is None or args.interview
@@ -355,7 +358,8 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                 'diarization_chunk_seconds': (interview_options.diarization_chunk_seconds if interview_options else None) or options.chunk_seconds,
                 'provider_timeout': args.provider_timeout, 'provider_retries': args.provider_retries,
                 'max_provider_requests': args.max_provider_requests, 'max_run_seconds': args.max_run_seconds,
-                'provider_failure_limit': args.provider_failure_limit, 'interview': bool(interview_options),
+                'provider_failure_limit': args.provider_failure_limit,
+                'validation_failure_limit': args.validation_failure_limit, 'interview': bool(interview_options),
                 'context_supplied': bool(args.context_file), 'glossary_supplied': bool(args.glossary_file),
                 'language_hint_count': len(options.languages)})
         if interview_options and (len(args.language) > 1 or any(len(code) != 2 for code in args.language)):

@@ -26,7 +26,7 @@ def integrity_job(tmp_path):
     def respond(**kwargs):
         payload = json.loads(kwargs['messages'][-1]['content'])
         body = {'chunk_index': payload['chunk_index'], 'fully_reviewed': True,
-                'reviewed_start': payload['core_start'], 'reviewed_end': payload['core_end'],
+                'contract_version': payload['contract_version'], 'reviewed_piece_ids': payload['core_piece_ids'],
                 'findings': []}
         return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
             message=SimpleNamespace(content=json.dumps(body), refusal=None))])
