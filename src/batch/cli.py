@@ -119,6 +119,8 @@ def parser(*, studio=False):
                            metavar='SECONDS', help='Stop starting new requests after this many seconds; requires zero retries. Requests already running are not cancelled; omit for full runs.')
     execution.add_argument('--failure-limit', '--provider-failure-limit', dest='provider_failure_limit', type=int, default=2,
                            metavar='COUNT', help='Stop new requests after consecutive failures for one service/model (default: 2); account/configuration failures stop immediately.')
+    execution.add_argument('--validation-failure-limit', type=int, default=3,
+                           metavar='COUNT', help='Stop new requests after this many terminal text-validation failures in one stage/model across workers (default: 3); counts after recovery, never resets on SDK success.')
     return value
 
 
@@ -130,7 +132,7 @@ def execute(args, reporter):
                 and args.diarization_chunk_seconds is None and not args.confirm_speaker_mappings)),
             'Speaker options require run --interview.')
     require(args.action == 'run' or (args.max_provider_requests is None and args.max_run_seconds is None
-            and args.provider_failure_limit == 2), 'Provider controls require run.')
+            and args.provider_failure_limit == 2 and args.validation_failure_limit == 3), 'Provider controls require run.')
     root = args.batch.absolute() if args.batch else None
     existing = args.action in {'verify', 'run', 'status'}
     require((existing and root is not None and args.plan is None)
@@ -177,6 +179,7 @@ def execute(args, reporter):
         try:
             control = ProviderControl(max_requests=args.max_provider_requests,
                 max_seconds=args.max_run_seconds, failure_limit=args.provider_failure_limit,
+                validation_failure_limit=args.validation_failure_limit,
                 retries=args.provider_retries)
         except ValueError:
             raise BatchError('Provider request/time limits require --provider-retries 0 and positive limits.') from None
@@ -190,7 +193,8 @@ def execute(args, reporter):
             'diarization_chunk_seconds': args.diarization_chunk_seconds or args.audio_chunk_seconds,
             'provider_timeout': args.provider_timeout, 'provider_retries': args.provider_retries,
             'max_provider_requests': args.max_provider_requests, 'max_run_seconds': args.max_run_seconds,
-            'provider_failure_limit': args.provider_failure_limit, 'interview': args.interview,
+            'provider_failure_limit': args.provider_failure_limit,
+            'validation_failure_limit': args.validation_failure_limit, 'interview': args.interview,
             'parallel_interviews': args.parallel_interviews,
             'context_supplied': bool(args.context_file), 'glossary_supplied': bool(args.glossary_file),
             'language_hint_count': len(args.language)})

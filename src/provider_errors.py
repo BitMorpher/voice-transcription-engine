@@ -22,6 +22,8 @@ GUIDANCE.update({
     'validation_schema': 'Response shape, JSON or request index was invalid; validated checkpoints are retained.',
     'validation_coverage': 'Response did not acknowledge exact requested coverage; no complete review is claimed.',
     'validation_source': 'Response changed source words or supplied a non-exact excerpt; retain original source and inspect private artifacts.',
+    'validation_quote_missing': 'Exact quote was absent from its referenced source pieces; no finding or failed response was cached.',
+    'validation_quote_ambiguous': 'Quote had multiple occurrences in its referenced source pieces; explicit disambiguation is required.',
     'validation_diarization': 'Local speaker-response validation failed; no complete attribution is claimed.',
 })
 CATEGORIES.update(GUIDANCE)

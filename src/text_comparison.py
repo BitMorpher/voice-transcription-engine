@@ -31,7 +31,7 @@ from .transcriber import Transcriber
 
 STAGES = ('polish', 'attributed-polish', 'review')
 MAX_INPUT_BYTES = 65536
-FIXTURE_VERSION = 'synthetic-text-v1'
+FIXTURE_VERSION = 'synthetic-text-v2'
 SAFE_STORAGE = 'Comparison output conflicts, changed, or is locked; use fresh private output. No saved artifact was overwritten.'
 
 
@@ -99,6 +99,13 @@ class SyntheticClient:
         elif schema_name == 'faithful_transcript_edit':
             payload = {**supplied, 'speaker_uncertain': False}
         elif schema_name == 'source_grounded_author_review':
+            pieces, cursor = [], 0
+            for piece in supplied['evidence_pieces']:
+                end = cursor + len(piece['text'])
+                pieces.append({**piece, 'start': cursor, 'end': end})
+                cursor = end
+            text = ''.join(p['text'] for p in pieces)
+            core = [p for p in pieces if p['piece_id'] in supplied['core_piece_ids']]
             findings = []
             for excerpt, reason in (
                 ('I think that was unfair.', 'personal_opinion'),
@@ -108,18 +115,34 @@ class SyntheticClient:
                 ('दिन café क़ 가 ΐ 👩\u200d💻 €100.', 'ambiguity_wording'),
             ):
                 offset = 0
-                while (start := supplied['text'].find(excerpt, offset)) >= 0:
+                while (start := text.find(excerpt, offset)) >= 0:
                     end = start + len(excerpt)
                     offset = end
-                    if start >= supplied['core_end'] or end <= supplied['core_start']:
+                    if start >= core[-1]['end'] or end <= core[0]['start']:
                         continue
+                    # Repeated synthetic speech includes unique turn headers.
+                    # Expand exact context until the declared reference is unique.
+                    left, right = start, end
+                    while True:
+                        selected = [p for p in pieces if p['start'] < right and p['end'] > left]
+                        quote = text[left:right]
+                        referenced = text[selected[0]['start']:selected[-1]['end']]
+                        position = referenced.find(quote)
+                        if referenced.find(quote, position + 1) < 0:
+                            break
+                        if left > 0:
+                            left -= 1
+                        elif right < len(text):
+                            right += 1
+                        else:
+                            raise ComparisonError('Synthetic evidence could not be disambiguated.')
                     category, severity, *_ = REASONS[reason]
                     findings.append({'category': category, 'severity': severity,
-                                     'reason_code': reason, 'excerpt': excerpt,
-                                     'start': start, 'end': end})
+                                     'reason_code': reason, 'excerpt': quote,
+                                     'piece_ids': [p['piece_id'] for p in selected]})
             payload = {'chunk_index': supplied['chunk_index'], 'fully_reviewed': True,
-                       'reviewed_start': supplied['core_start'],
-                       'reviewed_end': supplied['core_end'], 'findings': findings}
+                       'contract_version': supplied['contract_version'],
+                       'reviewed_piece_ids': supplied['core_piece_ids'], 'findings': findings}
         else:
             raise ComparisonError('Synthetic provider received an unsupported schema.')
         return SimpleNamespace(choices=[SimpleNamespace(
@@ -302,7 +325,8 @@ def _quality(case, raw, turns, output, mode):
         return {'exact_source_valid': exact,
                 'complete_source_acknowledgement': output['coverage']['complete'],
                 'findings': len(output['findings']),
-                'validation_source_failures': sum(item.get('error_category') == 'validation_source'
+                'validation_source_failures': sum(item.get('error_category') in {
+                    'validation_source', 'validation_quote_missing', 'validation_quote_ambiguous'}
                                                   for item in chunks),
                 'validation_failures': sum(item.get('error_category', '').startswith('validation')
                                            for item in chunks),
@@ -325,7 +349,8 @@ def _quality(case, raw, turns, output, mode):
 
 def run_comparison(raw, turns, output_dir, cases, *, mode='synthetic', resume=False,
                    chunk_bytes=6000, provider_timeout=120, provider_retries=0,
-                   provider_failure_limit=2, max_provider_requests=None, client=None):
+                   provider_failure_limit=2, validation_failure_limit=3,
+                   max_provider_requests=None, client=None):
     """Run only supplied text; no audio, chapter stage, media lookup or batch mutation."""
     if mode not in {'synthetic', 'openai'} or not isinstance(raw, str) or not raw.strip():
         raise ComparisonError('Comparison requires nonempty UTF-8 text and a documented provider mode.')
@@ -337,7 +362,8 @@ def run_comparison(raw, turns, output_dir, cases, *, mode='synthetic', resume=Fa
         raise ComparisonError('Attributed comparison requires the built-in synthetic turn fixture.')
     root = output_directory(output_dir)
     control = ProviderControl(max_requests=max_provider_requests, retries=provider_retries,
-                              failure_limit=provider_failure_limit)
+                              failure_limit=provider_failure_limit,
+                              validation_failure_limit=validation_failure_limit)
     prepared = []
     with interruptions(), _lock(root):
         # Validate all saved cases and all saved request checkpoints before a live
@@ -459,6 +485,8 @@ def parser():
                              'validation recovery may add one operation when retries are enabled.')
     result.add_argument('--failure-limit', '--provider-failure-limit', dest='provider_failure_limit', type=int, default=2,
                         help='Stop later operations after this many consecutive failures per model (default: 2).')
+    result.add_argument('--validation-failure-limit', type=int, default=3,
+                        help='Stop later operations after this many terminal text-validation failures in one stage/model (default: 3).')
     result.add_argument('--max-requests', '--max-provider-requests', dest='max_provider_requests', type=int,
                         help='Optional total SDK-operation admission cap across cases; requires retries 0.')
     return result
@@ -490,6 +518,7 @@ def main(argv=None):
             mode='openai' if args.send_to_openai else 'synthetic', resume=args.resume,
             chunk_bytes=args.chunk_bytes, provider_timeout=args.request_timeout,
             provider_retries=args.provider_retries, provider_failure_limit=args.provider_failure_limit,
+            validation_failure_limit=args.validation_failure_limit,
             max_provider_requests=args.max_provider_requests)
         print(_json(report), end='')
         return 0 if all(case['status'] == 'complete' for case in report['cases']) else 1

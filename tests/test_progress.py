@@ -140,7 +140,7 @@ def test_review_per_chunk_events_and_privacy():
     def respond(**kwargs):
         supplied = json.loads(kwargs['messages'][-1]['content'])
         body = {'chunk_index': supplied['chunk_index'], 'fully_reviewed': True,
-                'reviewed_start': supplied['core_start'], 'reviewed_end': supplied['core_end'], 'findings': []}
+                'contract_version': supplied['contract_version'], 'reviewed_piece_ids': supplied['core_piece_ids'], 'findings': []}
         return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(
             content=json.dumps(body), refusal=None))])
     client.chat.completions.create.side_effect = respond

@@ -101,8 +101,9 @@ class FakeProvider:
         elif name == 'faithful_turn_group_edit':
             result = dict(group_index=body['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in body['turns']])
         elif name == 'source_grounded_author_review':
+            body['text'] = ''.join(p['text'] for p in body['evidence_pieces'])
             result = dict(chunk_index=body['chunk_index'], fully_reviewed=True,
-                          reviewed_start=body['core_start'], reviewed_end=body['core_end'], findings=[])
+                          contract_version=body['contract_version'], reviewed_piece_ids=body['core_piece_ids'], findings=[])
         else:
             result = dict(chunk_index=body['chunk_index'], passages=[dict(unit_ids=[unit['unit_id']],
                 text=unit['text'].strip(), kind='verbatim_excerpt') for unit in body['source_units']], coverage_omissions=[])

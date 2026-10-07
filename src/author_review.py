@@ -29,8 +29,9 @@ else:
     from transcriber import _suppress_provider_logging
 
 
-PROMPT_VERSION = 'author-review-v1'
-REVIEW_CONTRACT = 1
+PROMPT_VERSION = 'author-review-v2'
+REVIEW_CONTRACT = 2
+EVIDENCE_BYTES = 1024
 CATEGORIES = ('criticism', 'allegation', 'sensitive_personal_information', 'disputed_fact',
               'uncertain_attribution', 'wording_ambiguity')
 # Local prose prevents a model's explanatory text from inventing names or evidence.
@@ -81,15 +82,21 @@ def _hash(value):
         raise ReviewError('Author-review text must be valid UTF-8.') from None
 
 
-def _prompt():
+def _prompt(version=REVIEW_CONTRACT):
     try:
-        return files(prompts).joinpath('author_review_v1.txt').read_text(encoding='utf-8')
+        return files(prompts).joinpath(f'author_review_v{version}.txt').read_text(encoding='utf-8')
     except (OSError, UnicodeError):
         raise ReviewError('The packaged author-review prompt is unavailable.') from None
 
 
-def review_schema(index):
-    """Provider schema plus independent local validation; all properties required."""
+def review_schema(index, piece_ids=None, core_ids=None):
+    """Versioned quote references; character positions are calculated locally."""
+    reference = {'type': 'string'}
+    if piece_ids is not None:
+        reference['enum'] = piece_ids
+    reviewed = {'type': 'string'}
+    if core_ids is not None:
+        reviewed['enum'] = core_ids
     finding = {
         'type': 'object', 'additionalProperties': False,
         'properties': {
@@ -97,9 +104,9 @@ def review_schema(index):
             'severity': {'type': 'string', 'enum': ['low', 'medium', 'high']},
             'reason_code': {'type': 'string', 'enum': list(REASONS)},
             'excerpt': {'type': 'string'},
-            'start': {'type': 'integer'}, 'end': {'type': 'integer'},
+            'piece_ids': {'type': 'array', 'items': reference},
         },
-        'required': ['category', 'severity', 'reason_code', 'excerpt', 'start', 'end'],
+        'required': ['category', 'severity', 'reason_code', 'excerpt', 'piece_ids'],
     }
     return {
         'type': 'json_schema',
@@ -108,14 +115,14 @@ def review_schema(index):
             'schema': {
                 'type': 'object', 'additionalProperties': False,
                 'properties': {
+                    'contract_version': {'type': 'integer', 'enum': [REVIEW_CONTRACT]},
                     'chunk_index': {'type': 'integer', 'enum': [index]},
                     'fully_reviewed': {'type': 'boolean'},
-                    'reviewed_start': {'type': 'integer'},
-                    'reviewed_end': {'type': 'integer'},
+                    'reviewed_piece_ids': {'type': 'array', 'items': reviewed},
                     'findings': {'type': 'array', 'items': finding},
                 },
-                'required': ['chunk_index', 'fully_reviewed', 'reviewed_start',
-                             'reviewed_end', 'findings'],
+                'required': ['contract_version', 'chunk_index', 'fully_reviewed',
+                             'reviewed_piece_ids', 'findings'],
             },
         },
     }
@@ -141,6 +148,7 @@ class ReviewOptions:
             'contract': REVIEW_CONTRACT, 'prompt_version': PROMPT_VERSION,
             'prompt_sha256': _hash(_prompt()), 'schema': review_schema(1),
             'reasons': REASONS, 'segmentation': 'lines-v1', 'context': 'one-core-each-side-v1',
+            'evidence': 'core-split-pieces-v1', 'evidence_bytes': EVIDENCE_BYTES,
             **asdict(self),
         }, sort_keys=True, ensure_ascii=False))
 
@@ -173,8 +181,69 @@ def _chunks(raw, limit):
                'context_end': cores[min(len(cores) - 1, index + 1)][1]}
 
 
+def _evidence_pieces(raw, chunk):
+    """Partition each core/context neighbor exactly into byte-bounded pieces.
+
+    IDs bind absolute source spans; source/request hashes bind their contents.
+    Core boundaries are also piece boundaries, making coverage unambiguous.
+    The same neighbor core has the same IDs in adjacent requests. Short lines
+    stay together to bound ID/schema overhead; long sentences may span pieces.
+    """
+    pieces = []
+    boundaries = sorted({chunk['context_start'], chunk['start'], chunk['end'], chunk['context_end']})
+    for left, right in zip(boundaries, boundaries[1:]):
+        offset = left
+        for text in split_text(raw[left:right], EVIDENCE_BYTES):
+            stop = offset + len(text)
+            pieces.append({'piece_id': f'evidence-{offset:09d}-{stop:09d}',
+                           'start': offset, 'end': stop, 'text': text})
+            offset = stop
+    return pieces
+
+
+def _payload(raw, chunk):
+    pieces = _evidence_pieces(raw, chunk)
+    core_ids = [p['piece_id'] for p in pieces
+                if chunk['start'] <= p['start'] and p['end'] <= chunk['end']]
+    return {'contract_version': REVIEW_CONTRACT, 'chunk_index': chunk['chunk_index'],
+            'evidence_pieces': [{'piece_id': p['piece_id'], 'text': p['text']} for p in pieces],
+            'core_piece_ids': core_ids}
+
+
+def _resolve_quote(finding, pieces, chunk, raw):
+    """Resolve one unique exact occurrence in the declared contiguous pieces.
+
+    Repeated text needs a smaller piece reference or a longer exact quote.
+    Never choose an occurrence, normalize a quote, or fabricate an offset.
+    """
+    ids = finding['piece_ids']
+    if (not isinstance(ids, list) or not ids or any(not isinstance(i, str) for i in ids)
+            or len(set(ids)) != len(ids)):
+        raise ReviewError('Author-review evidence references were invalid.', category='validation_source')
+    positions = {p['piece_id']: index for index, p in enumerate(pieces)}
+    if any(i not in positions for i in ids):
+        raise ReviewError('Author-review evidence reference was unavailable.', category='validation_source')
+    indexes = [positions[i] for i in ids]
+    if indexes != list(range(indexes[0], indexes[0] + len(indexes))):
+        raise ReviewError('Author-review evidence references were not contiguous.', category='validation_source')
+    selected = pieces[indexes[0]:indexes[-1] + 1]
+    left, right = selected[0]['start'], selected[-1]['end']
+    excerpt = finding['excerpt']
+    text = raw[left:right]
+    position = text.find(excerpt)
+    if position < 0:
+        raise ReviewError('Author-review quote was absent from referenced source.', category='validation_quote_missing')
+    if text.find(excerpt, position + 1) >= 0:
+        raise ReviewError('Author-review quote had multiple source occurrences.', category='validation_quote_ambiguous')
+    start, end = left + position, left + position + len(excerpt)
+    if (start >= selected[0]['end'] or end <= selected[-1]['start']
+            or start >= chunk['end'] or end <= chunk['start']):
+        raise ReviewError('Author-review quote did not intersect its references and core.', category='validation_source')
+    return start, end
+
+
 def _validate(content, chunk, raw):
-    """Reject invented excerpts, non-exact coverage, schema drift and truncation."""
+    """Reject invented/ambiguous quotes, incomplete coverage and schema drift."""
     def unique_object(pairs):
         value = {}
         for name, item in pairs:
@@ -185,41 +254,39 @@ def _validate(content, chunk, raw):
 
     try:
         result = json.loads(content, object_pairs_hook=unique_object)
-        expected = {'chunk_index', 'fully_reviewed', 'reviewed_start', 'reviewed_end', 'findings'}
-        context_start, context_end = chunk['context_start'], chunk['context_end']
-        core_start, core_end = chunk['start'] - context_start, chunk['end'] - context_start
+        expected = {'contract_version', 'chunk_index', 'fully_reviewed', 'reviewed_piece_ids', 'findings'}
         if (not isinstance(result, dict) or set(result) != expected
+                or type(result['contract_version']) is not int
+                or result['contract_version'] != REVIEW_CONTRACT
                 or type(result['chunk_index']) is not int
                 or result['chunk_index'] != chunk['chunk_index']
                 or type(result['fully_reviewed']) is not bool
-                or type(result['reviewed_start']) is not int
-                or type(result['reviewed_end']) is not int
+                or not isinstance(result['reviewed_piece_ids'], list)
                 or not isinstance(result['findings'], list)):
             raise ValueError()
-        if (not result['fully_reviewed'] or result['reviewed_start'] != core_start
-                or result['reviewed_end'] != core_end):
+        payload = _payload(raw, chunk)
+        if (not result['fully_reviewed']
+                or result['reviewed_piece_ids'] != payload['core_piece_ids']):
             raise ReviewError('Author-review response did not cover the exact core.', category='validation_coverage')
+        pieces = _evidence_pieces(raw, chunk)
         validated = []
         for finding in result['findings']:
             if (not isinstance(finding, dict)
-                    or set(finding) != {'category', 'severity', 'reason_code', 'excerpt', 'start', 'end'}
+                    or set(finding) != {'category', 'severity', 'reason_code', 'excerpt', 'piece_ids'}
                     or not isinstance(finding['reason_code'], str)
                     or finding['reason_code'] not in REASONS
-                    or type(finding['start']) is not int or type(finding['end']) is not int
                     or not isinstance(finding['excerpt'], str)):
                 raise ValueError()
             category, severity, *_ = REASONS[finding['reason_code']]
-            start, end = finding['start'], finding['end']
-            if (finding['category'] != category or finding['severity'] != severity
-                    or not 0 <= start < end <= context_end - context_start
-                    or start >= core_end or end <= core_start
-                    or not finding['excerpt'].strip()
-):
+            if finding['category'] != category or finding['severity'] != severity:
                 raise ValueError()
-            if raw[context_start + start:context_start + end] != finding['excerpt']:
-                raise ReviewError('Author-review excerpt was not exact source text.', category='validation_source')
-            validated.append({**finding, 'start': context_start + start,
-                              'end': context_start + end})
+            if not finding['excerpt'].strip():
+                raise ReviewError('Author-review quote contained no source evidence.',
+                                  category='validation_quote_missing')
+            start, end = _resolve_quote(finding, pieces, chunk, raw)
+            validated.append({key: finding[key] for key in
+                              ('category', 'severity', 'reason_code', 'excerpt')} |
+                             {'start': start, 'end': end})
         return validated
     except ResponseValidationError:
         raise
@@ -239,11 +306,11 @@ def validate_review_report(raw, report, options=None):
         if (not isinstance(report, dict) or report['status'] != 'complete'
                 or report['raw_sha256'] != source_hash or report['segments'] != segments
                 or type(report['schema_version']) is not int
-                or report['schema_version'] != REVIEW_CONTRACT
+                or report['schema_version'] not in (1, REVIEW_CONTRACT)
                 or report['human_review_required'] is not True
                 or report['flags_are_proof'] is not False
-                or report['prompt_version'] != PROMPT_VERSION
-                or report['prompt_sha256'] != _hash(_prompt())
+                or report['prompt_version'] != f"author-review-v{report['schema_version']}"
+                or report['prompt_sha256'] != _hash(_prompt() if report['schema_version'] == REVIEW_CONTRACT else _prompt(1))
                 or report['model'] not in EDITING_MODELS
                 or ('reasoning_effort' in report and report['reasoning_effort'] not in REASONING_EFFORTS)
                 or not isinstance(report['findings'], list)):
@@ -266,14 +333,18 @@ def validate_review_report(raw, report, options=None):
                     or not 0 <= chunk['context_start'] <= cursor < chunk['end']
                     <= chunk['context_end'] <= len(raw)):
                 raise ValueError()
+            if report['schema_version'] == REVIEW_CONTRACT:
+                if chunk.get('reviewed_piece_ids') != _payload(raw, chunk)['core_piece_ids']:
+                    raise ValueError()
             cursor = chunk['end']
         if cursor != len(raw):
             raise ValueError()
         if options is not None:
-            if (report['model'] != options.model
+            if (report['schema_version'] != REVIEW_CONTRACT or report['model'] != options.model
                     or ('reasoning_effort' in report and report['reasoning_effort'] != options.reasoning_effort)
                     or report['settings_fingerprint'] != options.fingerprint
-                    or coverage['chunks'] != [{**chunk, 'status': 'complete'}
+                    or coverage['chunks'] != [{**chunk, 'status': 'complete',
+                                               'reviewed_piece_ids': _payload(raw, chunk)['core_piece_ids']}
                                                for chunk in _chunks(raw, options.chunk_bytes)]):
                 raise ValueError()
         seen = set()
@@ -316,19 +387,17 @@ def review_transcript(raw, client, options=None, *, checkpoint_root=None):
     requests = list(_chunks(raw, options.chunk_bytes))
     parameters, validators = [], []
     for chunk in requests:
-        payload = {'chunk_index': chunk['chunk_index'],
-                   'text': raw[chunk['context_start']:chunk['context_end']],
-                   'core_start': chunk['start'] - chunk['context_start'],
-                   'core_end': chunk['end'] - chunk['context_start']}
+        payload = _payload(raw, chunk)
         parameters.append(dict(model=options.model,
             messages=[{'role': 'system', 'content': prompt},
                       {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
-            response_format=review_schema(chunk['chunk_index']),
+            response_format=review_schema(chunk['chunk_index'],
+                [p['piece_id'] for p in payload['evidence_pieces']], payload['core_piece_ids']),
             extra_body={'reasoning_effort': options.reasoning_effort,
                         'max_completion_tokens': 32768, 'store': False}))
         validators.append(lambda content, chunk=chunk: _validate(content, chunk, raw))
     cache = TextRequestCache(checkpoint_root,
-        text_binding('author_review', raw, options.fingerprint, validator_contract=1),
+        text_binding('author_review', raw, options.fingerprint, validator_contract=REVIEW_CONTRACT),
         parameters, validators) if checkpoint_root else None
     for chunk in requests:
         index = chunk['chunk_index']
@@ -345,7 +414,8 @@ def review_transcript(raw, client, options=None, *, checkpoint_root=None):
                 ranks = {'low': 0, 'medium': 1, 'high': 2}
                 if previous is None or ranks[finding['severity']] > ranks[previous['severity']]:
                     findings[key] = finding
-            chunks.append({**chunk, 'status': 'complete'})
+            chunks.append({**chunk, 'status': 'complete',
+                           'reviewed_piece_ids': _payload(raw, chunk)['core_piece_ids']})
         except ChunkCacheError:
             raise  # Integrity failures never become retryable provider failures.
         except ResponseValidationError as error:
