@@ -30,7 +30,7 @@ Both installed commands accept:
 | `--max-run-seconds S` | Stop admitting new provider operations after S elapsed seconds from control initialization, including intervening local work. |
 | `--failure-limit N` | Stop after N consecutive provider-operation failures for the same endpoint/model, default 2. A successful operation resets that scope’s streak; successful original ASR does not erase diarization failures. Definite authentication/permission/model/request/quota errors stop admission immediately. |
 | `--validation-failure-limit N` | Stop all new provider admissions when one text stage/model reaches N cumulative terminal validation failures in this invocation, default 3. Separate from the provider failure streak; SDK or validated success does not reset it. |
-| `--request-retries N` | SDK retries per operation; existing default 2. When greater than zero, eligible local schema/coverage, polish preservation and review quote failures may start one additional application operation. Request/time limits require explicit zero and disable that recovery. |
+| `--request-retries N` | SDK retries per operation; existing default 2. When greater than zero, eligible local schema/coverage, polish preservation, review quote and eligible chapter wording failures may start one additional application operation. Request/time limits require explicit zero and disable that recovery. |
 | `--request-timeout S` | Per-I/O SDK timeout, default 120 seconds. With a start deadline it is reduced to the remaining admission window for each new operation. |
 
 The request counter measures application SDK starts, not money or tokens. Zero retries prevents the SDK's automatic retry attempts; redirects, custom transports and provider billing behavior are not dollar guarantees. With retries enabled, one counted operation may include several HTTP attempts before the application observes failure. The circuit breaker observes the final operation result, not each SDK retry.
@@ -133,7 +133,7 @@ A finding supplies an exact `excerpt` and ordered contiguous `piece_ids`. Python
 
 Coverage is explicit: the response copies `contract_version` and `chunk_index`; `fully_reviewed=true` requires `reviewed_piece_ids` to equal the supplied `core_piece_ids` exactly, in order. Context IDs, omissions, duplicates or a different version cannot satisfy coverage. `fully_reviewed=false` remains incomplete. Validated complete chunks record these IDs in report coverage. An exact acknowledgement is a structural record, not proof that the model detected every relevant issue.
 
-`--validation-failure-limit` defaults to **3** and accepts positive integers. Each final local text-validation failure counts once, after the single eligible correction is exhausted, or immediately for non-retryable failures such as refusal/truncation or chapter source violations. Intermediate recovery failures that subsequently succeed do not count. SDK exceptions, cache integrity errors, media failures, cache hits and denied recoveries do not count. All parallel workers share cumulative counts per text stage/model: original and attributed requests using the same stage/model share a count; different stages or models do not pool failures. SDK successes and validated successes never reset counts. When any one scope reaches its threshold, `stop_reason=validation_failures` closes provider admissions for the entire invocation and prevents new batch-session scheduling. Already admitted requests drain and can save valid checkpoints; late success cannot reopen admission. Remaining work is incomplete or not attempted. A fresh invocation resets the observations and reuses matching verified checkpoints. The existing provider breaker remains independent.
+`--validation-failure-limit` defaults to **3** and accepts positive integers. Each final local text-validation failure counts once, after the single eligible correction is exhausted, or immediately for non-retryable failures such as refusal/truncation or invalid chapter references/order/kinds. Intermediate recovery failures that subsequently succeed do not count. SDK exceptions, cache integrity errors, media failures, cache hits and denied recoveries do not count. All parallel workers share cumulative counts per text stage/model: original and attributed requests using the same stage/model share a count; different stages or models do not pool failures. SDK successes and validated successes never reset counts. When any one scope reaches its threshold, `stop_reason=validation_failures` closes provider admissions for the entire invocation and prevents new batch-session scheduling. Already admitted requests drain and can save valid checkpoints; late success cannot reopen admission. Remaining work is incomplete or not attempted. A fresh invocation resets the observations and reuses matching verified checkpoints. The existing provider breaker remains independent.
 
 Safe events distinguish `validation_quote_missing`, `validation_quote_ambiguous`, `validation_source`, `validation_schema`, `validation_coverage` and `completion`. `validation_failures` and `scope_validation_failures` count terminal decisions; SDK-operation and retry counters retain their existing meanings. No quotes, arbitrary IDs, exception prose, keys or invalid response bodies enter logs. Invalid responses are never saved in the trusted checkpoint cache, and this change adds no diagnostic body retention.
 
@@ -152,4 +152,50 @@ Every event now includes `timestamp_utc`, generated locally, alongside monotonic
 
 A retry-in-progress is not a terminal error. A primary terminal failure remains failed even when it trips the breaker. Other started families stopped only by admission are incomplete; families and chunks never requested are not attempted. Queued sessions remain not attempted. The review workbook accepts these coverage states and continues to block chapter drafting. Review resume drains later verified checkpoints even when an earlier missing chunk cannot be requested, preserving their findings and coverage in the current report. All prior bundles and valid checkpoint bytes remain intact.
 
-These changes preserve the v2 review prompt/schema, grouped-edit contract and all base request fingerprints. Correction policy affects only failed requests; valid old derivatives and checkpoints need no migration or regeneration. A correction result is saved under the unchanged base request only after its full source validator and, for review evidence correction, finding-retention guard pass. No invalid response enters that cache.
+These changes preserve the v2 review prompt/schema, grouped-edit contract and all base request fingerprints. Correction policy affects only failed requests; valid old derivatives and checkpoints need no migration or regeneration. A correction result is saved under the unchanged base request only after its full source validator and the applicable review-finding or chapter-layout retention guard pass. No invalid response enters that cache.
+
+
+## Chapter wording correction
+
+Narrative chapters allow one additional application operation when retries are nonzero and
+all passage references, unit order, passage kinds, omission reasons and full coverage already
+validate, but passage text fails exact-excerpt, word/symbol or quotation checks. The correction
+must retain the exact passage count/order, kinds, unit IDs and omissions/reasons. It cannot
+remove, regroup or relabel testimony to hide a failure. Both the full original validator and
+this retention guard must pass before the replacement enters the original request checkpoint.
+Rejected responses remain only in memory; logs and checkpoints never retain their bodies.
+Invalid references/order/kinds remain non-retryable source errors. Schema/coverage retries
+keep their existing bounded behavior; refused or truncated completions do not retry locally.
+With retries zero there is no application correction. SDK retries remain separate, and every
+additional correction operation contributes to request and reported token/latency accounting.
+
+Chapter diagnostics add a fixed `chapter_reason`: `json_shape`, `item_shape`, `unit_reference`,
+`unit_order`, `passage_kind`, `omission_reason`, `coverage`, `empty_passage`,
+`whitespace_invention`, `excerpt_mismatch`, `word_sequence`, `quotation_anchors` or
+`correction_layout`. `chunk_index` is one-based; `passage_index`, `omission_index` and
+`unit_index` are zero-based within that chunk. Word-sequence errors also include token counts
+and the zero-based first mismatch position. No source words, arbitrary unit IDs, rejected
+JSON or exception prose are emitted. Earlier logs with only `validation_source` do not reveal
+which check failed; a discarded response cannot be diagnosed retrospectively.
+
+The original narrative prompt permits punctuation/layout changes but the validator also
+requires exact quotation characters anchored to source words, including apostrophes. Changing
+quote style or moving a quotation boundary can therefore fail even if words compare equal.
+Verbatim excerpts must concatenate consecutive unit text exactly and strip only outer
+whitespace; inserted spaces at unit boundaries or changed internal newlines fail. The JSON
+schema constrains types and allowed IDs/kinds, while Python additionally checks coverage,
+reference order, exact excerpts and wording. These are potential contract pitfalls established
+from code and synthetic tests, not a diagnosis of any discarded real response. The chapter
+correction instruction states these restrictions explicitly. Initial prompts/schema,
+accepted-output rules, settings fingerprints and validator bindings remain unchanged, so
+previously valid matching checkpoints are revalidated and reusable without migration.
+
+For `--chapter-style both`, the deterministic interview and narrative publish as one atomic
+bundle only when both succeed. A terminal narrative failure leaves the stage failed; denied
+admission leaves it incomplete. Neither returns a partial document labeled complete. Valid
+narrative chunks, raw and review remain reusable. Independently publishing interview while
+narrative fails would need explicit per-style status, bundle identity and resume semantics;
+this focused correction does not introduce them. An explicit interview-only selection remains
+a separate complete deterministic draft with human-review warnings, bound to its selected
+styles and the same raw/review checks. It neither establishes narrative completion nor relaxes
+batch human approval or high-finding gates.

@@ -242,3 +242,59 @@ def test_wrong_media_type_before_provider(monkeypatch, synthetic_media, tmp_path
                  '--output-folder', str(tmp_path / 'output')]) == 1
     transcriber.assert_not_called()
     assert str(tmp_path) not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('stop', [False, True])
+def test_both_styles_failure_is_atomic_and_stopped_narrative_is_incomplete(
+        synthetic_media, tmp_path, author_provider, stop):
+    from src.provider_control import CURRENT_CONTROL, ProviderControl
+    source = synthetic_media('synthetic.wav')
+    raw = 'Synthetic uncertain testimony.\n' * 8
+    author_provider.audio.transcriptions.create.return_value = SimpleNamespace(text=raw)
+    normal = author_provider.chat.completions.create.side_effect
+    options = AuthorOptions(chapter_options=ChapterOptions(chunk_bytes=64))
+    transcriber = Transcriber(client=author_provider)
+    control = ProviderControl(retries=2)
+    token = CURRENT_CONTROL.set(control)
+    def fail_second(**request):
+        supplied = json.loads(request['messages'][-1]['content'])
+        if (request['response_format']['json_schema']['name'] == 'source_bound_chapter'
+                and supplied['chunk_index'] == 2):
+            if stop:
+                control.cancel()
+            response = normal(**request)
+            body = json.loads(response.choices[0].message.content)
+            body['passages'][0]['text'] = 'SYNTHETIC_REJECTED_BODY'
+            response.choices[0].message.content = json.dumps(body)
+            return response
+        return normal(**request)
+    author_provider.chat.completions.create.side_effect = fail_second
+    output = tmp_path / 'output'
+    try:
+        with pytest.raises(PipelineError) as captured:
+            Pipeline(output, author_options=options).process(source, transcriber=transcriber)
+    finally:
+        CURRENT_CONTROL.reset(token)
+    assert captured.value.stages['chapters'] == ('incomplete' if stop else 'failed')
+    assert captured.value.admission_stopped is stop
+    job = next(output.iterdir())
+    state = json.loads((job / 'manifest.json').read_text())
+    assert state['stages']['chapters']['status'] == ('incomplete' if stop else 'failed')
+    assert not list(job.glob('chapters_*'))
+    report = artifact(job, state, 'author_review', 'review_report.json')
+    before = {report: report.read_bytes(), job / 'transcription.txt': (job / 'transcription.txt').read_bytes()}
+    narrative_cache = [p for p in job.rglob('response.json')
+                       if json.loads(p.read_text()).get('content', '').startswith('{"chunk_index": 1, "passages"')]
+    assert len(narrative_cache) == 1
+    before[narrative_cache[0]] = narrative_cache[0].read_bytes()
+    author_provider.chat.completions.create.side_effect = normal
+    calls = author_provider.chat.completions.create.call_count
+    _, stages = Pipeline(output, resume=True, author_options=options).process(source, transcriber=transcriber)
+    assert stages['author_review'] == 'skipped' and stages['chapters'] == 'complete'
+    resumed_requests = author_provider.chat.completions.create.call_args_list[calls:]
+    assert json.loads(resumed_requests[0].kwargs['messages'][-1]['content'])['chunk_index'] == 2
+    assert all(p.read_bytes() == body for p, body in before.items())
+    state = json.loads((job / 'manifest.json').read_text())
+    document = json.loads(artifact(job, state, 'chapters', 'chapter_drafts.json').read_text())
+    assert document['status'] == 'complete' and set(document['chapters']) == {'interview', 'narrative'}
+    assert document['human_review_required'] is True

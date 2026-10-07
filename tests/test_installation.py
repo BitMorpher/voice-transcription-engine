@@ -557,3 +557,56 @@ assert client.chat.completions.create.call_count == calls
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, 'Installed text checkpoint restart failed.'
     assert result.stdout == result.stderr == ''
+
+
+def test_wheel_chapter_wording_correction_and_checkpoint_reuse(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    script = work / 'chapter-correction-smoke.py'
+    script.write_text('''
+import hashlib, json, socket
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from voice_transcription_engine.author_review import source_segments
+from voice_transcription_engine.chapters import draft_chapters
+from voice_transcription_engine.provider_control import CURRENT_CONTROL, ControlledClient, ProviderControl
+
+def blocked(*args, **kwargs):
+    raise AssertionError('Offline only.')
+socket.socket.connect = blocked
+raw = 'I am uncertain about a synthetic event.'
+report = {'status': 'complete', 'raw_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+          'segments': source_segments(raw), 'findings': [],
+          'coverage': {'complete': True, 'reviewed_characters': len(raw),
+                       'total_characters': len(raw), 'chunks': [
+                           {'status': 'complete', 'start': 0, 'end': len(raw)}]}}
+client = MagicMock()
+def respond(**request):
+    payload = json.loads(request['messages'][-1]['content'])
+    units = payload['source_units']
+    content = {'chunk_index': payload['chunk_index'], 'coverage_omissions': [], 'passages': [
+        {'unit_ids': [unit['unit_id'] for unit in units], 'kind': 'verbatim_excerpt',
+         'text': 'Invalid testimony.' if client.chat.completions.create.call_count == 1 else raw}]}
+    return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+        message=SimpleNamespace(content=json.dumps(content), refusal=None))])
+client.chat.completions.create.side_effect = respond
+control = ProviderControl(retries=2)
+token = CURRENT_CONTROL.set(control)
+root = Path('installed-chapter-checkpoints')
+try:
+    result = draft_chapters(raw, report, ControlledClient(client, 120, 2), checkpoint_root=root)
+    assert result['status'] == 'complete' and set(result['chapters']) == {'interview', 'narrative'}
+    assert control.requests == 2 and control.validation_failures == control.failures == 0
+    assert len(list(root.rglob('response.json'))) == 1
+    assert result['chapters']['narrative']['passages'][0]['text'] == raw
+    saved = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    draft_chapters(raw, report, ControlledClient(client, 120, 2), checkpoint_root=root)
+    assert control.requests == client.chat.completions.create.call_count == 2
+    assert all(p.read_bytes() == body for p, body in saved.items())
+finally:
+    CURRENT_CONTROL.reset(token)
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed chapter correction/checkpoint reuse failed.'
+    assert result.stdout == result.stderr == ''
