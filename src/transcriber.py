@@ -9,6 +9,7 @@ import wave
 from pathlib import Path
 
 if __package__:
+    from .text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from .chunk_cache import ChunkCache, descriptor, layout_for
     from .private_output import digest
     from .provider_control import CURRENT_CONTROL, ControlledClient, ProviderStopped
@@ -25,6 +26,7 @@ if __package__:
         words,
     )
 else:
+    from text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from chunk_cache import ChunkCache, descriptor, layout_for
     from private_output import digest
     from provider_control import CURRENT_CONTROL, ControlledClient, ProviderStopped
@@ -190,7 +192,7 @@ class Transcriber:
                     )
                     text = getattr(response, 'text', None)
                     if not isinstance(text, str):
-                        raise TranscriptionError('Provider returned an invalid transcription response.')
+                        raise ResponseValidationError('Provider returned an invalid transcription response.')
                     if checkpoint and text.strip():
                         checkpoint.put(record, {'text': text})
                     parts.append(text)
@@ -210,58 +212,63 @@ class Transcriber:
             raise TranscriptionError('Prepared audio could not be read.') from None
         return '\n\n'.join(parts)
 
-    def _enhance(self, transcription):
+    def _enhance(self, transcription, *, checkpoint_root=None):
         if not isinstance(transcription, str):
             raise TranscriptionError('Editing input must be transcript text.')
         if not transcription.strip():
             return transcription
         edited_parts, uncertain = [], []
         try:
-            for index, source in enumerate(split_text(transcription, self.editing_options.chunk_bytes), start=1):
+            sources = list(split_text(transcription, self.editing_options.chunk_bytes))
+        except UnicodeError:
+            raise TranscriptionError('Editing input must be valid UTF-8 transcript text.') from None
+        parameters, validators = [], []
+        for index, source in enumerate(sources, 1):
+            budget = min(32768, max(16384, len(source.encode('utf-8')) * 3 + 8192))
+            parameters.append(dict(
+                model=self.editing_options.model,
+                messages=[{'role': 'system', 'content': FAITHFUL_INSTRUCTION},
+                          {'role': 'user', 'content': json.dumps(
+                              {'chunk_index': index, 'text': source}, ensure_ascii=False)}],
+                response_format=schema(index),
+                extra_body={'reasoning_effort': self.editing_options.reasoning_effort,
+                            'max_completion_tokens': budget, 'store': False}))
+            validators.append(lambda content, source=source, index=index:
+                              validate_edit(content, source, index))
+        try:
+            cache = TextRequestCache(checkpoint_root,
+                text_binding('polish', transcription, self.editing_options.fingerprint,
+                             validator_contract=1), parameters, validators) if checkpoint_root else None
+            for index, source in enumerate(sources, 1):
                 if not source.strip():
                     edited_parts.append(source)
                     continue
                 emit_progress('enhancement', 'running', chunk=index)
                 _suppress_provider_logging()
-                # Budget includes reasoning. Byte-bounded input leaves ample output
-                # headroom; length/content-filter/refusal still fail explicitly.
-                budget = min(32768, max(16384, len(source.encode('utf-8')) * 3 + 8192))
-                response = self.client.chat.completions.create(
-                    model=self.editing_options.model,
-                    messages=[
-                        {'role': 'system', 'content': FAITHFUL_INSTRUCTION},
-                        {'role': 'user', 'content': json.dumps({'chunk_index': index, 'text': source}, ensure_ascii=False)},
-                    ],
-                    response_format=schema(index),
-                    # extra_body keeps the existing SDK entry point compatible
-                    # with newer API fields without passing unsupported kwargs.
-                    extra_body={'reasoning_effort': self.editing_options.reasoning_effort,
-                                'max_completion_tokens': budget, 'store': False},
-                )
-                choice = response.choices[0]
-                if choice.finish_reason != 'stop' or getattr(choice.message, 'refusal', None):
-                    raise EditingError('Derivative output was incomplete or refused; retain the original transcript.')
-                edited, speaker_uncertain = validate_edit(choice.message.content, source, index)
+                edited, speaker_uncertain = validated_chat(self.client, parameters[index - 1],
+                    validators[index - 1], stage='enhancement', cache=cache, index=index)
                 edited_parts.append(edited)
                 emit_progress('enhancement', 'complete', chunk=index)
                 if speaker_uncertain:
                     uncertain.append(index)
+            if cache:
+                cache.verify()
             combined = ''.join(edited_parts)
             if words(combined) != words(transcription):
                 raise EditingError('Reassembled editing changed words, symbols, or boundaries; no derivative was saved.')
             if uncertain:
                 combined = '[Speaker attribution uncertain in chunks: ' + ', '.join(map(str, uncertain)) + ']\n\n' + combined
             return combined
-        except EditingError as error:
-            emit_progress('enhancement', 'failed', error_category='validation')
+        except ResponseValidationError as error:
+            emit_progress('enhancement', 'failed', **classify(error))
             raise TranscriptionError(str(error)) from None
         except Exception as error:
             emit_progress('enhancement', 'failed', **classify(error))
             raise TranscriptionError('Optional editing failed; check API/model access, quota, and network connectivity. The original transcript is retained.') from None
 
-    def enhance_transcription(self, transcription: str) -> str:
+    def enhance_transcription(self, transcription: str, *, checkpoint_root=None) -> str:
         """Opt-in punctuation/layout derivative with verified word preservation."""
-        return self._enhance(transcription)
+        return self._enhance(transcription, checkpoint_root=checkpoint_root)
 
     def enhance_as_interview(self, transcription: str) -> str:
         """Legacy alias for faithful layout only; never generate interviewer turns."""

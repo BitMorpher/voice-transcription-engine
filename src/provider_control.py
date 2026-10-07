@@ -28,10 +28,13 @@ class ProviderControl:
                 or max_seconds is not None and (type(max_seconds) not in (int, float)
                     or not math.isfinite(max_seconds) or max_seconds <= 0)
                 or type(failure_limit) is not int or failure_limit < 1
+                or type(retries) is not int or not 0 <= retries <= 5
                 or (max_requests is not None or max_seconds is not None) and retries != 0):
             raise ValueError('Provider request/time limits require --provider-retries 0 and positive limits.')
         self.max_requests, self.max_seconds = max_requests, max_seconds
         self.failure_limit, self.clock = failure_limit, clock
+        self.validation_retries = min(1, retries)
+        self.cooldown_until = self.next_slot = 0.0
         self.started = clock()
         self.requests = self.failures = 0
         self.failure_streaks = {}
@@ -68,22 +71,29 @@ class ProviderControl:
             raise ProviderStopped('Provider admission stopped; completed checkpoints are retained. No additional request was started.')
 
     def call(self, client, path, timeout, retries, parameters):
-        # Reserve one operation atomically. The lock is released for network I/O,
-        # so the request allowance is shared without serializing valid requests.
-        with self.lock:
-            self.check()
-            remaining = self.remaining()
-            if remaining is not None and remaining <= 0:
-                self.reason = 'start_deadline'
-                self.check()
-            effective_timeout = timeout if remaining is None else min(timeout, remaining)
-            if (self.max_requests is not None or self.max_seconds is not None) and retries != 0:
-                raise ProviderStopped('Bounded provider calls require zero SDK retries.')
-            self.requests += 1
-            reporter = CURRENT.get()
-            if reporter:
-                reporter.emit(status='progress', provider_requests=self.requests,
-                              effective_provider_timeout=effective_timeout)
+        while True:
+            self._wait_for_slot()
+            # Admission and paced slot reservation are atomic with cooldown updates.
+            with self.lock:
+                self._check()
+                now = self.clock()
+                if now < max(self.cooldown_until, self.next_slot):
+                    continue
+                if self.cooldown_until:
+                    self.next_slot = now + 0.25
+                remaining = self.remaining()
+                if remaining is not None and remaining <= 0:
+                    self.reason = 'start_deadline'
+                    self._check()
+                effective_timeout = timeout if remaining is None else min(timeout, remaining)
+                if (self.max_requests is not None or self.max_seconds is not None) and retries != 0:
+                    raise ProviderStopped('Bounded provider calls require zero SDK retries.')
+                self.requests += 1
+                reporter = CURRENT.get()
+                if reporter:
+                    reporter.emit(status='progress', provider_requests=self.requests,
+                                  effective_provider_timeout=effective_timeout)
+                break
         # Count SDK operation starts. Zero retries prevents SDK retry attempts;
         # redirects/custom transports are not monetary or server-work guarantees.
         import openai
@@ -99,6 +109,9 @@ class ProviderControl:
         except Exception as error:
             category = classify(error)['error_category']
             with self.lock:
+                if category == 'rate_limit':
+                    delay = rate_limit_delay(error)
+                    self.cooldown_until = max(self.cooldown_until, self.clock() + delay)
                 self.failures = self.failure_streaks.get(scope, 0) + 1
                 self.failure_streaks[scope] = self.failures
                 if self.reason is None:
@@ -113,6 +126,46 @@ class ProviderControl:
             with self.lock:
                 self.failures = self.failure_streaks[scope] = 0
             return response
+
+    def _wait_for_slot(self):
+        """Interruptible shared cooldown, then stagger subsequent worker starts.
+
+        Already admitted I/O and SDK-internal retries cannot be recalled.
+        Reservation and admission share the lock to avoid a cooldown race.
+        """
+        while True:
+            with self.lock:
+                self._check()
+                now = self.clock()
+                delay = max(self.cooldown_until, self.next_slot) - now
+                if delay <= 0:
+                    return
+                remaining = self.remaining()
+                if remaining is not None:
+                    delay = min(delay, remaining)
+            self.cancelled.wait(min(delay, 0.25))
+
+
+def rate_limit_delay(error):
+    """Parse bounded Retry-After metadata locally, never publish headers."""
+    from email.utils import parsedate_to_datetime
+    from datetime import datetime, timezone
+    try:
+        import openai
+        if not isinstance(error, openai.APIStatusError):
+            return 2.0
+        headers = error.response.headers
+        if 'retry-after-ms' in headers:
+            delay = float(headers['retry-after-ms']) / 1000
+        else:
+            value = headers.get('retry-after', '')
+            try:
+                delay = float(value)
+            except ValueError:
+                delay = (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()
+        return min(120.0, max(1.0, delay)) if math.isfinite(delay) else 2.0
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 2.0
 
 
 class ControlledClient:

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 
 if __package__:
+    from .text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from .provider_errors import classify
     from .progress import emit_progress
     from . import prompts
@@ -19,6 +20,7 @@ if __package__:
     from .text_editing import split_text, words
     from .transcriber import _suppress_provider_logging
 else:
+    from text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from provider_errors import classify
     from progress import emit_progress
     import prompts
@@ -34,7 +36,7 @@ RESOLVED_DISPOSITIONS = ('resolved', 'approved', 'accepted', 'addressed', 'dismi
 QUOTATION_MARKS = frozenset('\"\'“”‘’«»‹›„‟')
 
 
-class ChapterError(RuntimeError):
+class ChapterError(ResponseValidationError):
     """Safe chapter failure; raw transcript and review report remain available."""
 
 
@@ -216,6 +218,7 @@ def _quote_span(source, start):
 
 
 def _validate_response(content, chunk, index, person, findings):
+    category = 'validation_schema'
     def unique_object(pairs):
         value = {}
         for name, item in pairs:
@@ -232,6 +235,7 @@ def _validate_response(content, chunk, index, person, findings):
                 or not isinstance(response['passages'], list)
                 or not isinstance(response['coverage_omissions'], list)):
             raise ValueError()
+        category = 'validation_source'
         by_id = {unit['unit_id']: unit for unit in chunk}
         positions = {unit['unit_id']: position for position, unit in enumerate(chunk)}
         covered, passages, omissions = [], [], []
@@ -277,61 +281,56 @@ def _validate_response(content, chunk, index, person, findings):
                         raise ValueError()
                     omissions.append({'reason': item['reason'], **reference})
         if len(covered) != len(chunk) or set(covered) != set(by_id):
+            category = 'validation_coverage'
             raise ValueError()
     except (ValueError, TypeError, KeyError):
-        raise ChapterError('Chapter response violated source coverage, provenance, or wording constraints; no draft was saved.') from None
+        raise ChapterError('Chapter response violated source coverage, provenance, or wording constraints; no draft was saved.', category=category) from None
     return passages, omissions
 
 
-def _narrative(raw, segments, findings, client, options):
+def _narrative(raw, segments, findings, client, options, *, checkpoint_root=None,
+               review_sha256=None):
     passages, omissions = [], []
-    for index, chunk in enumerate(_chunks(_units(raw, segments, options.chunk_bytes),
-                                         options.chunk_bytes), start=1):
+    chunks = list(_chunks(_units(raw, segments, options.chunk_bytes), options.chunk_bytes))
+    parameters, validators = [], []
+    for index, chunk in enumerate(chunks, 1):
+        parameters.append(dict(model=options.model,
+            messages=[{'role': 'system', 'content': _prompt('narrative')},
+                      {'role': 'user', 'content': json.dumps(
+                          {'chunk_index': index, 'person': options.person,
+                           'source_units': chunk}, ensure_ascii=False)}],
+            response_format=_schema(index, chunk, options.person),
+            extra_body={'reasoning_effort': options.reasoning_effort,
+                        'max_completion_tokens': min(32768, max(16384,
+                            sum(len(u['text'].encode()) for u in chunk) * 3 + 8192)),
+                        'store': False}))
+        validators.append(lambda content, chunk=chunk, index=index:
+                          _validate_response(content, chunk, index, options.person, findings))
+    cache = TextRequestCache(checkpoint_root,
+        text_binding('chapter_narrative', raw, options.fingerprint,
+                     review_sha256=review_sha256, validator_contract=1),
+        parameters, validators) if checkpoint_root else None
+    for index, _ in enumerate(chunks, 1):
         emit_progress('chapters', 'running', chunk=index)
         try:
-            # Match the existing client path; never expose provider payloads in exceptions.
             _suppress_provider_logging()
-            response = client.chat.completions.create(
-                model=options.model,
-                messages=[{'role': 'system', 'content': _prompt('narrative')},
-                          {'role': 'user', 'content': json.dumps(
-                              {'chunk_index': index, 'person': options.person,
-                               'source_units': chunk}, ensure_ascii=False)}],
-                response_format=_schema(index, chunk, options.person),
-                extra_body={'reasoning_effort': options.reasoning_effort,
-                            'max_completion_tokens': min(32768, max(16384,
-                                sum(len(u['text'].encode()) for u in chunk) * 3 + 8192)),
-                            'store': False})
+            parts, missing = validated_chat(client, parameters[index - 1], validators[index - 1],
+                stage='chapters', cache=cache, index=index)
+        except ResponseValidationError as error:
+            emit_progress('chapters', 'failed', chunk=index, **classify(error))
+            raise ChapterError(str(error), category=error.category) from None
         except Exception as error:
             emit_progress('chapters', 'failed', chunk=index, **classify(error))
             raise ChapterError('Chapter generation failed; check API/model access, quota, and connectivity. Raw transcript and review report are retained.') from None
-        try:
-            invalid_count = not isinstance(response.choices, list) or len(response.choices) != 1
-            if not invalid_count:
-                choice = response.choices[0]
-                incomplete = choice.finish_reason != 'stop' or bool(getattr(choice.message, 'refusal', None))
-                content = choice.message.content
-        except Exception:
-            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
-            raise ChapterError('Chapter provider response could not be read; no draft was saved.') from None
-        if invalid_count:
-            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
-            raise ChapterError('Chapter provider response has an invalid completion count; no draft was saved.')
-        if incomplete:
-            emit_progress('chapters', 'failed', chunk=index, error_category='completion')
-            raise ChapterError('Chapter output was incomplete or refused; raw transcript and review report are retained.')
-        try:
-            parts, missing = _validate_response(content, chunk, index, options.person, findings)
-        except ChapterError:
-            emit_progress('chapters', 'failed', chunk=index, error_category='validation')
-            raise
         emit_progress('chapters', 'complete', chunk=index)
         passages.extend(parts)
         omissions.extend(missing)
+    if cache:
+        cache.verify()
     return passages, omissions
 
 
-def draft_chapters(raw: str, report: dict, client, options=None, *, allow_unresolved_high=False):
+def draft_chapters(raw: str, report: dict, client, options=None, *, allow_unresolved_high=False, checkpoint_root=None):
     """Draft selected styles only after complete review; never mutate source/report."""
     options = options or ChapterOptions()
     if not isinstance(raw, str) or not raw.strip():
@@ -361,7 +360,8 @@ def draft_chapters(raw: str, report: dict, client, options=None, *, allow_unreso
                         for unit in _units(raw, segments, options.chunk_bytes)]
             omissions = []
         else:
-            passages, omissions = _narrative(raw, segments, findings, client, options)
+            passages, omissions = _narrative(raw, segments, findings, client, options,
+                                               checkpoint_root=checkpoint_root, review_sha256=_digest(report))
         for index, passage in enumerate(passages, start=1):
             passage['passage_id'] = f'{style}-{index:06d}'
             passage['attribution'] = 'Unassigned source testimony; verify speaker with recording.'

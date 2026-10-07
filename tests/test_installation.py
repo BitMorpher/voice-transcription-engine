@@ -441,3 +441,46 @@ assert 'request_limit' in logs
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 2
         assert 'SYNTHETIC_PRIVATE' not in result.stdout + result.stderr
+
+
+def test_wheel_text_checkpoint_restart(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    script = work / 'text-checkpoint-smoke.py'
+    script.write_text('''
+import json, socket
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from voice_transcription_engine.author_review import ReviewOptions, review_transcript
+
+def blocked(*args, **kwargs):
+    raise AssertionError('Offline only.')
+socket.socket.connect = blocked
+client = MagicMock()
+raw = 'Synthetic exact source.\\n' * 12
+root = Path('installed-text-checkpoints')
+options = ReviewOptions(chunk_bytes=64)
+def respond(**parameters):
+    payload = json.loads(parameters['messages'][-1]['content'])
+    body = dict(chunk_index=payload['chunk_index'], fully_reviewed=True,
+                reviewed_start=payload['core_start'], reviewed_end=payload['core_end'], findings=[])
+    return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+        message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+def fail_late(**parameters):
+    if json.loads(parameters['messages'][-1]['content'])['chunk_index'] == 2:
+        raise RuntimeError('SYNTHETIC_PRIVATE_PROVIDER')
+    return respond(**parameters)
+client.chat.completions.create.side_effect = fail_late
+assert review_transcript(raw, client, options, checkpoint_root=root)['status'] == 'incomplete'
+calls = client.chat.completions.create.call_count
+client.chat.completions.create.side_effect = respond
+assert review_transcript(raw, client, options, checkpoint_root=root)['status'] == 'complete'
+assert client.chat.completions.create.call_count == calls + 1
+calls = client.chat.completions.create.call_count
+assert review_transcript(raw, client, options, checkpoint_root=root)['status'] == 'complete'
+assert client.chat.completions.create.call_count == calls
+''')
+    result = subprocess.run([str(python), str(script)], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, 'Installed text checkpoint restart failed.'
+    assert result.stdout == result.stderr == ''

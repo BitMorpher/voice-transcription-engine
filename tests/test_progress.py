@@ -159,7 +159,7 @@ def test_review_per_chunk_events_and_privacy():
 
 @pytest.mark.parametrize('failure,category', [
     ('properties', 'completion'), ('count', 'completion'), ('refused', 'completion'),
-    ('truncated', 'completion'), ('malformed', 'validation'), ('coverage', 'validation'),
+    ('truncated', 'completion'), ('malformed', 'validation_schema'), ('coverage', 'validation_coverage'),
 ])
 def test_chapter_failures_emit_terminal_safe_chunk_event(failure, category):
     from types import SimpleNamespace

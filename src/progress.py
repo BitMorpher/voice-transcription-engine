@@ -30,7 +30,7 @@ STATUSES = {'started', 'progress', 'running', 'complete', 'failed', 'summary', '
             'skipped', 'interrupted', 'blocked', 'staged', 'verified', 'incomplete', 'pending',
             'not_attempted', 'configuration', 'latest'}
 COUNTERS = {'item', 'part', 'parts', 'chunk', 'chunks', 'processed', 'failed', 'selected',
-            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions'}
+            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions', 'validation_retries'}
 GUIDANCE = ('Check local input permissions, media validity, output space and cache integrity; '
             'for provider stages check OPENAI_API_KEY, model access, quota and connectivity. '
             'Completed caches are retained; repeat voice-batch with matching settings, or use --resume with voice-transcribe. '

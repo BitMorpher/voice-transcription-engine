@@ -70,7 +70,8 @@ class Pipeline:
         snapshot = raw.read_bytes()
         if raw.is_symlink() or hashlib.sha256(snapshot).hexdigest() != expected_sha256:
             raise PipelineError('Raw transcript changed before editing; use a stable transcript and a new output folder.')
-        edited = transcriber.enhance_transcription(snapshot.decode('utf-8'))
+        edited = transcriber.enhance_transcription(snapshot.decode('utf-8'),
+                                                   checkpoint_root=job / 'text-chunks')
         if raw.is_symlink() or digest(raw) != expected_sha256:
             raise PipelineError('Raw transcript changed during editing; no derivative was saved. Use a new output folder.')
         write_private(job / 'derivative_readability.txt',

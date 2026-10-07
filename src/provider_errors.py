@@ -18,6 +18,13 @@ GUIDANCE = {
     'validation': 'Output failed schema, coverage or exact-source validation; preserve raw and failed reports.',
     'not_attempted': 'This provider operation was not started because admission stopped.',
 }
+GUIDANCE.update({
+    'validation_schema': 'Response shape, JSON or request index was invalid; validated checkpoints are retained.',
+    'validation_coverage': 'Response did not acknowledge exact requested coverage; no complete review is claimed.',
+    'validation_source': 'Response changed source words or supplied a non-exact excerpt; retain original source and inspect private artifacts.',
+    'validation_diarization': 'Local speaker-response validation failed; no complete attribution is claimed.',
+})
+CATEGORIES.update(GUIDANCE)
 SYSTEMIC = {'authentication', 'permission', 'model_access', 'invalid_request', 'quota'}
 TIMEOUT_PHASES = {'connect', 'write', 'read', 'pool', 'unknown'}
 TIMEOUT_GUIDANCE = {
@@ -79,6 +86,13 @@ def classify(error):
             from provider_control import ProviderStopped
         if isinstance(error, ProviderStopped):
             return {'error_category': 'not_attempted'}
+        if __package__:
+            from .text_requests import ResponseValidationError
+        else:
+            from text_requests import ResponseValidationError
+        if isinstance(error, ResponseValidationError):
+            category = error.category
+            return {'error_category': category if isinstance(category, str) and category in CATEGORIES else 'validation'}
         import openai
         if not isinstance(error, openai.APIError):
             return {'error_category': category}

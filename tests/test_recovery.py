@@ -1,5 +1,6 @@
 """Offline recovery contracts; fixtures are invented PCM, never real testimony."""
 import io
+import itertools
 import json
 import os
 import signal
@@ -284,7 +285,7 @@ def test_sdk_single_http_attempt_and_timeout_extensions_are_effective():
         raise httpx2.ReadTimeout('PRIVATE_PROVIDER_DETAIL', request=request)
     with httpx2.Client(transport=httpx2.MockTransport(respond)) as transport:
         with openai.OpenAI(api_key='synthetic-placeholder', http_client=transport, max_retries=2) as provider:
-            times = iter([10, 12, 12, 12])
+            times = itertools.chain([10], itertools.repeat(12))
             control = ProviderControl(max_requests=1, max_seconds=5, retries=0, clock=lambda: next(times))
             token = CURRENT_CONTROL.set(control)
             try:
@@ -478,7 +479,7 @@ def test_partial_diarization_tamper_before_any_new_call(tmp_path, pcm, tamper):
 
 
 def test_deadline_expires_during_validation_no_provider_start():
-    times = iter([0, 0.9, 1.1])
+    times = itertools.chain([0, 0.9], itertools.repeat(1.1))
     control = ProviderControl(max_seconds=1, retries=0, clock=lambda: next(times))
     provider = client()
     with pytest.raises(ProviderStopped):
