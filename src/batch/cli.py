@@ -47,7 +47,7 @@ def parser():
     value.add_argument('--max-provider-requests', type=int,
                        help='Maximum new SDK operations across all selected entries/stages; requires --provider-retries 0. Use 1 for a bounded diagnostic.')
     value.add_argument('--max-run-seconds', type=_positive_timeout,
-                       help='Elapsed deadline for new provider starts; requires zero retries. In-flight I/O is timeout-bounded, not cancelled at this deadline.')
+                       help='Elapsed admission deadline; requires zero retries and shortens new I/O timeouts to remaining time. In-flight work is not cancelled at this deadline; omit for full runs.')
     value.add_argument('--provider-failure-limit', type=int, default=2,
                        help='Stop after consecutive failures per endpoint/model (default: 2); account/configuration failures stop immediately.')
     value.add_argument('--transcription-model', '--model', dest='model', default='gpt-transcribe', help='Original speech-to-text model (default: gpt-transcribe); --model remains an alias.')
@@ -56,7 +56,7 @@ def parser():
     value.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300, help='Original audio request duration, 1–600 seconds (default: 300); preserve for cache reuse.')
     value.add_argument('--media-timeout', type=_positive_timeout, default=3600, help='Seconds per FFmpeg operation, positive finite number (default: 3600); prepare/run.')
     value.add_argument('--provider-timeout', type=_positive_timeout, default=120, help='Seconds per SDK I/O wait, positive finite number (default: 120); run, not a total deadline.')
-    value.add_argument('--provider-retries', type=int, choices=range(6), default=2, help='SDK retries per operation, 0–5 (default: 2); choose 0 with request/time limits.')
+    value.add_argument('--provider-retries', type=int, choices=range(6), default=2, help='SDK retries per operation, 0–5 (default: 2); nonzero also permits one eligible text validation recovery. Use 0 with request/time limits.')
     value.add_argument('--heartbeat-seconds', type=_positive_timeout, default=30, help='Idle progress interval in seconds, positive finite number (default: 30).')
     value.add_argument('--log-directory', type=Path, help='Private execution logs; defaults to batch/execution-logs.')
     value.add_argument('--context-file', help='Private UTF-8 recording context, sent with supported ASR requests; run.')

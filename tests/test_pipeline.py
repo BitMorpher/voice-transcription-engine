@@ -388,7 +388,9 @@ def test_symbol_preservation_contract_invalidates_bound_legacy_derivative(
         _, stages = Pipeline(output, resume=True).process(source, transcriber=transcriber, enhance=True)
         assert stages['enhancement'] == 'complete'
         assert '€100' in target.read_text() and '$100' not in target.read_text()
-        assert provider.chat.completions.create.call_count == 2
+        # The new, current-contract request checkpoint still validates €100.
+        # Rebuild the derivative from it without another paid operation.
+        assert provider.chat.completions.create.call_count == 1
     assert provider.audio.transcriptions.create.call_count == 1
 
 

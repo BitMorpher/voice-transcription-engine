@@ -199,7 +199,8 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
             raise AuthorWorkflowError('Author artifact changed or settings changed; use a new output folder. No artifact was overwritten.')
         try:
             if stage == 'author_review':
-                report = review_transcript(raw, transcriber.client, options.review_options)
+                report = review_transcript(raw, transcriber.client, options.review_options,
+                                           checkpoint_root=job / 'text-chunks')
                 if report.get('status') == 'complete':
                     validate_review_report(raw, report, options.review_options)
                 _raw_snapshot(job, raw_hash)
@@ -211,7 +212,8 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
                     export_review(report, directory / 'review_report.xlsx')
             else:
                 chapters = draft_chapters(raw, report, transcriber.client, options.chapter_options,
-                                          allow_unresolved_high=options.allow_unresolved_high)
+                                          allow_unresolved_high=options.allow_unresolved_high,
+                                          checkpoint_root=job / 'text-chunks')
                 _raw_snapshot(job, raw_hash)
                 _check_report_unchanged(job, state['stages']['author_review'], review_hash)
                 if provenance is not None:

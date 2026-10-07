@@ -110,8 +110,11 @@ class ChunkCache:
                         'response_sha256': digest(path / 'response.json')}
         if state != expected:
             raise ChunkCacheError()
-        self.validate(body, record['duration_seconds'])
+        self._validate(body, record)
         return body
+
+    def _validate(self, body, record):
+        self.validate(body, record['duration_seconds'])
 
     def get(self, record):
         if record != self.layout[record['index'] - 1]:
@@ -127,7 +130,16 @@ class ChunkCache:
         return None
 
     def put(self, record, body):
-        self.validate(body, record['duration_seconds'])
+        self._validate(body, record)
+        # mkdir(parents=True) applies its mode only to the final directory.
+        # Create every missing private cache ancestor with owner-only access.
+        missing = []
+        directory = self.root.parent
+        while not directory.exists():
+            missing.append(directory)
+            directory = directory.parent
+        for directory in reversed(missing):
+            output_directory(directory)
         parent = output_directory(self.root)
         if not self._check_binding():
             write_private(parent / 'binding.json', json.dumps(

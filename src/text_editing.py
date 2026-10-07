@@ -3,8 +3,13 @@
 import json
 import unicodedata
 
+if __package__:
+    from .text_requests import ResponseValidationError
+else:
+    from text_requests import ResponseValidationError
 
-class EditingError(RuntimeError):
+
+class EditingError(ResponseValidationError):
     """Safe derivative failure without transcript text or raw provider errors."""
 
 
@@ -77,18 +82,29 @@ def schema(index):
 
 def validate_edit(content, source, index):
     try:
-        result = json.loads(content)
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError()
+                result[key] = value
+            return result
+        result = json.loads(content, object_pairs_hook=unique)
         if (not isinstance(result, dict) or set(result) != {'chunk_index', 'text', 'speaker_uncertain'}
                 or type(result['chunk_index']) is not int or result['chunk_index'] != index
                 or not isinstance(result['text'], str) or type(result['speaker_uncertain']) is not bool):
             raise ValueError()
         edited = result['text'].strip()
-        if not edited and source.strip():
-            raise ValueError()
     except (ValueError, TypeError):
         raise EditingError('Editing response was empty, malformed, or out of order; retain the original transcript.') from None
+    # The response envelope is valid; dropping all source content is a fidelity
+    # failure, not a recoverable schema error. Keep it outside the ValueError
+    # handler because EditingError also inherits ValueError.
+    if not edited and source.strip():
+        raise EditingError('Editing omitted all source content; no derivative was saved.',
+                           category='validation_source')
     if words(edited) != words(source):
-        raise EditingError('Editing changed, invented, omitted, or reordered words or symbols; no derivative was saved.')
+        raise EditingError('Editing changed, invented, omitted, or reordered words or symbols; no derivative was saved.', category='validation_source')
     # Restore boundary whitespace so adjacent edited chunks cannot merge words.
     leading = source[:len(source) - len(source.lstrip())]
     trailing = source[len(source.rstrip()):]

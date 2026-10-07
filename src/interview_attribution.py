@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
+    from .text_requests import ResponseValidationError
     from .chunk_cache import ChunkCache, descriptor, layout_for
     from .provider_control import ProviderStopped
     from .review_reuse import reuse_approved_review
@@ -30,6 +31,7 @@ if __package__:
     from .text_editing import words
     from .transcriber import TranscriptionError, _suppress_provider_logging
 else:
+    from text_requests import ResponseValidationError
     from chunk_cache import ChunkCache, descriptor, layout_for
     from provider_control import ProviderStopped
     from review_reuse import reuse_approved_review
@@ -137,22 +139,22 @@ def diarization_configuration(transcriber, model=DIARIZATION_MODEL, chunk_second
 def _validated_response(body, duration):
     if (not isinstance(body, dict) or not isinstance(body.get('text'), str)
             or not isinstance(body.get('segments'), list)):
-        raise ValueError()
+        raise ResponseValidationError('Local speaker response failed validation.', category='validation_diarization')
     for segment in body['segments']:
         if (not isinstance(segment, dict) or not isinstance(segment.get('text'), str)
                 or not isinstance(segment.get('speaker'), (str, type(None)))):
-            raise ValueError()
+            raise ResponseValidationError('Local speaker response failed validation.', category='validation_diarization')
         for key in ('start', 'end'):
             value = segment.get(key)
             if type(value) not in (int, float) or not math.isfinite(value):
-                raise ValueError()
+                raise ResponseValidationError('Local speaker response failed validation.', category='validation_diarization')
         if not 0 <= segment['start'] <= segment['end'] <= duration + 0.1:
-            raise ValueError()
+            raise ResponseValidationError('Local speaker response failed validation.', category='validation_diarization')
         label = segment.get('speaker')
         if label and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', label):
-            raise ValueError()
+            raise ResponseValidationError('Local speaker response failed validation.', category='validation_diarization')
     if body['text'].strip() and not body['segments']:
-        raise ValueError()  # Never silently turn a nonempty transcript into nothing.
+        raise ResponseValidationError('Local speaker response failed validation.', category='validation_diarization')  # Never silently turn a nonempty transcript into nothing.
     return body
 
 
@@ -578,7 +580,8 @@ class AttributedInterview:
                     # Edit speech alone, then restore exact labels and boundaries.
                     for turn in provenance['attribution']['turns']:
                         speech = raw[turn['speech_start']:turn['speech_end']]
-                        result = transcriber.enhance_transcription(speech) if speech.strip() else speech
+                        result = transcriber.enhance_transcription(speech,
+                            checkpoint_root=self.job / 'text-chunks' / f'turn-{turn["start"]}') if speech.strip() else speech
                         if words(result) != words(speech):
                             raise TranscriptionError('Attributed polishing changed source words; no derivative was saved.')
                         edited.append(raw[turn['start']:turn['speech_start']] + result + '\n\n')
