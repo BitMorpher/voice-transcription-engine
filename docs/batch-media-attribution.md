@@ -33,7 +33,7 @@ not claims of conversion or original MIME type. The copied bytes do not change;
 original filenames remain untouched. Unsupported containers, missing streams,
 failed probes, malformed results or changed bytes fail staging without publishing
 an accepted ledger. Partial copies remain private for inspection; use a fresh batch
-after failed prepare. Source hydration still requires `--allow-hydration`.
+after failed prepare. Source hydration still requires `--download-cloud-files`.
 
 Entries containing extensionless videos use staging ledger version 2, binding the
 normalized suffix and minimal probe evidence to each copied content hash and the
@@ -47,8 +47,8 @@ sessions by the user.
 ## Per-entry attribution, with unknown identities by default
 
 ```bash
-voice-batch run --batch private/batches/session-001 --phase raw \
-  --send-to-openai --interview
+voice-batch run --batch-folder private/batches/session-001 --step raw \
+  --send-to-openai --separate-speakers
 ```
 
 This explicitly adds `gpt-4o-transcribe-diarize` requests using `diarized_json` and
@@ -77,7 +77,7 @@ fail before provider calls. Omitted entries use unidentified-speaker attribution
 `enabled: false` retains only the original family for that entry. Empty names are
 invalid; omitted or null names are allowed. Names alone do not identify a voice.
 An optional `--speaker-model` accepts only `gpt-4o-transcribe-diarize`.
-Speaker options require `run --interview`; they do not silently enable extra ASR.
+Speaker options require `run --separate-speakers`; they do not silently enable extra ASR.
 
 After listening to the recording, an entry with a supplied guest name can use
 `"speaker_map": ["1:1:B=interviewee"]`. Each key is recording-part index,
@@ -103,12 +103,12 @@ recording provenance and diarization cache contracts remain version 1.
 ## Independent stages and human approval
 
 ```bash
-voice-batch run --batch private/batches/session-001 --phase review \
-  --send-to-openai --interview --speaker-config private/config/speakers.json \
-  --provider-retries 0 --provider-timeout 30
-voice-batch run --batch private/batches/session-001 --phase chapters \
-  --select entry-a --human-reviewed --send-to-openai --interview \
-  --speaker-config private/config/speakers.json --chapters interview
+voice-batch run --batch-folder private/batches/session-001 --step review \
+  --send-to-openai --separate-speakers --speaker-config private/config/speakers.json \
+  --request-retries 0 --request-timeout 30
+voice-batch run --batch-folder private/batches/session-001 --step chapters \
+  --select entry-a --human-reviewed --send-to-openai --separate-speakers \
+  --speaker-config private/config/speakers.json --chapter-style interview
 ```
 
 Use the same selected families, ASR model, hints, chunk size and speaker settings
@@ -160,4 +160,4 @@ speaker accuracy or publication clearance.
 
 ## Recovering long speaker passes
 
-Use an explicit independent `--diarization-chunk-seconds` to experiment with shorter speaker requests while keeping original ASR settings/caches. Request checkpoints, admission bounds, mapping reconfirmation and recorded per-family status are described in [recovery controls](recovery-controls.md). Defaults remain unchanged and live quality is unverified.
+Use an explicit independent `--speaker-chunk-seconds` to experiment with shorter speaker requests while keeping original ASR settings/caches. Request checkpoints, admission bounds, mapping reconfirmation and recorded per-family status are described in [recovery controls](recovery-controls.md). Defaults remain unchanged and live quality is unverified.

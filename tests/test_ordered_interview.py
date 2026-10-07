@@ -569,7 +569,10 @@ def test_cli_ordered_one_interview_private_logs(
     )
     logs = capsys.readouterr().out
     assert "SYNTHETIC_PRIVATE" not in logs and str(tmp_path) not in logs
-    assert json.loads(logs.splitlines()[-1]) == {"status": "summary", "processed": 1, "failed": 0}
+    assert json.loads(logs.splitlines()[-1]) == {
+        "status": "summary", "processed": 1, "completed": 1, "failed": 0,
+        "selected": 1, "finished": 1,
+    }
 
 
 def test_installed_entrypoint_help_outside_checkout(tmp_path):

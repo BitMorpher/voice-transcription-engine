@@ -4,7 +4,7 @@ For current option names, every public parameter, valid combinations and paralle
 
 Implemented locally on `feat/ordered-interview`, from fresh remote `main` at `49e8f383c1604026220e6bf9448876db309916fa` (merged PR #9). Remote main was reconfirmed at the same commit on 2026-10-04. Inspection found folder batch mode created independent filename-sorted jobs; it had no ordered multipart interview feature.
 
-The new entrypoint is `voice-transcribe --workflow --interview-manifest`. See [the manifest, commands and limitations](ordered-interviews.md). The implementation adds two focused modules and reuses existing media conversion, part pipeline, faithful editing, author review/export and chapter stages. No new dependency, Python pin or lock change was introduced.
+The new entrypoint is `voice-transcribe --author-workflow --recordings-list`. See [the manifest, commands and limitations](ordered-interviews.md). The implementation adds two focused modules and reuses existing media conversion, part pipeline, faithful editing, author review/export and chapter stages. No new dependency, Python pin or lock change was introduced.
 
 ## Final checks
 

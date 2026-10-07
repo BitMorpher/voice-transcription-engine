@@ -1,4 +1,6 @@
-# Portable batch orchestration and safe execution events
+# Process multiple independent interviews
+
+For a first run, start with [getting started](getting-started.md); the [pipeline guide](pipeline-guide.md) explains steps, outputs, and technical terms.
 
 `voice-batch` processes independent interviews serially by default. Use `run --parallel-interviews 2` to overlap two complete interview groups; their own recordings stay ordered. Each interview has an explicit ordered manifest and may contain one audio file, one video file, or multiple mixed recordings. `voice-transcribe` remains the single interview/file coordinator. Both commands are installed in the `voice_transcription_engine` package and work outside the source checkout. Python 3.14+, the declared Python dependencies, FFmpeg and ffprobe on `PATH`, and your own environment settings are the prerequisites. No checkout pin, account name, device path, shell launcher, or platform package-manager path is configured in a batch plan.
 
@@ -29,8 +31,8 @@ See [saving progress and bounding provider starts](recovery-controls.md) for ato
 `--parallel-interviews N` is a positive whole number with default `1`. Start with `2` for overlap, then inspect safe progress and your provider limits before deliberately increasing it. It counts complete interview groups, not recordings, chunks or requests per minute. Preparation and verification remain serial. Existing output isolation, part order, cache checks and human gates apply inside every group.
 
 ```bash
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --phase raw --parallel-interviews 2 --send-to-openai --provider-retries 0
+uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+  --step raw --parallel-interviews 2 --send-to-openai --request-retries 0
 ```
 
 One shared request allowance, start deadline and endpoint/model failure streak covers all groups and families. Parallelism does not create a per-worker allowance, provider rate limiter or dollar budget. Already admitted operations can return after a provider stop and their valid checkpoints are retained. Local failures remain isolated. Logs can interleave by item; saved summaries retain original plan order. Ctrl+C/SIGTERM stops scheduling and drains active workers before releasing locks, which can take time. See the [complete command guide](cli-reference.md) for every public parameter, compatible combinations and examples by goal.
@@ -68,19 +70,19 @@ For an independent single recording, create `private/config/session-b.json` with
 
 ```bash
 # JSON/schema and filesystem metadata only: does not read/hash/probe/hydrate media.
-uv run --locked voice-batch inventory --plan private/config/batch-plan.json
+uv run --locked voice-batch inventory --batch-plan private/config/batch-plan.json
 # Also check FFmpeg/ffprobe availability; still no media-content or provider reads.
-uv run --locked voice-batch check --plan private/config/batch-plan.json --select entry-a
+uv run --locked voice-batch check --batch-plan private/config/batch-plan.json --select entry-a
 # Repeated selection runs in plan order, not argument order. Exclusion is exact.
-uv run --locked voice-batch inventory --plan private/config/batch-plan.json \
+uv run --locked voice-batch inventory --batch-plan private/config/batch-plan.json \
   --select entry-b --select entry-a --exclude entry-b
 # Explicit source reads and verified local copies, into a NEW directory:
-uv run --locked voice-batch prepare --plan private/config/batch-plan.json \
-  --select entry-a --batch private/batches/demo-001 --copy-local-files
-uv run --locked voice-batch verify --batch private/batches/demo-001
+uv run --locked voice-batch prepare --batch-plan private/config/batch-plan.json \
+  --select entry-a --batch-folder private/batches/demo-001 --copy-local-files
+uv run --locked voice-batch verify --batch-folder private/batches/demo-001
 ```
 
-Metadata preflight is not codec validation. The ordered engine decodes **all parts of each selected interview before its first ASR call**. An invalid interview does not prevent later independent selected interviews from being attempted. `prepare` never calls providers. Extensionless video staging uses a bounded local ffprobe on an exact private copy, not a filename guess or an original rename. Supported named media retains the existing staging path and verification contract. It copies into generic numbered filenames, hashes originals and copies, and checks original metadata/content before accepting the staging ledger. Originals are never modified. macOS dataless sources need explicit `--allow-hydration` on `prepare`; inventory/check only inspect their metadata. On other systems a file open may trigger remote filesystem reads; keep staging on a filesystem whose behavior you control.
+Metadata preflight is not codec validation. The ordered engine decodes **all parts of each selected interview before its first ASR call**. An invalid interview does not prevent later independent selected interviews from being attempted. `prepare` never calls providers. Extensionless video staging uses a bounded local ffprobe on an exact private copy, not a filename guess or an original rename. Supported named media retains the existing staging path and verification contract. It copies into generic numbered filenames, hashes originals and copies, and checks original metadata/content before accepting the staging ledger. Originals are never modified. macOS dataless sources need explicit `--download-cloud-files` on `prepare`; inventory/check only inspect their metadata. On other systems a file open may trigger remote filesystem reads; keep staging on a filesystem whose behavior you control.
 
 Preparation writes an exclusive immutable plan snapshot, selected IDs, per-entry manifest and staging ledger. Partial staging is retained for inspection; use a fresh batch directory after a failed prepare. Never edit staged manifests, ledgers or media. `verify` checks their recorded bytes and hashes without accessing original recordings; originals may subsequently be unavailable. The stage snapshot/checksums protect accidental modification, not an attacker who can rewrite both records and hashes.
 
@@ -88,60 +90,62 @@ Preparation writes an exclusive immutable plan snapshot, selected IDs, per-entry
 
 ```bash
 # Explicit opt-in to provider calls. Defaults: gpt-transcribe, 300-second ASR chunks.
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --phase raw --send-to-openai
+uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+  --step raw --send-to-openai
 # Raw must already be complete for these sources and ASR settings.
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --phase review --send-to-openai
+uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+  --step review --send-to-openai
 # Inspect raw recordings and the private review reports separately before this command.
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --phase chapters --select entry-a --human-reviewed --send-to-openai \
-  --chapters both --narrative-person first
+uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+  --step chapters --select entry-a --human-reviewed --send-to-openai \
+  --chapter-style both --narrative-person first
 # Resume is automatic for batch processing; intact complete stages are reused.
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --select entry-a --phase review --send-to-openai
-uv run --locked voice-batch status --batch private/batches/demo-001
+uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+  --select entry-a --step review --send-to-openai
+uv run --locked voice-batch status --batch-folder private/batches/demo-001
 ```
 
 The batch chapter phase requires explicit IDs, `--human-reviewed`, and a complete source/settings-bound review with **no high findings**. The flag records the caller's decision; it does not infer approval from an Excel edit. Preserve machine bundles and keep human notes in separate copies. There is no batch unresolved-high override. Review failure, incomplete coverage, altered raw/review files, or changed binding prevents chapters. The direct engine retains its separately documented draft override.
 
 Batch chapters reuse the **exact review JSON and XLSX bytes accepted by the human gate**. A new chapter configuration may create a new ordered generation; its review bundle is copied from the approved generation, not regenerated by the provider. The gate captures manifest/raw/provenance/review identities, and the copy is revalidated under the interview lock before author operations. Changed approval data or a conflicting review already present in the target generation fails closed without requesting a new review or silently replacing that bundle. The chapter manifest's review SHA binds drafts to the approved JSON. Reusing the same bundle does not remove the explicit `--human-reviewed`/selection requirement.
 
-Raw transcripts retain exact part bytes and separators. All part caches and combined generations use the existing source/prompt/model/settings bindings; batch orchestration does not weaken them. Changing chapter settings can generate another combined generation while reusing ASR and the exact gate-approved review bundle. Validated original ASR and speaker-pass chunks are saved as private atomic request checkpoints. Matching resume reuses them; polish, review and narrative requests are not checkpointed and can repeat charges after a failed stage. There is no automatic rollback or deletion. Model quality/accuracy and publication suitability still require human review.
+Raw transcripts retain exact part bytes and separators. All part caches and combined generations use the existing source/prompt/model/settings bindings; batch orchestration does not weaken them. Changing chapter settings can generate another combined generation while reusing ASR and the exact gate-approved review bundle. Validated original ASR, speaker-pass, polish, review, and narrative requests are saved as private atomic checkpoints and reused on matching resume. Failed or invalid responses can still repeat charges. There is no automatic rollback or deletion. Model quality/accuracy and publication suitability still require human review.
 
 Models, hints and transport bounds are caller options:
 
 ```bash
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --phase raw --select entry-a --send-to-openai \
+uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+  --step raw --select entry-a --send-to-openai \
   --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
   --context-file private/hints/context.txt --glossary-file private/hints/glossary.txt \
-  --language en --provider-timeout 120 --provider-retries 2 --heartbeat-seconds 30
+  --language en --request-timeout 120 --request-retries 2 --status-interval 30
 ```
 
-Use the same ASR model, hints and chunk size in subsequent phases. Editing/review model defaults remain `gpt-6-astra`; change with `--editing-model`/`--author-model` when intentionally choosing a new configuration. `--provider-timeout` is the SDK's positive finite request timeout; `--provider-retries` is 0–5, default 2. These are transport settings and do not invalidate verified content caches. SDK timeouts/retries are not a whole-job wall-clock limit; retries and sequential chunks extend elapsed time. `--media-timeout` bounds individual FFmpeg operations, default 3600 seconds. Credentials and custom provider endpoint settings remain in the caller's environment.
+Use the same ASR model, hints and chunk size in subsequent phases. Editing/review model defaults remain `gpt-6-astra`; change with `--editing-model`/`--review-model` when intentionally choosing a new configuration. `--request-timeout` is the SDK's positive finite request timeout; `--request-retries` is 0–5, default 2. These are transport settings and do not invalidate verified content caches. SDK timeouts/retries are not a whole-job wall-clock limit; retries and sequential chunks extend elapsed time. `--media-timeout` bounds individual FFmpeg operations, default 3600 seconds. Credentials and custom provider endpoint settings remain in the caller's environment.
 
 ## Logs, progress and troubleshooting
 
-Installed commands emit flushed newline-delimited JSON for terminals, redirected files and CI. They do not use carriage-return displays, ANSI status animations or an overall percent. Each event includes an opaque **execution** UUID, monotonic sequence and elapsed seconds. `scope` distinguishes batch counters from an inner interview summary; batch `phase` identifies the requested operation. Events include safe stage status, numbered item/part/chunk counters, known chunk totals where available, processed/failure counters, and `cache_reused: true` for verified skipped stages. Review reports per-core starts and completions; elapsed idle heartbeats continue while a provider or local operation is pending. A heartbeat proves the coordinator is alive, not that the request has succeeded or that a provider is making progress.
+Installed commands default to an updating panel on a capable interactive terminal. `--progress plain` selects readable scrolling messages; `--progress json` selects flushed newline-delimited JSON. Redirected auto output remains JSON for scripts and CI. Bars count completed or verified reused work with a known total; they do not estimate overall elapsed-time completion. See [reading progress](pipeline-guide.md#read-the-progress-display).
 
-`voice-transcribe` defaults to `<output>/execution-logs/execution-<run>.jsonl`. Batch prepare/verify/run default to `<batch>/execution-logs/`; all use exclusive run files. Inventory/check/status write console events only unless `--log-directory` is given. Local logs contain the same allowlisted events as console output, never plan IDs, private paths, transcript text, hints, arbitrary exception strings, raw provider responses or credentials. Source provenance, plan snapshots and author artifacts are separately private content files. Files use mode 0600 and directories 0700 where the filesystem enforces those modes; storage is not encrypted.
+Each underlying event includes an opaque **execution** UUID, monotonic sequence and elapsed seconds. `scope` distinguishes batch counters from an inner interview summary; batch `phase` identifies the requested operation. Events include safe stage status, numbered item/part/chunk counters, known chunk totals where available, processed/failure counters, and `cache_reused: true` for verified skipped stages. Review reports per-core starts and completions; elapsed idle heartbeats continue while a provider or local operation is pending. A heartbeat proves the coordinator is alive, not that the request has succeeded or that a provider is making progress.
+
+`voice-transcribe` defaults to `<output>/execution-logs/execution-<run>.jsonl`. Batch prepare/verify/run default to `<batch>/execution-logs/`; all use exclusive run files. Inventory/check/status write console events only unless `--logs-folder` is given. Local logs contain the same allowlisted events as console output, never plan IDs, private paths, transcript text, hints, arbitrary exception strings, raw provider responses or credentials. Source provenance, plan snapshots and author artifacts are separately private content files. Files use mode 0600 and directories 0700 where the filesystem enforces those modes; storage is not encrypted.
 
 ```bash
 # Single video preparation, local only, with a chosen heartbeat/log directory:
-uv run --locked voice-transcribe --extract-only --input private/input/synthetic-b.mp4 \
-  --output-folder private/extracted --log-directory private/logs --heartbeat-seconds 10
+uv run --locked voice-transcribe --prepare-audio --input private/input/synthetic-b.mp4 \
+  --output-folder private/extracted --logs-folder private/logs --status-interval 10
 # Replay the same safe JSONL events after a failed attempt:
 cat private/logs/execution-*.jsonl
 # Batch failure counters from retained summaries:
-uv run --locked voice-batch status --batch private/batches/demo-001
+uv run --locked voice-batch status --batch-folder private/batches/demo-001
 ```
 
 Safe failures include fixed actionable setup/gate guidance; stage/item counters locate the failed entry via the external plan. Processing continues after local failures. Provider admission stops after consecutive operation failures (default 2), definite account/configuration failures, or explicit request/start-deadline limits; later selected entries are unattempted. See [recovery controls](recovery-controls.md). Exit 0 means all selected entries succeeded, exit 1 means failure/blocked selection, exit 2 means invalid CLI arguments, and exit 130 means keyboard/SIGTERM interruption. Clean interruption stops new scheduling/provider admission and drains active workers before releasing engine/batch locks, closing logs and retaining partial summaries. Returned valid responses are retained; waiting for SDK I/O or local preparation can extend cleanup. Abrupt process death/power loss may leave locks or partial staging; inspect active processes and artifacts locally before manually removing a stale lock. Never remove a lock while another run is active.
 
 If a console pipe closes, durable logs continue. If local logging fails (disk full, permissions), the run fails safely rather than reporting unlogged success; completed caches remain. Missing-key guidance points to `OPENAI_API_KEY` without logging its value. Provider failures use fixed access/quota/connectivity guidance; payload/traceback forwarding and unsafe debug output are unavailable. Long elapsed time alone does not establish a hung provider. Inspect stage/chunk events, transport bounds and network availability, then deliberately interrupt/resume if needed.
 
-Optional `run --interview` adds a separate attributed family; `--speaker-config` supplies per-entry names and confirmed mappings without editing staging. Missing names retain scoped unidentified speakers. Review and chapter gates apply independently to both selected families. A missing/invalid attributed prerequisite blocks attribution while eligible original work continues, and vice versa when shared source parts remain valid. Blocked prerequisites consume no provider requests and use fixed per-family guidance; the command exits nonzero while retaining completed family results; see [batch media and attribution](batch-media-attribution.md).
+Optional `run --separate-speakers` adds a separate attributed family; `--speaker-config` supplies per-entry names and confirmed mappings without editing staging. Missing names retain scoped unidentified speakers. Review and chapter gates apply independently to both selected families. A missing/invalid attributed prerequisite blocks attribution while eligible original work continues, and vice versa when shared source parts remain valid. Blocked prerequisites consume no provider requests and use fixed per-family guidance; the command exits nonzero while retaining completed family results; see [batch media and attribution](batch-media-attribution.md).
 
 Implementation is split into `src/batch/plan.py` (schema/metadata/selection), `storage.py` (copies/verification/locking), `runner.py` (engine invocation and phase gates), `cli.py` (commands/counters), `concurrency.py` (bounded interview scheduling), and `src/progress.py` (event allowlist/logs/heartbeats), `src/provider_errors.py` (safe SDK metadata categories), and `src/review_reuse.py` (locked, byte-identical approved review transfer). Tests use only synthetic media and mocked providers.
 
@@ -156,10 +160,10 @@ Before retrying a failed review:
 1. Stop after a diagnostic provider failure; do not advance to bulk processing or review because the diagnostic command finished. Inspect only the safe execution categories/status/counters first. Old generic failure records cannot establish the original HTTP status or timeout cause.
 2. Verify retained staging (`voice-batch verify`) and source/configuration-bound caches; keep failed outputs and human notes intact. Run the offline installation/progress tests below to check the software without provider requests.
 3. Correct known account/model/configuration issues locally. A repeated unknown failure needs investigation before a paid rerun; elapsed time alone is insufficient evidence.
-4. If a new attempt is deliberately authorized, select one interview and preserve matching ASR settings. `--provider-retries 0 --provider-timeout 30` lowers per-request retry/read budgets, but **does not establish a total wall-clock deadline or limit review to one chunk**. To cap new SDK starts, also use `--max-provider-requests 1`; see the [one-operation diagnostic and start-deadline limits](recovery-controls.md). These are not a dollar cap or hard cancellation of remote work.
+4. If a new attempt is deliberately authorized, select one interview and preserve matching ASR settings. `--request-retries 0 --request-timeout 30` lowers per-request retry/read budgets, but **does not establish a total wall-clock deadline or limit review to one chunk**. To cap new SDK starts, also use `--max-requests 1`; see the [one-operation diagnostic and start-deadline limits](recovery-controls.md). These are not a dollar cap or hard cancellation of remote work.
 
 ```bash
 uv run --locked pytest -q tests/test_provider_errors.py tests/test_progress.py tests/test_installation.py
-uv run --locked voice-batch verify --batch private/batches/demo-001
-uv run --locked voice-batch status --batch private/batches/demo-001
+uv run --locked voice-batch verify --batch-folder private/batches/demo-001
+uv run --locked voice-batch status --batch-folder private/batches/demo-001
 ```
