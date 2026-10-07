@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
+    from .provider_control import ProviderStopped
     from .derivative_versions import select_version, remember_version
     from .author_review import ReviewError, ReviewOptions, review_transcript, validate_review_report
     from .chapters import ChapterError, ChapterOptions, draft_chapters, render_chapter
@@ -17,6 +18,7 @@ if __package__:
     from .review_export import export_review
     from .source_provenance import author_binding, bind_report, bind_chapters, validate_binding
 else:
+    from provider_control import ProviderStopped
     from derivative_versions import select_version, remember_version
     from author_review import ReviewError, ReviewOptions, review_transcript, validate_review_report
     from chapters import ChapterError, ChapterOptions, draft_chapters, render_chapter
@@ -27,6 +29,10 @@ else:
 
 class AuthorWorkflowError(RuntimeError):
     """Fixed, privacy-safe author workflow failure."""
+
+    def __init__(self, message, *, admission_stopped=False):
+        super().__init__(message)
+        self.admission_stopped = admission_stopped
 
 
 @dataclass(frozen=True)
@@ -255,16 +261,20 @@ def run_author_stages(job, state, transcriber, options, *, resume, save, summary
             summary[stage] = status
             progress(stage, status)
             if status != 'complete':
-                raise AuthorWorkflowError('Author review failed or is incomplete; inspect the saved report. Chapter drafting is blocked.')
+                unreviewed = [c for c in report['coverage']['chunks'] if c['status'] != 'complete']
+                raise AuthorWorkflowError('Author review failed or is incomplete; inspect the saved report. Chapter drafting is blocked.',
+                    admission_stopped=bool(unreviewed) and all(
+                        c.get('error_category') == 'not_attempted' for c in unreviewed))
         except AuthorWorkflowError:
             if summary[stage] == 'pending':
                 summary[stage] = 'failed'
             raise
         except Exception as error:
-            state['stages'][stage] = {'status': 'failed', 'configuration_sha256': fingerprint,
+            stopped = isinstance(error, ProviderStopped)
+            state['stages'][stage] = {'status': 'incomplete' if stopped else 'failed', 'configuration_sha256': fingerprint,
                                       'transcription_sha256': raw_hash}
             remember_version(state, stage)
             save()
-            summary[stage] = 'failed'
+            summary[stage] = 'incomplete' if stopped else 'failed'
             message = str(error) if type(error) is ChapterError else 'Author stage failed; inspect review findings and retain the raw transcript.'
-            raise AuthorWorkflowError(message) from None
+            raise AuthorWorkflowError(message, admission_stopped=stopped) from None

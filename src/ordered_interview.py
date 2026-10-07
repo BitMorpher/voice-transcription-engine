@@ -13,6 +13,7 @@ if __package__:
     from .derivative_versions import (enhancement_path, select_version, remember_version, readability_speech,
                                       editing_prompt_hash, LEGACY_READABILITY_PROMPT_SHA256)
     from .review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
+    from .provider_control import ProviderStopped
     from .progress import CURRENT, emit_progress
     from . import transcriber as asr_engine
     from .author_review import source_segments
@@ -30,6 +31,7 @@ else:
     from derivative_versions import (enhancement_path, select_version, remember_version, readability_speech,
                                      editing_prompt_hash, LEGACY_READABILITY_PROMPT_SHA256)
     from review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
+    from provider_control import ProviderStopped
     from progress import CURRENT, emit_progress
     import transcriber as asr_engine
     from author_review import source_segments
@@ -531,7 +533,7 @@ class OrderedInterview:
                     stages = family.process(transcriber, approved_review=approved_attributed_review, require_raw=True)
                 except AttributionError as error:
                     raise PipelineError(str(error), stages={'attributed_' + key: value
-                        for key, value in error.stages.items()}) from None
+                        for key, value in error.stages.items()}, admission_stopped=error.admission_stopped) from None
                 return self.binding, {'attributed_' + key: value for key, value in stages.items()}
             self.preflight(require_raw=require_raw)
             existed = self.job.exists()
@@ -664,7 +666,7 @@ class OrderedInterview:
                     provenance=provenance,
                 )
             except AuthorWorkflowError as error:
-                author_error = str(error)
+                author_error = error
             if self.interview_options is not None:
                 if __package__:
                     from .interview_attribution import AttributedInterview, AttributionError, input_record
@@ -681,13 +683,19 @@ class OrderedInterview:
                     summary.update({'attributed_' + key: value for key, value in attributed.items()})
                 except AttributionError as error:
                     summary.update({'attributed_' + key: value for key, value in error.stages.items()})
-                    raise PipelineError(str(error), stages=summary) from None
+                    raise PipelineError(str(error), stages=summary,
+                        admission_stopped=error.admission_stopped and (
+                            author_error is None or author_error.admission_stopped)) from None
                 except asr_engine.TranscriptionError as error:
                     summary['attributed_attribution'] = 'failed'
                     raise PipelineError(str(error), stages=summary) from None
             if author_error:
-                raise PipelineError(author_error, stages=summary) from None
+                raise PipelineError(str(author_error), stages=summary,
+                                    admission_stopped=author_error.admission_stopped) from None
             return self.binding, summary
+        except ProviderStopped:
+            raise PipelineError('Provider admission stopped; completed checkpoints are retained.',
+                                stages=summary, admission_stopped=True) from None
         except PipelineError:
             raise
         except Exception as error:

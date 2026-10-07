@@ -80,6 +80,17 @@ def schema(index):
     }
 
 
+def preservation_diagnostics(source, edited):
+    """Numeric location and mismatch kind only; never include token values."""
+    before, after = words(source), words(edited)
+    first = next((i for i, (a, b) in enumerate(zip(before, after)) if a != b),
+                 min(len(before), len(after)))
+    return {'source_tokens': len(before), 'response_tokens': len(after),
+            'first_mismatch_token': first,
+            'mismatch_type': ('omission' if not edited.strip() and source.strip() else
+                'token_count' if len(before) != len(after) else 'token_sequence')}
+
+
 def validate_edit(content, source, index):
     try:
         def unique(pairs):
@@ -102,9 +113,10 @@ def validate_edit(content, source, index):
     # handler because EditingError also inherits ValueError.
     if not edited and source.strip():
         raise EditingError('Editing omitted all source content; no derivative was saved.',
-                           category='validation_source')
+                           category='validation_source', diagnostics=preservation_diagnostics(source, edited))
     if words(edited) != words(source):
-        raise EditingError('Editing changed, invented, omitted, or reordered words or symbols; no derivative was saved.', category='validation_source')
+        raise EditingError('Editing changed, invented, omitted, or reordered words or symbols; no derivative was saved.',
+                           category='validation_source', diagnostics=preservation_diagnostics(source, edited))
     # Restore boundary whitespace so adjacent edited chunks cannot merge words.
     leading = source[:len(source) - len(source.lstrip())]
     trailing = source[len(source.rstrip()):]

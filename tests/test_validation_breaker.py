@@ -218,7 +218,7 @@ def test_limit_is_a_positive_integer_without_echoing_input(limit):
 
 
 @pytest.mark.parametrize('excerpt', ['', ' \r\n'])
-def test_empty_quote_is_non_retryable_source_omission(excerpt):
+def test_empty_quote_remains_invalid_after_bounded_correction(excerpt):
     from tests.test_review_evidence import quote
     control = ProviderControl(retries=2)
     raw = client()
@@ -232,7 +232,7 @@ def test_empty_quote_is_non_retryable_source_omission(excerpt):
     finally:
         CURRENT_CONTROL.reset(token)
     assert report['coverage']['chunks'][0]['error_category'] == 'validation_quote_missing'
-    assert control.requests == control.validation_failures == 1
+    assert control.requests == 2 and control.validation_failures == 1
 
 
 def test_denied_recovery_and_cache_integrity_do_not_count_terminal_validation(tmp_path):

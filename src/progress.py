@@ -26,6 +26,7 @@ else:
 CURRENT = ContextVar('execution_reporter', default=None)
 CURRENT_TEXT_METRICS = ContextVar('text_metrics', default=None)
 TEXT_VALIDATION_RETRY = ContextVar('text_validation_retry', default=False)
+TEXT_OPERATION = ContextVar('text_operation', default=None)
 TEXT_TOKEN_FIELDS = {'prompt_tokens', 'completion_tokens', 'total_tokens',
                      'reasoning_tokens', 'cached_prompt_tokens'}
 TEXT_METRIC_COUNTS = {'sdk_operations_started', 'sdk_operations_completed',
@@ -120,6 +121,19 @@ def safe_text_metrics(value):
     return result
 
 
+def safe_validation_diagnostics(value):
+    """Re-allowlist local metadata at the serialization boundary."""
+    if not isinstance(value, dict):
+        return {}
+    counts = {'source_tokens', 'response_tokens', 'first_mismatch_token', 'group_index',
+              'turn_index', 'piece_index', 'piece_count', 'finding_index'}
+    return {key: item for key, item in value.items() if (
+        key in counts and type(item) is int and item >= 0
+        or key == 'quote_found_elsewhere' and type(item) is bool
+        or key == 'mismatch_type' and isinstance(item, str)
+        and item in {'omission', 'token_count', 'token_sequence'})}
+
+
 def _usage_value(container, key):
     try:
         return container.get(key) if isinstance(container, dict) else getattr(container, key, None)
@@ -155,6 +169,7 @@ class TextMetrics:
             self._counts['sdk_operations_started'] += 1
             if TEXT_VALIDATION_RETRY.get():
                 self._counts['validation_retries'] += 1
+            return self._counts['sdk_operations_started']
 
     def operation_finished(self, response, elapsed, *, failed=False):
         usage = _usage_value(response, 'usage') if not failed else None
@@ -212,14 +227,25 @@ def call_text_operation(method, parameters):
     metrics = current_text_metrics()
     if metrics is None:
         return method(**parameters)
-    metrics.operation_started()
+    operation = metrics.operation_started()
+    reporter = CURRENT.get()
+    context = TEXT_OPERATION.get()
+    def trace(status, duration=None):
+        if reporter is not None and context is not None:
+            reporter.emit(status='progress', stage=context[0], chunk=context[1],
+                          sdk_operation=operation, sdk_status=status, sdk_seconds=duration)
+    trace('started')
     started = time.monotonic()
     try:
         response = method(**parameters)
     except BaseException:
-        metrics.operation_finished(None, time.monotonic() - started, failed=True)
+        elapsed = time.monotonic() - started
+        metrics.operation_finished(None, elapsed, failed=True)
+        trace('failed', elapsed)
         raise
-    metrics.operation_finished(response, time.monotonic() - started)
+    elapsed = time.monotonic() - started
+    metrics.operation_finished(response, elapsed)
+    trace('returned', elapsed)
     return response
 
 
@@ -346,6 +372,7 @@ class Reporter:
                 raise LogError('Local execution logging failed; check permissions and free space.')
             now = time.monotonic()
             event = {'run': self.run, 'sequence': self.sequence + 1,
+                     'timestamp_utc': datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
                      'elapsed_seconds': round(now - self.started, 3)}
             metrics = self.text_metrics.snapshot()
             if metrics['sdk_operations_started'] or metrics['cache_hits']:
@@ -391,6 +418,16 @@ class Reporter:
                         self.configuration = event[key]
                 elif key == 'text_metrics':
                     event[key] = safe_text_metrics(value)
+                elif key == 'validation_diagnostics':
+                    event[key] = safe_validation_diagnostics(value)
+                elif key == 'sdk_operation' and type(value) is int and value > 0:
+                    event[key] = value
+                elif key == 'validation_model' and isinstance(value, str) and value in {'gpt-6.1-sol', 'gpt-6-astra'}:
+                    event[key] = value
+                elif key == 'sdk_status' and isinstance(value, str) and value in {'started', 'returned', 'failed'}:
+                    event[key] = value
+                elif key == 'sdk_seconds' and type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                    event[key] = round(value, 6)
                 elif key == 'families':
                     event[key] = safe_families(value)
                 elif key == 'recorded_status' and isinstance(value, str) and value in STATUSES:

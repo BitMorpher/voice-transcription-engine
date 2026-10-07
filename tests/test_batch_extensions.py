@@ -561,3 +561,63 @@ def test_batch_v3_provenance_checksum_is_required_on_raw_resume(interview_batch,
     assert run(root, 'raw', '--select', 'entry-1') == 1
     assert interview_client.audio.transcriptions.create.call_count == calls
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('target_stage', ['enhancement', 'author_review'])
+def test_breaker_stop_preserves_partial_family_and_reports_incomplete(
+        interview_batch, interview_client, target_stage, capsys):
+    from src.progress import CURRENT
+    from src.provider_control import CURRENT_CONTROL
+    root = interview_batch
+    assert run(root) == 0
+    normal = interview_client.chat.completions.create.side_effect
+    def answer(**kw):
+        result = normal(**kw)
+        name = kw['response_format']['json_schema']['name']
+        matching = ('group_edit' in name if target_stage == 'enhancement' else 'review' in name)
+        if CURRENT.get().context.get('family') == 'attributed' and matching:
+            # A separate worker trips the shared breaker while this valid call drains.
+            CURRENT_CONTROL.get().reason = 'validation_failures'
+        return result
+    interview_client.chat.completions.create.side_effect = answer
+    # Enhancement stops the subsequent review; a final admitted review drains.
+    capsys.readouterr()
+    code = run(root, 'review', '--select', 'entry-1')
+    summary = latest_summary(root)
+    if target_stage == 'enhancement':
+        assert code == 1
+        assert summary['incomplete'] == 1 and summary['failed'] == 0
+        row = summary['items'][0]
+        assert row['families']['original']['phase_result'] == 'complete'
+        assert row['families']['attributed']['enhancement'] == 'complete'
+        assert row['families']['attributed']['author_review'] == 'incomplete'
+        assert list(root.rglob('review_report.xlsx'))
+    else:
+        # A single final review chunk that was already admitted is complete.
+        assert code == 0 and summary['completed'] == 1 and summary['failed'] == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert not any(e.get('stage_status') == 'failed' for e in events)
+
+
+def test_primary_validation_trigger_remains_failed_while_later_family_is_unattempted(
+        interview_batch, interview_client):
+    from src.progress import CURRENT
+    root = interview_batch
+    assert run(root) == 0
+    raw_snapshots = {p: p.read_bytes() for p in root.rglob('transcription.txt')}
+    normal = interview_client.chat.completions.create.side_effect
+    def answer(**kw):
+        if CURRENT.get().context.get('family') == 'original':
+            payload = json.loads(kw['messages'][-1]['content'])
+            body = dict(chunk_index=payload['chunk_index'], text='Altered words.', speaker_uncertain=False)
+            return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
+                message=SimpleNamespace(content=json.dumps(body), refusal=None))])
+        return normal(**kw)
+    interview_client.chat.completions.create.side_effect = answer
+    assert run(root, 'review', '--select', 'entry-1', '--validation-failure-limit', '1') == 1
+    summary = latest_summary(root)
+    assert summary['failed'] == 1 and summary['incomplete'] == 0
+    assert summary['items'][0]['families']['original']['phase_result'] == 'failed'
+    assert summary['items'][0]['families']['attributed']['phase_result'] == 'not_attempted'
+    assert interview_client.chat.completions.create.call_count == 2
+    assert all(p.read_bytes() == value for p, value in raw_snapshots.items())

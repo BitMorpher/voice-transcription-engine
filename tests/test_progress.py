@@ -153,8 +153,9 @@ def test_review_per_chunk_events_and_privacy():
         CURRENT.reset(token)
     rows = events(stream)
     assert report['status'] == 'complete' and len(rows) >= 8
-    assert [row['stage_status'] for row in rows] == ['running', 'complete'] * (len(rows) // 2)
-    assert all(row['chunks'] == len(rows) // 2 for row in rows)
+    stages = [row for row in rows if 'stage_status' in row]
+    assert [row['stage_status'] for row in stages] == ['running', 'complete'] * (len(stages) // 2)
+    assert all(row['chunks'] == len(stages) // 2 for row in stages)
     assert 'testimony' not in stream.getvalue()
 
 
@@ -193,6 +194,6 @@ def test_chapter_failures_emit_terminal_safe_chunk_event(failure, category):
     finally:
         CURRENT.reset(token)
     rows = events(stream)
-    assert [row['stage_status'] for row in rows] == ['running', 'failed']
+    assert [row['stage_status'] for row in rows if 'stage_status' in row] == ['running', 'failed']
     assert rows[-1]['chunk'] == 1 and rows[-1]['error_category'] == category
     assert 'SYNTHETIC_SECRET' not in stream.getvalue() and raw not in stream.getvalue()

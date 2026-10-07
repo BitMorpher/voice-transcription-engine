@@ -223,6 +223,7 @@ class Transcriber:
         return '\n\n'.join(parts)
 
     def _enhance(self, transcription, *, checkpoint_root=None):
+        index = 0
         if not isinstance(transcription, str):
             raise TranscriptionError('Editing input must be transcript text.')
         if not transcription.strip():
@@ -270,8 +271,12 @@ class Transcriber:
             if uncertain:
                 combined = '[Speaker attribution uncertain in chunks: ' + ', '.join(map(str, uncertain)) + ']\n\n' + combined
             return combined
+        except ProviderStopped:
+            emit_progress('enhancement', 'incomplete', chunk=index, chunks=len(sources),
+                          error_category='not_attempted')
+            raise
         except ResponseValidationError as error:
-            emit_progress('enhancement', 'failed', **classify(error))
+            emit_progress('enhancement', 'failed', chunk=index, **classify(error))
             raise TranscriptionError(str(error), category=error.category) from None
         except Exception as error:
             emit_progress('enhancement', 'failed', **classify(error))
@@ -287,6 +292,7 @@ class Transcriber:
 
     def enhance_attributed(self, raw, turns, *, checkpoint_root=None):
         """Edit bounded groups; preserve all source metadata and empty turns locally."""
+        index = 0
         try:
             groups = grouped_turns(raw, turns, self.editing_options.chunk_bytes)
             parameters, validators = [], []
@@ -321,9 +327,11 @@ class Transcriber:
                 cache.verify()
             return reassemble(raw, turns, edits)
         except ProviderStopped:
+            emit_progress('enhancement', 'incomplete', chunk=index, chunks=len(groups),
+                          error_category='not_attempted')
             raise
         except ResponseValidationError as error:
-            emit_progress('enhancement', 'failed', **classify(error))
+            emit_progress('enhancement', 'failed', chunk=index, **classify(error))
             raise TranscriptionError(str(error), category=error.category) from None
         except Exception as error:
             emit_progress('enhancement', 'failed', **classify(error))
