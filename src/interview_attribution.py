@@ -60,9 +60,10 @@ SAFE_CACHE = 'Attributed cache/output is changed, unverified, or conflicts; use 
 class AttributionError(TranscriptionError):
     """Safe failure retaining completed and failed attributed stage statuses."""
 
-    def __init__(self, message, *, stages):
+    def __init__(self, message, *, stages, admission_stopped=False):
         super().__init__(message)
         self.stages = dict(stages)
+        self.admission_stopped = admission_stopped
 
 
 @dataclass(frozen=True)
@@ -764,12 +765,14 @@ class AttributedInterview:
             return summary
         except ProviderStopped:
             if active_stage is not None:
-                summary[active_stage] = 'not_attempted'
-            raise AttributionError('Provider admission stopped; completed checkpoints are retained.', stages=summary) from None
+                summary[active_stage] = 'incomplete'
+            raise AttributionError('Provider admission stopped; completed checkpoints are retained.',
+                                   stages=summary, admission_stopped=True) from None
         except (ModelConfigurationError, TranscriptionError, AuthorWorkflowError) as error:
             if active_stage is not None and summary.get(active_stage) == 'pending':
                 summary[active_stage] = 'failed'
-            raise AttributionError(str(error), stages=summary) from None
+            raise AttributionError(str(error), stages=summary,
+                admission_stopped=isinstance(error, AuthorWorkflowError) and error.admission_stopped) from None
         except (ValueError, KeyError, TypeError, OSError, AttributeError):
             if active_stage is not None and summary.get(active_stage) == 'pending':
                 summary[active_stage] = 'failed'

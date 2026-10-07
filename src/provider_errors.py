@@ -94,7 +94,14 @@ def classify(error):
             from text_requests import ResponseValidationError
         if isinstance(error, ResponseValidationError):
             category = error.category
-            return {'error_category': category if isinstance(category, str) and category in CATEGORIES else 'validation'}
+            result = {'error_category': category if isinstance(category, str) and category in CATEGORIES else 'validation'}
+            if error.diagnostics:
+                if __package__:
+                    from .progress import safe_validation_diagnostics
+                else:
+                    from progress import safe_validation_diagnostics
+                result['validation_diagnostics'] = safe_validation_diagnostics(error.diagnostics)
+            return result
         if __package__:
             from .transcriber import TranscriptionError
         else:

@@ -125,6 +125,8 @@ class TerminalProgress:
         return ' | '.join(f'{counts[key]} {label}' for key, label in labels)
 
     def _count_errors(self, event):
+        if event.get('error_category') == 'not_attempted':
+            return
         if event.get('stage_status') == 'failed':
             item = event.get('item')
             family, stage = _family_stage(event)

@@ -9,7 +9,7 @@ from pathlib import Path
 if __package__:
     from .interview_attribution import InterviewOptions, DIARIZATION_MODEL
     from .progress import CURRENT, Reporter, interruptions, LogError
-    from .provider_control import CURRENT_CONTROL, ProviderControl
+    from .provider_control import CURRENT_CONTROL, ProviderControl, ProviderStopped
     from .author_review import ReviewError, ReviewOptions
     from .author_workflow import AuthorOptions, AuthorWorkflowError
     from .chapters import ChapterOptions
@@ -32,7 +32,7 @@ if __package__:
 else:
     from interview_attribution import InterviewOptions, DIARIZATION_MODEL
     from progress import CURRENT, Reporter, interruptions, LogError
-    from provider_control import CURRENT_CONTROL, ProviderControl
+    from provider_control import CURRENT_CONTROL, ProviderControl, ProviderStopped
     from author_review import ReviewError, ReviewOptions
     from author_workflow import AuthorOptions, AuthorWorkflowError
     from chapters import ChapterOptions
@@ -439,8 +439,12 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
     except (MediaError, PipelineError, ConfigurationError, OSError, ValueError, AuthorWorkflowError, ReviewError, TranscriptionError) as error:
         message = str(error) if type(error) in (MediaError, PipelineError, OutputError, ConfigurationError, ModelConfigurationError, AuthorWorkflowError, ReviewError) else 'Cannot access local input/output; check permissions and free space.'
         control = CURRENT_CONTROL.get()
-        limited = control is not None and control.reason in {'request_limit', 'start_deadline'}
+        limited = (isinstance(error, ProviderStopped)
+                   or isinstance(error, (PipelineError, AuthorWorkflowError)) and error.admission_stopped
+                   or control is not None and control.reason in {'request_limit', 'start_deadline'})
         _report(status='incomplete' if limited else 'failed', message=message,
+                **({'stage': 'phase_result', 'stage_status': 'incomplete' if limited else 'failed'}
+                   if reporter is not None and 'family' in reporter.context else {}),
                 stop_reason=control.reason if control else None,
                 **({'stages': error.stages} if type(error) is PipelineError and error.stages else {}))
         return 1
@@ -468,7 +472,9 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
             failures += 1
             message = str(error) if type(error) in (MediaError, PipelineError, TranscriptionError) else 'Processing failed; check media validity, output access, and free space.'
             control = CURRENT_CONTROL.get()
-            limited = control is not None and control.reason in {'request_limit', 'start_deadline'}
+            limited = (isinstance(error, ProviderStopped)
+                   or isinstance(error, (PipelineError, AuthorWorkflowError)) and error.admission_stopped
+                   or control is not None and control.reason in {'request_limit', 'start_deadline'})
             incomplete += int(limited)
             _report(item=index, status='incomplete' if limited else 'failed', message=message,
                     finished=index,

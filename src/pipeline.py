@@ -32,9 +32,10 @@ else:
 class PipelineError(RuntimeError):
     """A safe pipeline/storage error."""
 
-    def __init__(self, message, *, stages=None):
+    def __init__(self, message, *, stages=None, admission_stopped=False):
         super().__init__(message)
         self.stages = stages or {}
+        self.admission_stopped = admission_stopped
 
 
 class Pipeline:
@@ -236,7 +237,7 @@ class Pipeline:
                     self._save(manifest, state)
                     summary[stage] = 'not_attempted' if stopped else 'failed'
                     message = str(error) if type(error) in (MediaError, PipelineError, TranscriptionError) else 'Stage failed; check media validity, output access, and free space.'
-                    raise PipelineError(message, stages=summary) from None
+                    raise PipelineError(message, stages=summary, admission_stopped=stopped) from None
                 self._save(manifest, state)
                 summary[stage] = 'complete'
                 self.progress(stage, 'complete')
@@ -248,7 +249,7 @@ class Pipeline:
                                       save=lambda: self._save(manifest, state), summary=summary,
                                       progress=self.progress)
                 except AuthorWorkflowError as error:
-                    author_error = str(error)
+                    author_error = error
             if not extract_only and self.interview_options is not None:
                 try:
                     family = AttributedInterview(self.output, [input_record(1, job, state)],
@@ -258,12 +259,15 @@ class Pipeline:
                     summary.update({'attributed_' + key: value for key, value in attributed.items()})
                 except AttributionError as error:
                     summary.update({'attributed_' + key: value for key, value in error.stages.items()})
-                    raise PipelineError(str(error), stages=summary) from None
+                    raise PipelineError(str(error), stages=summary,
+                        admission_stopped=error.admission_stopped and (
+                            author_error is None or author_error.admission_stopped)) from None
                 except TranscriptionError as error:
                     summary['attributed_attribution'] = 'failed'
                     raise PipelineError(str(error), stages=summary) from None
             if author_error:
-                raise PipelineError(author_error, stages=summary) from None
+                raise PipelineError(str(author_error), stages=summary,
+                                    admission_stopped=author_error.admission_stopped) from None
             return identity, summary
         finally:
             lock.unlink()

@@ -106,7 +106,7 @@ def test_failed_sdk_operation_keeps_usage_explicitly_missing(error):
     assert 'SYNTHETIC_SECRET' not in json.dumps(totals)
 
 
-def test_reporter_records_missing_usage_without_new_progress_events():
+def test_reporter_correlates_sdk_events_and_records_missing_usage():
     client = MagicMock()
     client.chat.completions.create.return_value = response()
     stream = io.StringIO()
@@ -118,10 +118,13 @@ def test_reporter_records_missing_usage_without_new_progress_events():
     finally:
         CURRENT.reset(token)
     rows = [json.loads(line) for line in stream.getvalue().splitlines()]
-    assert len(rows) == 1
-    assert rows[0]['text_metrics'] == reporter.text_metrics.snapshot()
-    assert rows[0]['text_metrics']['usage_missing'] == 1
-    assert rows[0]['text_metrics']['prompt_tokens_reported_operations'] == 0
+    assert len(rows) == 3
+    assert rows[0]['sdk_status'] == 'started' and rows[1]['sdk_status'] == 'returned'
+    assert rows[0]['sdk_operation'] == rows[1]['sdk_operation'] == 1
+    assert rows[1]['sdk_seconds'] >= 0
+    assert rows[-1]['text_metrics'] == reporter.text_metrics.snapshot()
+    assert rows[-1]['text_metrics']['usage_missing'] == 1
+    assert rows[-1]['text_metrics']['prompt_tokens_reported_operations'] == 0
     assert 'SYNTHETIC_SECRET' not in stream.getvalue()
 
 

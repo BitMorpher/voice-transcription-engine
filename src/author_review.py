@@ -232,9 +232,14 @@ def _resolve_quote(finding, pieces, chunk, raw):
     text = raw[left:right]
     position = text.find(excerpt)
     if position < 0:
-        raise ReviewError('Author-review quote was absent from referenced source.', category='validation_quote_missing')
+        raise ReviewError('Author-review quote was absent from referenced source.',
+            category='validation_quote_missing', diagnostics={
+                'quote_found_elsewhere': excerpt in raw[chunk['context_start']:chunk['context_end']],
+                'piece_index': indexes[0] + 1, 'piece_count': len(ids)})
     if text.find(excerpt, position + 1) >= 0:
-        raise ReviewError('Author-review quote had multiple source occurrences.', category='validation_quote_ambiguous')
+        raise ReviewError('Author-review quote had multiple source occurrences.',
+            category='validation_quote_ambiguous', diagnostics={
+                'piece_index': indexes[0] + 1, 'piece_count': len(ids)})
     start, end = left + position, left + position + len(excerpt)
     if (start >= selected[0]['end'] or end <= selected[-1]['start']
             or start >= chunk['end'] or end <= chunk['start']):
@@ -269,7 +274,7 @@ def _validate(content, chunk, raw):
                 or result['reviewed_piece_ids'] != payload['core_piece_ids']):
             raise ReviewError('Author-review response did not cover the exact core.', category='validation_coverage')
         pieces = _evidence_pieces(raw, chunk)
-        validated = []
+        validated, resolved, first_error = [], {}, None
         for finding in result['findings']:
             if (not isinstance(finding, dict)
                     or set(finding) != {'category', 'severity', 'reason_code', 'excerpt', 'piece_ids'}
@@ -280,13 +285,33 @@ def _validate(content, chunk, raw):
             category, severity, *_ = REASONS[finding['reason_code']]
             if finding['category'] != category or finding['severity'] != severity:
                 raise ValueError()
-            if not finding['excerpt'].strip():
-                raise ReviewError('Author-review quote contained no source evidence.',
-                                  category='validation_quote_missing')
-            start, end = _resolve_quote(finding, pieces, chunk, raw)
+        for position, finding in enumerate(result['findings']):
+            try:
+                if not finding['excerpt'].strip():
+                    raise ReviewError('Author-review quote contained no source evidence.',
+                                      category='validation_quote_missing')
+                start, end = _resolve_quote(finding, pieces, chunk, raw)
+            except ReviewError as error:
+                if first_error is None:
+                    first_error = error
+                    error.diagnostics.update(finding_index=position + 1)
+                continue
+            resolved[position] = finding
             validated.append({key: finding[key] for key in
                               ('category', 'severity', 'reason_code', 'excerpt')} |
                              {'start': start, 'end': end})
+        if first_error is not None:
+            def preserve_findings(content):
+                # Called only after the normal validator accepted the replacement.
+                candidate = json.loads(content)['findings']
+                if (len(candidate) != len(result['findings'])
+                        or any(a['reason_code'] != b['reason_code']
+                               for a, b in zip(candidate, result['findings']))
+                        or any(candidate[i] != finding for i, finding in resolved.items())):
+                    raise ReviewError('Review recovery changed or removed existing findings.',
+                                      category='validation_coverage')
+            first_error.recovery_validator = preserve_findings
+            raise first_error
         return validated
     except ResponseValidationError:
         raise
@@ -399,8 +424,16 @@ def review_transcript(raw, client, options=None, *, checkpoint_root=None):
     cache = TextRequestCache(checkpoint_root,
         text_binding('author_review', raw, options.fingerprint, validator_contract=REVIEW_CONTRACT),
         parameters, validators) if checkpoint_root else None
+    stopped = False
     for chunk in requests:
         index = chunk['chunk_index']
+        if stopped and (cache is None or cache.get(cache.layout[index - 1]) is None):
+            chunks.append({**chunk, 'status': 'not_attempted', 'attempted': False,
+                           'error_category': 'not_attempted',
+                           'error': 'Not requested after provider admission stopped.'})
+            emit_progress('author_review', 'not_attempted', chunk=index,
+                          chunks=len(requests), error_category='not_attempted')
+            continue
         emit_progress('author_review', 'running', chunk=index, chunks=len(requests))
         try:
             _suppress_provider_logging()
@@ -429,22 +462,19 @@ def review_transcript(raw, client, options=None, *, checkpoint_root=None):
                            **failure})
         if chunks[-1].get('error_category') == 'not_attempted':
             chunks[-1]['attempted'] = False
-        failure = {key: chunks[-1][key] for key in ('error_category', 'http_status', 'timeout_phase') if key in chunks[-1]}
+            chunks[-1]['status'] = 'not_attempted'
+        failure = {key: chunks[-1][key] for key in ('error_category', 'http_status', 'timeout_phase',
+                   'validation_diagnostics') if key in chunks[-1]}
         emit_progress('author_review', chunks[-1]['status'], chunk=chunk['chunk_index'], chunks=len(requests), **failure)
         if failure.get('error_category') in SYSTEMIC | {'not_attempted'}:
-            # Preserve full attempted/unattempted coverage without charging more
-            # chunks for a definite global configuration/account failure.
-            for remaining in requests[len(chunks):]:
-                chunks.append({**remaining, 'status': 'failed', 'attempted': False,
-                               'error_category': 'not_attempted',
-                               'error': 'Not requested after a systemic provider failure.'})
-                emit_progress('author_review', 'blocked', chunk=remaining['chunk_index'],
-                              chunks=len(requests), error_category='not_attempted')
-            break
+            # Drain later verified checkpoints, including holes from a previous
+            # invocation, without starting any more provider operations.
+            stopped = True
     if cache:
         cache.verify()
     completed = sum(chunk['status'] == 'complete' for chunk in chunks)
-    status = 'complete' if completed == len(chunks) else ('incomplete' if completed else 'failed')
+    status = 'complete' if completed == len(chunks) else (
+        'incomplete' if completed or all(c['status'] == 'not_attempted' for c in chunks) else 'failed')
     output_findings = []
     for key in sorted(findings):
         finding = findings[key]

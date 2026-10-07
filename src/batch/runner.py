@@ -208,19 +208,22 @@ def run_one(root, item, args):
                               stages={'phase_result': 'not_attempted'}, stop_reason=control.reason)
                 if control.cancelled.is_set():
                     raise KeyboardInterrupt()
-                results.append('incomplete' if control.reason in {'request_limit', 'start_deadline'} else 'failed')
+                results.append('not_attempted')
                 continue
             reporter.emit(status='progress', stage='prerequisite', stage_status='complete')
             code = engine_main(command, approved_review=approval if family == 'original' else None,
                 interview_options_override=interview_options if family == 'attributed' else None,
                 approved_attributed_review=approval if family == 'attributed' else None,
                 attributed_only=family == 'attributed', require_raw=True)
-            outcome = 'complete' if code == 0 else 'incomplete' if control and control.reason in {
-                'request_limit', 'start_deadline'} else 'failed'
+            outcome = 'complete' if code == 0 else 'incomplete' if (
+                reporter.families(item['position']).get(family, {}).get('phase_result') == 'incomplete'
+                or control and control.reason in {'request_limit', 'start_deadline'}) else 'failed'
             reporter.emit(status='progress', stage='phase_result', stage_status=outcome)
             results.append(outcome)
             if control and control.cancelled.is_set():
                 raise KeyboardInterrupt()
-        return next((state for state in ('failed', 'incomplete', 'blocked') if state in results), 'complete')
+        if 'not_attempted' in results:
+            results.append('not_attempted' if all(s == 'not_attempted' for s in results) else 'incomplete')
+        return next((state for state in ('failed', 'incomplete', 'blocked', 'not_attempted') if state in results), 'complete')
     finally:
         reporter.context = context

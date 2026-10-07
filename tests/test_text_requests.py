@@ -287,12 +287,11 @@ def test_local_diarization_validation_is_distinct_from_provider_failure(tmp_path
 
 @pytest.mark.parametrize('source', ['SYNTHETIC_SECRET source words.', '...'])
 @pytest.mark.parametrize('edited', ['', ' \n\t'])
-def test_empty_polish_is_source_omission_without_recovery_or_checkpoint(
+def test_empty_polish_recovers_only_with_a_validated_replacement(
         tmp_path, provider, source, edited):
     def respond(**parameters):
         payload = json.loads(parameters['messages'][-1]['content'])
-        # A second response would succeed, proving the test detects unwanted
-        # recovery rather than merely exhausting repeated invalid responses.
+        # Omission is still invalid; only the exact second response can be saved.
         text = edited if provider.chat.completions.create.call_count == 1 else payload['text']
         return completion(json.dumps({'chunk_index': payload['chunk_index'],
                                       'text': text, 'speaker_uncertain': False}))
@@ -302,16 +301,16 @@ def test_empty_polish_is_source_omission_without_recovery_or_checkpoint(
     stream = io.StringIO()
     reporting = CURRENT.set(Reporter(stream, heartbeat=0))
     try:
-        with pytest.raises(TranscriptionError, match='omitted all source content'):
-            Transcriber(client=provider, provider_retries=2).enhance_transcription(
-                source, checkpoint_root=tmp_path)
+        assert Transcriber(client=provider, provider_retries=2).enhance_transcription(
+            source, checkpoint_root=tmp_path) == source
     finally:
         CURRENT_CONTROL.reset(token)
         CURRENT.reset(reporting)
-    assert provider.chat.completions.create.call_count == control.requests == 1
-    assert control.failures == 0
-    assert not list(tmp_path.rglob('response.json'))
+    assert provider.chat.completions.create.call_count == control.requests == 2
+    assert control.failures == control.validation_failures == 0
+    assert len(list(tmp_path.rglob('response.json'))) == 1
     rows = [json.loads(line) for line in stream.getvalue().splitlines()]
-    assert rows[-1]['error_category'] == 'validation_source'
-    assert not any(row.get('validation_retries') for row in rows)
+    assert any(row.get('error_category') == 'validation_source' and
+               row.get('stage_status') == 'running' for row in rows)
+    assert any(row.get('validation_retries') == 1 for row in rows)
     assert 'SYNTHETIC_SECRET' not in stream.getvalue()

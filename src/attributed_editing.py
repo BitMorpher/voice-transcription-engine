@@ -122,15 +122,20 @@ def validate_group(content, group, index):
     except (ValueError, TypeError):
         raise EditingError('Attributed editing omitted, duplicated, or reordered turn identities.') from None
     edited = []
-    for source, edit in zip(group, result['edits'], strict=True):
-        if not source['text'].strip():
-            if edit['text'].strip():
-                raise EditingError('Attributed editing invented speech for an empty turn.',
-                                   category='validation_source')
-            text = source['text']
-        else:
-            text, _ = validate_edit(json.dumps({'chunk_index': 1, 'text': edit['text'],
-                'speaker_uncertain': edit['speaker_uncertain']}, ensure_ascii=False), source['text'], 1)
+    for position, (source, edit) in enumerate(zip(group, result['edits'], strict=True), 1):
+        try:
+            if not source['text'].strip():
+                if edit['text'].strip():
+                    raise EditingError('Attributed editing invented speech for an empty turn.',
+                                       category='validation_source')
+                text = source['text']
+            else:
+                text, _ = validate_edit(json.dumps({'chunk_index': 1, 'text': edit['text'],
+                    'speaker_uncertain': edit['speaker_uncertain']}, ensure_ascii=False), source['text'], 1)
+        except EditingError as error:
+            error.diagnostics.update(group_index=index, turn_index=position,
+                                     piece_index=source['piece_index'])
+            raise
         edited.append({**source, 'text': text, 'speaker_uncertain': edit['speaker_uncertain']})
     return edited
 

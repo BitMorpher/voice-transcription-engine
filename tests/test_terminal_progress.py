@@ -548,3 +548,26 @@ def test_independent_family_failures_count_once_each_before_outer_result(termina
     reporter.emit(status='failed', finished=1, processed=1)
     assert reporter._renderer.counts()['failed'] == 1 and reporter._renderer.counts()['errors'] == 2
     reporter.close()
+
+
+def test_primary_errors_are_distinct_from_retry_and_admission_wrapper_events():
+    from src.terminal_progress import TerminalProgress
+    view = TerminalProgress(io.StringIO())
+    view.emit(dict(scope='batch', status='started', selected=27))
+    for item, family, stage, chunk in [(3, 'original', 'author_review', 2),
+            (3, 'attributed', 'enhancement', 24), (14, 'attributed', 'enhancement', 6),
+            (21, 'attributed', 'enhancement', 18)]:
+        base = dict(scope='interview', item=item, family=family, stage=stage, chunk=chunk)
+        view.emit(dict(base, status='progress', stage_status='running',
+                       error_category='validation_source', validation_retries=1))
+        view.emit(dict(base, status='progress', stage_status='failed', error_category='validation_source'))
+        view.emit(dict(scope='interview', item=item, family=family, status='failed'))
+        view.emit(dict(scope='batch', item=item, status='failed', processed=item))
+    for item in (20, 22, 23):
+        view.emit(dict(scope='interview', item=item, status='progress', stage='enhancement',
+                       stage_status='incomplete', error_category='not_attempted'))
+        view.emit(dict(scope='batch', item=item, status='incomplete', processed=item))
+    view.emit(dict(scope='batch', status='summary', selected=27, completed=16,
+                   failed=3, incomplete=3, not_attempted=5, blocked=0, finished=27))
+    assert view.counts() == dict(succeeded=16, failed=3, incomplete=3, not_attempted=5,
+        blocked=0, interrupted=0, errors=4, active=0, queued=0)

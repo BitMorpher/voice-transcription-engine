@@ -173,8 +173,9 @@ def test_systemic_review_stops_after_one_call_with_full_failed_coverage(status, 
     assert all(chunk['error_category'] == 'not_attempted' and chunk['attempted'] is False for chunk in chunks[1:])
     assert 'SYNTHETIC_SECRET' not in stream.getvalue() and 'secret source' not in stream.getvalue()
     rows = [json.loads(line) for line in stream.getvalue().splitlines()]
-    assert rows[1]['http_status'] == status
-    assert all(row['stage_status'] == 'blocked' for row in rows[2:])
+    stages = [r for r in rows if 'stage_status' in r]
+    assert stages[1]['http_status'] == status
+    assert all(row['stage_status'] == 'not_attempted' for row in stages[2:])
 
 
 @pytest.mark.parametrize('failure', ['timeout', 'server', 'rate_limit'])

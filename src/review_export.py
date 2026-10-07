@@ -125,14 +125,17 @@ def _build(report):
         context_end = _integer(chunk['context_end'])
         if (index in chunk_ids or start != chunk_cursor
                 or not 0 <= context_start <= start < end <= context_end <= total
-                or chunk['status'] not in {'complete', 'failed'}):
+                or chunk['status'] not in {'complete', 'failed', 'not_attempted'}
+                or chunk['status'] == 'not_attempted' and (
+                    chunk.get('attempted') is not False or chunk.get('error_category') != 'not_attempted')):
             raise ReviewExportError('Review chunk coverage is inconsistent.')
         chunk_ids.add(index)
         chunk_cursor = end
         if chunk['status'] == 'complete':
             actual_reviewed += end - start
     expected_status = ('complete' if actual_reviewed == total else
-                       'incomplete' if actual_reviewed else 'failed')
+                       'incomplete' if actual_reviewed or all(
+                           c['status'] == 'not_attempted' for c in chunks) else 'failed')
     if (chunk_cursor != total or actual_reviewed != reviewed
             or report['status'] != expected_status
             or coverage['complete'] != (expected_status == 'complete')):

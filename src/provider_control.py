@@ -67,6 +67,7 @@ class ProviderControl:
             if reporter:
                 reporter.emit(status='progress', validation_failures=self.validation_failures,
                               scope_validation_failures=count,
+                              stage=stage, validation_model=model,
                               stop_reason=self.reason)
 
     def cancel(self):
