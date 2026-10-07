@@ -3,6 +3,7 @@
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+import argparse
 import shutil
 import sys
 
@@ -19,51 +20,91 @@ from .storage import (lock, read_snapshot, save_snapshot, stage, summaries, veri
 
 def parser():
     value = PrivateArgumentParser(prog='voice-batch', color=False, allow_abbrev=False,
-                                  description=__doc__)
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description='Prepare and process a selected group of independent interviews. Recordings within each interview stay ordered.',
+        epilog='Actions:\n'
+               '  inventory  List entries and inspect file metadata without reading recordings.\n'
+               '  check      Check the plan and required local tools without reading recordings.\n'
+               '  prepare    Copy selected recordings into a fresh private batch folder.\n'
+               '  verify     Check saved copies and file checksums without reading original recordings.\n'
+               '  run        Process the saved batch: raw (transcribe), review, or chapters.\n'
+               '  status     Show results recorded by previous batch commands.\n\n'
+               'Examples:\n'
+               '  voice-batch inventory --batch-plan private/config/batch.json\n'
+               '  voice-batch prepare --batch-plan private/config/batch.json --batch-folder private/batches/demo --copy-local-files\n'
+               '  voice-batch run --batch-folder private/batches/demo --step raw --send-to-openai\n\n'
+               'Previous option spellings remain supported. See docs/cli-reference.md for the full pipeline guide.')
     value.add_argument('action', choices=('inventory', 'check', 'prepare', 'verify', 'run', 'status'),
-                       help='Inspect metadata, check tools, copy fresh staging, verify staged files, process interviews, or show recorded status.')
-    value.add_argument('--plan', type=Path, help='Private version 1 batch JSON; manifest paths relative to plan.')
-    value.add_argument('--batch', type=Path, help='Fresh directory for prepare; existing staged directory otherwise.')
-    value.add_argument('--select', action='append', default=[], help='Exact private entry ID; repeat as needed.')
-    value.add_argument('--exclude', action='append', default=[], help='Exclude exact entry ID; repeat as needed.')
-    value.add_argument('--copy-local-files', action='store_true', help='Required prepare approval to read/copy sources into fresh private staging.')
-    value.add_argument('--allow-hydration', action='store_true', help='Allow prepare to download cloud-placeholder sources locally; may use network/storage.')
-    value.add_argument('--send-to-openai', action='store_true', help='Required run approval to send audio/text to OpenAI; provider use can incur charges.')
-    value.add_argument('--human-reviewed', action='store_true',
-                       help='Confirm human review of every requested output family before selected chapters.')
-    value.add_argument('--phase', choices=('raw', 'review', 'chapters'), default='raw', help='Run phase (default: raw). Each requested family needs its own complete raw for review, or approved complete review for chapters. Ready families continue when another is blocked; partial results exit nonzero.')
-    value.add_argument('--parallel-interviews', type=int, default=1,
-                       help='Maximum whole interview groups running together, positive integer (default: 1; start with 2 for overlap). Run only; recordings within each group stay ordered. Shared provider limits; no requests-per-minute or cost cap.')
-    value.add_argument('--interview', action='store_true',
-                       help='Run original and separate attributed families; missing names keep scoped unidentified speakers.')
-    value.add_argument('--speaker-config', type=Path,
-                       help='Optional private per-entry names and confirmed mappings; requires run --interview.')
-    value.add_argument('--speaker-model', '--interview-model', dest='interview_model',
-                       help='Voice separation model, gpt-4o-transcribe-diarize; does not identify people. Requires run --interview; --interview-model remains an alias.')
-    value.add_argument('--diarization-chunk-seconds', type=_positive_timeout,
-                       help='Independent speaker-pass duration, 1–600 seconds; original ASR caches keep their settings.')
-    value.add_argument('--confirm-speaker-mappings', action='store_true',
-                       help='Confirm every supplied mapping against the explicit new diarization request scopes.')
-    value.add_argument('--max-provider-requests', type=int,
-                       help='Maximum new SDK operations across all selected entries/stages; requires --provider-retries 0. Use 1 for a bounded diagnostic.')
-    value.add_argument('--max-run-seconds', type=_positive_timeout,
-                       help='Elapsed admission deadline; requires zero retries and shortens new I/O timeouts to remaining time. In-flight work is not cancelled at this deadline; omit for full runs.')
-    value.add_argument('--provider-failure-limit', type=int, default=2,
-                       help='Stop after consecutive failures per endpoint/model (default: 2); account/configuration failures stop immediately.')
-    value.add_argument('--transcription-model', '--model', dest='model', default='gpt-transcribe', help='Original speech-to-text model (default: gpt-transcribe); --model remains an alias.')
-    value.add_argument('--editing-model', default='gpt-6-astra', help='Polish model, gpt-6-astra or gpt-6.1-sol (default: gpt-6-astra); review/chapters phases.')
-    value.add_argument('--author-model', default='gpt-6-astra', help='Review/chapter model, gpt-6-astra or gpt-6.1-sol (default: gpt-6-astra).')
-    value.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300, help='Original audio request duration, 1–600 seconds (default: 300); preserve for cache reuse.')
-    value.add_argument('--media-timeout', type=_positive_timeout, default=3600, help='Seconds per FFmpeg operation, positive finite number (default: 3600); prepare/run.')
-    value.add_argument('--provider-timeout', type=_positive_timeout, default=120, help='Seconds per SDK I/O wait, positive finite number (default: 120); run, not a total deadline.')
-    value.add_argument('--provider-retries', type=int, choices=range(6), default=2, help='SDK retries per operation, 0–5 (default: 2); nonzero also permits one eligible text validation recovery. Use 0 with request/time limits.')
-    value.add_argument('--heartbeat-seconds', type=_positive_timeout, default=30, help='Idle progress interval in seconds, positive finite number (default: 30).')
-    value.add_argument('--log-directory', type=Path, help='Private execution logs; defaults to batch/execution-logs.')
-    value.add_argument('--context-file', help='Private UTF-8 recording context, sent with supported ASR requests; run.')
-    value.add_argument('--glossary-file', help='Private UTF-8 expected terms, one per line; gpt-transcribe only, run.')
-    value.add_argument('--language', action='append', default=[], help='Lowercase expected language code; repeat for multilingual gpt-transcribe. Diarization allows one two-letter code.')
-    value.add_argument('--chapters', choices=('interview', 'narrative', 'both'), default='both', help='Chapter styles for chapters phase (default: both).')
-    value.add_argument('--narrative-person', choices=('first', 'third'), default='first', help='Narrative framing for chapters phase (default: first).')
+                       metavar='ACTION', help='Choose an action; see the descriptions and examples below.')
+    files = value.add_argument_group('Batch files and selection')
+    files.add_argument('--batch-plan', '--plan', dest='plan', type=Path,
+                       metavar='FILE', help='Private version 1 JSON list of independent interviews; recording-list paths are relative to this file.')
+    files.add_argument('--batch-folder', '--batch', dest='batch', type=Path,
+                       metavar='FOLDER', help='Fresh folder for prepare; existing saved batch folder for verify, run, or status.')
+    files.add_argument('--select', action='append', default=[], metavar='ENTRY_ID', help='Process only this exact entry ID from the plan; repeat to choose several.')
+    files.add_argument('--exclude', action='append', default=[], metavar='ENTRY_ID', help='Leave out this exact entry ID; repeat as needed.')
+    prepare = value.add_argument_group('Local preparation')
+    prepare.add_argument('--copy-local-files', action='store_true',
+                         help='Explicitly allow prepare to read and copy recordings into the fresh batch folder.')
+    prepare.add_argument('--download-cloud-files', '--allow-hydration', dest='allow_hydration', action='store_true',
+                         help='Allow prepare to download cloud-placeholder recordings before copying; may use network and disk space.')
+    steps = value.add_argument_group('Processing steps (run)')
+    steps.add_argument('--send-to-openai', action='store_true',
+                       help='Explicitly allow run to send audio/text to OpenAI; requests can incur charges.')
+    steps.add_argument('--step', '--phase', dest='phase', choices=('raw', 'review', 'chapters'), default='raw',
+                       metavar='STEP', help='raw: transcribe; review: polish and flag passages; chapters: draft after human review (default: raw). Each transcript version needs its own completed prerequisites.')
+    steps.add_argument('--human-reviewed', action='store_true',
+                       help='Confirm human review of every requested transcript version before chapters; also requires explicit --select IDs.')
+    steps.add_argument('--parallel-interviews', type=int, default=1,
+                       metavar='COUNT', help='Maximum interviews running together (default: 1; start with 2 for overlap). Recordings within each stay ordered; shared request limits, no requests-per-minute or cost cap.')
+    chapters = value.add_argument_group('Chapter drafts (run --step chapters)')
+    chapters.add_argument('--chapter-style', '--chapters', dest='chapters', choices=('interview', 'narrative', 'both'), default='both',
+                          metavar='STYLE', help='Draft interview excerpts, narrative arrangement, or both (default: both).')
+    chapters.add_argument('--narrative-person', choices=('first', 'third'), default='first',
+                          metavar='PERSON', help='Keep the source voice (first) or frame exact testimony in third person (default: first).')
+    transcription = value.add_argument_group('Transcription models and hints (run)')
+    transcription.add_argument('--transcription-model', '--model', dest='model', default='gpt-transcribe',
+                               metavar='MODEL', help='Speech-to-text model for the original transcript (default: gpt-transcribe).')
+    transcription.add_argument('--editing-model', default='gpt-6-astra',
+                               metavar='MODEL', help='Punctuation and layout polish model (default: gpt-6-astra); also accepts gpt-6.1-sol.')
+    transcription.add_argument('--review-model', '--author-model', dest='author_model', default='gpt-6-astra',
+                               metavar='MODEL', help='Review and chapter arrangement model (default: gpt-6-astra); also accepts gpt-6.1-sol.')
+    transcription.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300,
+                               metavar='SECONDS', help='Maximum audio seconds per transcription request, 1–600 (default: 300); keep unchanged to reuse completed transcription.')
+    transcription.add_argument('--context-file', metavar='FILE', help='Private UTF-8 text file explaining the recording; sent with supported transcription requests.')
+    transcription.add_argument('--glossary-file', metavar='FILE', help='Private UTF-8 list of expected terms, one per line; gpt-transcribe only.')
+    transcription.add_argument('--language', action='append', default=[],
+                               metavar='CODE', help='Expected lowercase language code, such as en; repeat for multilingual gpt-transcribe. Voice separation accepts one two-letter code.')
+    speakers = value.add_argument_group('Speaker labels (run)')
+    speakers.add_argument('--separate-speakers', '--interview', dest='interview', action='store_true',
+                          help='Add a separate transcript with voice labels alongside the original. Unconfirmed voices remain unidentified.')
+    speakers.add_argument('--speaker-config', type=Path,
+                          metavar='FILE', help='Private per-entry display names and confirmed voice mappings; requires --separate-speakers.')
+    speakers.add_argument('--speaker-model', '--interview-model', dest='interview_model',
+                          metavar='MODEL', help='Voice-separation model, gpt-4o-transcribe-diarize; does not identify people. Requires --separate-speakers.')
+    speakers.add_argument('--speaker-chunk-seconds', '--diarization-chunk-seconds', dest='diarization_chunk_seconds', type=_positive_timeout,
+                          metavar='SECONDS', help='Audio seconds per voice-separation request, 1–600; original transcription keeps its saved settings.')
+    speakers.add_argument('--confirm-speaker-mappings', action='store_true',
+                          help='Confirm every supplied voice mapping against the explicitly selected speaker chunks.')
+    execution = value.add_argument_group('Progress, logs, and request limits')
+    execution.add_argument('--progress', choices=('auto', 'plain', 'json'), default='auto',
+                           metavar='MODE', help='auto: live terminal status, JSON when redirected; plain: readable scrolling lines; json: structured events (default: auto).')
+    execution.add_argument('--logs-folder', '--log-directory', dest='log_directory', type=Path,
+                           metavar='FOLDER', help='Private structured execution logs (default for prepare/verify/run: <batch-folder>/execution-logs).')
+    execution.add_argument('--status-interval', '--heartbeat-seconds', dest='heartbeat_seconds', type=_positive_timeout, default=30,
+                           metavar='SECONDS', help='Seconds between idle status updates while a step is waiting (default: 30).')
+    execution.add_argument('--media-timeout', type=_positive_timeout, default=3600,
+                           metavar='SECONDS', help='Maximum seconds per local FFmpeg operation (default: 3600); prepare/run.')
+    execution.add_argument('--request-timeout', '--provider-timeout', dest='provider_timeout', type=_positive_timeout, default=120,
+                           metavar='SECONDS', help='Seconds allowed per OpenAI network wait (default: 120); run, not a total deadline.')
+    execution.add_argument('--request-retries', '--provider-retries', dest='provider_retries', type=int, choices=range(6), default=2,
+                           metavar='COUNT', help='OpenAI retries per operation, 0–5 (default: 2); nonzero also allows one eligible text-validation recovery. Use 0 with request/time limits.')
+    execution.add_argument('--max-requests', '--max-provider-requests', dest='max_provider_requests', type=int,
+                           metavar='COUNT', help='Maximum new OpenAI operations across selected entries and steps; requires --request-retries 0. Use 1 for a limited diagnostic run.')
+    execution.add_argument('--max-run-seconds', type=_positive_timeout,
+                           metavar='SECONDS', help='Stop starting new requests after this many seconds; requires zero retries. Requests already running are not cancelled; omit for full runs.')
+    execution.add_argument('--failure-limit', '--provider-failure-limit', dest='provider_failure_limit', type=int, default=2,
+                           metavar='COUNT', help='Stop new requests after consecutive failures for one service/model (default: 2); account/configuration failures stop immediately.')
     return value
 
 
@@ -98,6 +139,7 @@ def execute(args, reporter):
     require(not args.confirm_speaker_mappings or args.diarization_chunk_seconds is not None,
             'Speaker mapping confirmation requires explicit diarization chunks.')
     items = select(plan, include, args.exclude)
+    positions = {item['position']: index for index, item in enumerate(items, 1)}
     phase = args.phase if args.action == 'run' else args.action
     reporter.context = {'scope': 'batch', 'phase': phase, 'selected': len(items)}
     if args.action in {'check', 'prepare', 'run'}:
@@ -140,7 +182,8 @@ def execute(args, reporter):
     started = set()
     def process_item(item):
         previous = reporter.context
-        reporter.context = {'scope': 'batch', 'phase': phase, 'item': item['position'], 'selected': len(items)}
+        reporter.context = {'scope': 'batch', 'phase': phase, 'item': item['position'],
+                            'batch_position': positions[item['position']], 'selected': len(items)}
         reporter.begin_session(item['position'])
         with reporter.lock:
             started.add(item['position'])
@@ -205,6 +248,7 @@ def execute(args, reporter):
         if reporter.failed:
             return
         reporter.emit(**row, processed=sum(row['status'] != 'not_attempted' for row in rows), failed=counts['failed'], completed=counts['complete'],
+                      finished=len(rows),
                       staged=counts['staged'], verified=counts['verified'], blocked=counts['blocked'],
                       message='One or more requested families are blocked; inspect their prerequisite events. Eligible family results are retained.' if row['status'] == 'blocked' else None)
 
@@ -254,6 +298,7 @@ def execute(args, reporter):
         process()
     reporter.context = {'scope': 'batch', 'phase': phase}
     reporter.emit(status='summary', selected=len(items), processed=sum(row['status'] != 'not_attempted' for row in rows),
+                  finished=len(rows),
                   completed=sum(row['status'] == 'complete' for row in rows),
                   failed=sum(row['status'] == 'failed' for row in rows),
                   blocked=sum(row['status'] == 'blocked' for row in rows),
@@ -266,7 +311,7 @@ def execute(args, reporter):
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    reporter = Reporter(sys.stdout, heartbeat=args.heartbeat_seconds)
+    reporter = Reporter(sys.stdout, heartbeat=args.heartbeat_seconds, output=args.progress)
     token = CURRENT.set(reporter)
     control_token = CURRENT_CONTROL.set(None)
     try:

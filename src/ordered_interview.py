@@ -6,11 +6,12 @@ import os
 import re
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 if __package__:
     from .review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
-    from .progress import emit_progress
+    from .progress import CURRENT, emit_progress
     from . import transcriber as asr_engine
     from .author_review import source_segments
     from .author_workflow import (
@@ -25,7 +26,7 @@ if __package__:
     from .source_provenance import author_binding, validate_chapter_binding
 else:
     from review_reuse import reuse_approved_review, validate_approved_review, SAFE_APPROVAL
-    from progress import emit_progress
+    from progress import CURRENT, emit_progress
     import transcriber as asr_engine
     from author_review import source_segments
     from author_workflow import (
@@ -47,6 +48,20 @@ SAFE_INPUT = (
     "ordered parts array of unique IDs and accessible nonempty local media files."
 )
 SAFE_CACHE = "Interview cache is invalid, changed, locked, or conflicts; use a new output folder. No artifact was overwritten."
+
+
+@contextmanager
+def _recording_progress(part, total):
+    """Keep request counters attached to their recording and session."""
+    reporter = CURRENT.get()
+    previous = reporter.context if reporter is not None else None
+    if reporter is not None:
+        reporter.context = {**previous, 'part': part, 'parts': total}
+    try:
+        yield
+    finally:
+        if reporter is not None:
+            reporter.context = previous
 
 
 def _hash(value):
@@ -473,6 +488,7 @@ class OrderedInterview:
                 for part, _, _ in self.parts:
                     for stage in ('conversion', 'transcription'):
                         emit_progress(stage, 'skipped', part=part['order'], parts=len(self.parts))
+                    emit_progress('part_transcription', 'skipped', part=part['order'], parts=len(self.parts))
             else:
                 # Validate/decode ALL parts locally before ASR, including later recordings.
                 for part, directory, identity in self.parts:
@@ -484,9 +500,10 @@ class OrderedInterview:
                         options=self.options,
                         progress=self.progress,
                     )
-                    pipeline.process(
-                        part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
-                    )
+                    with _recording_progress(part['order'], len(self.parts)):
+                        pipeline.process(
+                            part["path"], extract_only=True, expected_source_sha256=part["source_sha256"]
+                        )
                 self.preflight()
                 if hasattr(transcriber, 'asr_checkpoint'):
                     # Validate all partial part checkpoints before any new ASR call.
@@ -500,15 +517,17 @@ class OrderedInterview:
                 for part, directory, identity in self.parts:
                     emit_progress("part_transcription", "running", part=part["order"], parts=len(self.parts))
                     self.progress("part_transcription", "running")
-                    Pipeline(
-                        directory, resume=True, media_timeout=self.media_timeout, options=self.options,
-                        progress=self.progress
-                    ).process(
-                        part["path"],
-                        transcriber=transcriber,
-                        require_nonempty=True,
-                        expected_source_sha256=part["source_sha256"],
-                    )
+                    with _recording_progress(part['order'], len(self.parts)):
+                        Pipeline(
+                            directory, resume=True, media_timeout=self.media_timeout, options=self.options,
+                            progress=self.progress
+                        ).process(
+                            part["path"],
+                            transcriber=transcriber,
+                            require_nonempty=True,
+                            expected_source_sha256=part["source_sha256"],
+                        )
+                    emit_progress('part_transcription', 'complete', part=part['order'], parts=len(self.parts))
                     self.progress("part_transcription", "complete")
                 self.preflight()
             raw, provenance = self._combine()

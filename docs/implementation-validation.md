@@ -6,7 +6,7 @@ The feature was implemented on isolated branch `feature/author-review-chapters`,
 
 ## Delivered behavior
 
-`voice-transcribe --workflow` handles one local audio/video path or a nonrecursive folder, with explicit or automatic media type. Select raw, polish, review, and chapter stages. Review is required before chapters, and unresolved high-priority findings block drafts unless `--draft-with-unresolved-high` is supplied. Reports are JSON and XLSX, with exact raw source spans, stable IDs, neutral questions, and reviewer fields. Interview excerpts and conservative narrative arrangements carry provenance, flags, omissions, and human-review labels.
+`voice-transcribe --author-workflow` handles one local audio/video path or a nonrecursive folder, with explicit or automatic media type. Select raw, polish, review, and chapter stages. Review is required before chapters, and unresolved high-priority findings block drafts unless `--draft-with-unresolved-high` is supplied. Reports are JSON and XLSX, with exact raw source spans, stable IDs, neutral questions, and reviewer fields. Interview excerpts and conservative narrative arrangements carry provenance, flags, omissions, and human-review labels.
 
 See [the workflow guide](author-workflow.md) for all options, examples, rubric, provenance, privacy, and retry details.
 

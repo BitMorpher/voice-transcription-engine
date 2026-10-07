@@ -319,6 +319,21 @@ class AttributedInterview:
                 raise ValueError()
 
     def _cache(self, part, transcriber, configuration, *, require_cached=False):
+        """Attach speaker-pass request counts to the correct recording."""
+        reporter = CURRENT.get()
+        previous = reporter.context if reporter is not None else None
+        if reporter is not None:
+            reporter.context = {**previous, 'family': 'attributed',
+                                'part': part['order'], 'parts': len(self.inputs)}
+        try:
+            result = self._cache_recording(part, transcriber, configuration, require_cached=require_cached)
+            emit_progress('diarization', 'complete', part=part['order'], parts=len(self.inputs))
+            return result
+        finally:
+            if reporter is not None:
+                reporter.context = previous
+
+    def _cache_recording(self, part, transcriber, configuration, *, require_cached=False):
         binding = _fingerprint({'source': part['source_sha256'], 'audio': part['audio_sha256'],
                                 'configuration': configuration})
         cache = self.output / 'diarization-cache' / binding

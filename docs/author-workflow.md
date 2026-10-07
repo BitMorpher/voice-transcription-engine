@@ -1,5 +1,7 @@
 # Author workflow: local media to source-bound review and chapter drafts
 
+For a first run, start with [getting started](getting-started.md); the [pipeline guide](pipeline-guide.md) explains steps, outputs, and technical terms.
+
 For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
 
 The author workflow takes a local audio or video recording, retains the automatic raw transcript, optionally produces a lightly polished derivative, reviews the raw text for passages needing human attention, and produces selectable chapter drafts. It is intended to help an author compare treatments of devotional oral history while preserving testimony and uncertainty.
@@ -12,17 +14,17 @@ Follow the [README setup instructions](../README.md#requirements-and-setup): Pyt
 
 ```bash
 # Audio: default stages are raw, polish, review. No chapters by default.
-uv run --locked voice-transcribe --workflow \
+uv run --locked voice-transcribe --author-workflow \
   --input private/input/synthetic.wav --media-type audio \
   --output-folder private/author-default
 
 # Video: prepare its first audio stream locally, then use the same stages.
-uv run --locked voice-transcribe --workflow \
+uv run --locked voice-transcribe --author-workflow \
   --input private/input/synthetic.mp4 --media-type video \
   --output-folder private/author-video
 
 # Auto-detect supported extensions; scan a mixed folder nonrecursively.
-uv run --locked voice-transcribe --workflow \
+uv run --locked voice-transcribe --author-workflow \
   --input private/input --media-type auto \
   --output-folder private/author-folder
 ```
@@ -35,12 +37,12 @@ Both audio and video are normalized to mono 16 kHz, 16-bit PCM WAV. Video uses t
 
 | Option | Behavior |
 | --- | --- |
-| `--workflow` | Select the author workflow through the existing `voice-transcribe` CLI. |
+| `--author-workflow` | Select the author workflow through the existing `voice-transcribe` CLI. |
 | `--media-type auto\|audio\|video` | Validate the local media selection; default `auto`. |
-| `--stages raw,polish,review` | Default selection. Accepts a comma-separated subset of `raw`, `polish`, `review`, `chapters`, without duplicates or spaces. Raw is always retained even if omitted from the list. |
-| `--chapters none\|interview\|narrative\|both` | Default `none`. Selecting a style also enables review and chapter generation, even if they were omitted from `--stages`. The `chapters` stage requires a style selection. |
+| `--steps raw,polish,review` | Default selection. Accepts a comma-separated subset of `raw`, `polish`, `review`, `chapters`, without duplicates or spaces. Raw is always retained even if omitted from the list. |
+| `--chapter-style none\|interview\|narrative\|both` | Default `none`. Selecting a style also enables review and chapter generation, even if they were omitted from `--steps`. The `chapters` stage requires a style selection. |
 | `--narrative-person first\|third` | Default `first`; controls conservative testimony framing, described below. |
-| `--author-model gpt-6-astra` | Review and narrative-arrangement model. Also accepts `gpt-6.1-sol`; default Astra with high reasoning. |
+| `--review-model gpt-6-astra` | Review and narrative-arrangement model. Also accepts `gpt-6.1-sol`; default Astra with high reasoning. |
 | `--editing-model gpt-6-astra` | Separate polishing model; also accepts `gpt-6.1-sol`. |
 | `--transcription-model gpt-transcribe` | ASR model. Existing model and hint options remain available; see the README. |
 | `--resume` | Verify source, configuration, prompts, and artifact checksums before skipping complete stages. |
@@ -49,18 +51,18 @@ Both audio and video are normalized to mono 16 kHz, 16-bit PCM WAV. Video uses t
 Stages execute in dependency order: conversion, raw transcription, optional polish, review, then chapters. Listing them in another order does not change that order. Raw-only processing needs no author-model request:
 
 ```bash
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw \
+uv run --locked voice-transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw \
   --output-folder private/author-raw
 
 # Review raw text without creating a polished derivative.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw,review \
+uv run --locked voice-transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw,review \
   --output-folder private/author-review
 
 # Create a separate polish and review report, retaining the raw text.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw,polish,review \
+uv run --locked voice-transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw,polish,review \
   --output-folder private/author-polish-review
 ```
 
@@ -110,20 +112,20 @@ Make a private copy of the workbook before entering human dispositions and revie
 
 ```bash
 # Both styles, after review; default gate blocks unresolved high findings.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.mp4 --stages raw,polish,review \
-  --chapters both --output-folder private/author-chapters
+uv run --locked voice-transcribe --author-workflow \
+  --input private/input/synthetic.mp4 --steps raw,polish,review \
+  --chapter-style both --output-folder private/author-chapters
 
 # Inspect the saved report first. Explicitly request warned drafts on retry.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.mp4 --stages raw,polish,review \
-  --chapters both --draft-with-unresolved-high \
+uv run --locked voice-transcribe --author-workflow \
+  --input private/input/synthetic.mp4 --steps raw,polish,review \
+  --chapter-style both --draft-with-unresolved-high \
   --output-folder private/author-chapters --resume
 
 # Conservative third-person testimony framing, with the ordinary high gate.
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.wav --stages raw,review \
-  --chapters narrative --narrative-person third \
+uv run --locked voice-transcribe --author-workflow \
+  --input private/input/synthetic.wav --steps raw,review \
+  --chapter-style narrative --narrative-person third \
   --output-folder private/author-third-person
 ```
 
@@ -164,18 +166,18 @@ Validated original ASR and interview speaker-pass responses are checkpointed and
 
 ## Local extraction and existing commands
 
-Extraction remains a separate entirely local operation; `--workflow --extract-only` is rejected. Resume can reuse a verified extraction later:
+Extraction remains a separate entirely local operation; `--author-workflow --prepare-audio` is rejected. Resume can reuse a verified extraction later:
 
 ```bash
-uv run --locked voice-transcribe --extract-only \
+uv run --locked voice-transcribe --prepare-audio \
   --input private/input/synthetic.mp4 --output-folder private/prepared
 
-uv run --locked voice-transcribe --workflow \
-  --input private/input/synthetic.mp4 --stages raw,review \
+uv run --locked voice-transcribe --author-workflow \
+  --input private/input/synthetic.mp4 --steps raw,review \
   --output-folder private/prepared --resume
 ```
 
-Existing `--pipeline`, `--input_folder`/`--input-folder`, `--output_folder`/`--output-folder`, `--enhance_for_reading`/`--enhance-for-reading`, and legacy audio folder output names remain compatible. Legacy `--format_as_interview` is still the faithful dialogue-layout alias in audio mode; it is distinct from the new source-bound chapter option and is unavailable in pipeline/workflow mode. Author-specific options require `--workflow`.
+Existing `--pipeline`, `--input_folder`/`--input-folder`, `--output_folder`/`--output-folder`, `--enhance_for_reading`/`--polish-text`, and legacy audio folder output names remain compatible. Legacy `--format_as_interview` is still the faithful dialogue-layout alias in audio mode; it is distinct from the new source-bound chapter option and is unavailable in pipeline/workflow mode. Author-specific options require `--author-workflow`.
 
 ## Privacy and hosted processing
 
@@ -205,7 +207,7 @@ Run the [offline verification commands](../README.md#offline-verification). Prov
 
 ## Continuations recorded in separate files
 
-Folder batch mode creates independent jobs. For several recordings from one interview, supply [an ordered interview manifest](ordered-interviews.md) with `--workflow --interview-manifest`. It retains raw parts, combines them without rewriting in explicit order, and runs these author stages once on the combined interview, with recording-level text provenance in JSON/XLSX and chapter citations.
+Folder batch mode creates independent jobs. For several recordings from one interview, supply [an ordered interview manifest](ordered-interviews.md) with `--author-workflow --recordings-list`. It retains raw parts, combines them without rewriting in explicit order, and runs these author stages once on the combined interview, with recording-level text provenance in JSON/XLSX and chapter citations.
 
 
 ## Batch selection and execution monitoring
@@ -213,14 +215,14 @@ Folder batch mode creates independent jobs. For several recordings from one inte
 For independent interviews with optional parallel processing, private plan/preflight/staging examples and separate human-approved chapter gates, see [batch orchestration](batch-orchestration.md). Installed commands now emit flushed safe stage/part/chunk events and elapsed idle heartbeats, with exclusive local JSONL logs. Source paths, user IDs, hints and transcript/provider text are excluded. Use the engine's matching source/settings with `--resume`; the batch coordinator adds resume automatically. Validated original ASR, speaker-pass, polish, review and narrative requests are checkpointed in pipeline/workflow and batch mode. See [recovery controls](recovery-controls.md).
 
 ```bash
-uv run --locked voice-transcribe --workflow \
-  --interview-manifest private/input/interview_manifest.json --stages raw \
+uv run --locked voice-transcribe --author-workflow \
+  --recordings-list private/input/interview_manifest.json --steps raw \
   --output-folder private/ordered-output --resume \
-  --heartbeat-seconds 30 --provider-timeout 120 --provider-retries 2
-uv run --locked voice-batch verify --batch private/batches/demo-001
-uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --select entry-a --phase review --send-to-openai
-uv run --locked voice-batch status --batch private/batches/demo-001
+  --status-interval 30 --request-timeout 120 --request-retries 2
+uv run --locked voice-batch verify --batch-folder private/batches/demo-001
+uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+  --select entry-a --step review --send-to-openai
+uv run --locked voice-batch status --batch-folder private/batches/demo-001
 ```
 
 

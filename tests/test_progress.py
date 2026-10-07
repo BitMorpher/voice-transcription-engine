@@ -59,7 +59,8 @@ def test_heartbeat_context_elapsed_and_stop(tmp_path):
         CURRENT.reset(token)
         reporter.close()
     heartbeats = [row for row in events(stream) if row['status'] == 'heartbeat']
-    assert heartbeats and heartbeats[0]['part'] == 2 and heartbeats[0]['chunk'] == 4
+    assert heartbeats and heartbeats[0]['chunk'] == 4
+    assert 'part' not in heartbeats[0] and 'parts' not in heartbeats[0]
     assert heartbeats[0]['idle_seconds'] >= 0.01
     assert [row['sequence'] for row in events(stream)] == list(range(1, len(events(stream)) + 1))
     assert all('percent' not in row for row in events(stream))

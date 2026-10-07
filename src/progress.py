@@ -17,9 +17,11 @@ import uuid
 if __package__:
     from .provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE, TIMEOUT_PHASES, TIMEOUT_GUIDANCE
     from .batch.prerequisites import GUIDANCE as BLOCK_GUIDANCE
+    from .terminal_progress import TerminalProgress, live_capable
 else:
     from provider_errors import CATEGORIES, GUIDANCE as ERROR_GUIDANCE, TIMEOUT_PHASES, TIMEOUT_GUIDANCE
     from batch.prerequisites import GUIDANCE as BLOCK_GUIDANCE
+    from terminal_progress import TerminalProgress, live_capable
 
 CURRENT = ContextVar('execution_reporter', default=None)
 STAGES = {'prerequisite', 'phase_result', 'conversion', 'transcription', 'enhancement', 'author_review', 'chapters',
@@ -30,7 +32,7 @@ STATUSES = {'started', 'progress', 'running', 'complete', 'failed', 'summary', '
             'skipped', 'interrupted', 'blocked', 'staged', 'verified', 'incomplete', 'pending',
             'not_attempted', 'configuration', 'latest'}
 COUNTERS = {'item', 'part', 'parts', 'chunk', 'chunks', 'processed', 'failed', 'selected',
-            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions', 'validation_retries'}
+            'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions', 'validation_retries', 'finished', 'batch_position'}
 GUIDANCE = ('Check local input permissions, media validity, output space and cache integrity; '
             'for provider stages check OPENAI_API_KEY, model access, quota and connectivity. '
             'Completed caches are retained; repeat voice-batch with matching settings, or use --resume with voice-transcribe. '
@@ -118,8 +120,8 @@ class LogError(RuntimeError):
 
 
 class Reporter:
-    """Thread-safe JSONL console/file reporting with an honest idle heartbeat."""
-    def __init__(self, stream, *, heartbeat=30):
+    """Thread-safe private JSON logs and selectable sanitized console reporting."""
+    def __init__(self, stream, *, heartbeat=30, output='json'):
         self.stream, self.heartbeat = stream, heartbeat
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.started = time.monotonic()
@@ -137,6 +139,26 @@ class Reporter:
         self.stop = threading.Event()
         self.thread = None
         self.run = uuid.uuid4().hex
+        self.output = None
+        self._renderer = None
+        self.set_output(output)
+
+    def set_output(self, mode):
+        """Use JSON by default; CLI auto mode opts capable terminals into live status."""
+        if mode not in {'auto', 'plain', 'json'}:
+            raise ValueError('Progress output must be auto, plain or json.')
+        with self.lock:
+            if mode == self.output:
+                return
+            if self._renderer is not None:
+                try:
+                    self._renderer.close()
+                except (OSError, ValueError):
+                    pass
+            self.output = mode
+            live = mode == 'auto' and live_capable(self.stream)
+            self._renderer = (TerminalProgress(self.stream, live=live)
+                              if self.stream is not None and (mode == 'plain' or live) else None)
 
     @property
     def context(self):
@@ -264,14 +286,25 @@ class Reporter:
                 event['idle_seconds'] = round(now - last, 3)
             else:
                 self.last = now
-                if event.get('stage') != self.active.get('stage'):
+                if 'stage' in event and event['stage'] != self.active.get('stage'):
                     self.active.pop('chunk', None)
-                self.active.update({k: event[k] for k in ('stage', 'stage_status', 'item', 'part', 'parts', 'chunk', 'chunks') if k in event})
+                    self.active.pop('chunks', None)
+                    if event.get('stage') not in {'conversion', 'part_transcription', 'transcription', 'diarization', 'staging'}:
+                        self.active.pop('part', None)
+                        self.active.pop('parts', None)
+                self.active.update({k: event[k] for k in ('scope', 'phase', 'family', 'selected',
+                    'batch_position', 'stage', 'stage_status', 'item', 'part', 'parts', 'chunk', 'chunks') if k in event})
+                if 'stage' in event:
+                    self.active['family'] = event.get('family',
+                        'attributed' if event['stage'].startswith('attributed_') else 'original')
                 if item in self.sessions:
                     _, active = self.sessions[item]
                     if 'stage' in event and event['stage'] != active.get('stage'):
                         active.pop('chunk', None)
                         active.pop('chunks', None)
+                        if event['stage'] not in {'conversion', 'part_transcription', 'transcription', 'diarization', 'staging'}:
+                            active.pop('part', None)
+                            active.pop('parts', None)
                     active.update({k: event[k] for k in ('scope', 'phase', 'stage', 'stage_status',
                         'family', 'item', 'part', 'parts', 'chunk', 'chunks') if k in event})
                     active['family'] = event.get('family', 'original')
@@ -290,12 +323,25 @@ class Reporter:
                     except (OSError, ValueError):
                         pass
                     self.log = None
+                    if self._renderer is not None:
+                        try:
+                            self._renderer.suspend()
+                        except (OSError, ValueError):
+                            pass
                     raise LogError('Local execution logging failed; check permissions and free space.') from None
             if self.stream is not None:
                 try:
-                    self.stream.write(line)
-                    self.stream.flush()
+                    if self._renderer is not None:
+                        self._renderer.emit(event)
+                    else:
+                        self.stream.write(line)
+                        self.stream.flush()
                 except (OSError, ValueError):
+                    if self._renderer is not None:
+                        try:
+                            self._renderer.close()
+                        except (OSError, ValueError):
+                            pass
                     if self.stream is sys.stdout:
                         sys.stdout = open(os.devnull, 'w')
                     self.stream = None
@@ -318,6 +364,11 @@ class Reporter:
         self.stop.set()
         if self.thread is not None:
             self.thread.join()
+        if self._renderer is not None:
+            try:
+                self._renderer.close()
+            except (OSError, ValueError):
+                pass
         if self.log is not None:
             try:
                 self.log.close()

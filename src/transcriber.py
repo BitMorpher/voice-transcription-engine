@@ -243,12 +243,12 @@ class Transcriber:
                 if not source.strip():
                     edited_parts.append(source)
                     continue
-                emit_progress('enhancement', 'running', chunk=index)
+                emit_progress('enhancement', 'running', chunk=index, chunks=len(sources))
                 _suppress_provider_logging()
                 edited, speaker_uncertain = validated_chat(self.client, parameters[index - 1],
                     validators[index - 1], stage='enhancement', cache=cache, index=index)
                 edited_parts.append(edited)
-                emit_progress('enhancement', 'complete', chunk=index)
+                emit_progress('enhancement', 'complete', chunk=index, chunks=len(sources))
                 if speaker_uncertain:
                     uncertain.append(index)
             if cache:

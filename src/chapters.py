@@ -311,18 +311,18 @@ def _narrative(raw, segments, findings, client, options, *, checkpoint_root=None
                      review_sha256=review_sha256, validator_contract=1),
         parameters, validators) if checkpoint_root else None
     for index, _ in enumerate(chunks, 1):
-        emit_progress('chapters', 'running', chunk=index)
+        emit_progress('chapters', 'running', chunk=index, chunks=len(chunks))
         try:
             _suppress_provider_logging()
             parts, missing = validated_chat(client, parameters[index - 1], validators[index - 1],
                 stage='chapters', cache=cache, index=index)
         except ResponseValidationError as error:
-            emit_progress('chapters', 'failed', chunk=index, **classify(error))
+            emit_progress('chapters', 'failed', chunk=index, chunks=len(chunks), **classify(error))
             raise ChapterError(str(error), category=error.category) from None
         except Exception as error:
-            emit_progress('chapters', 'failed', chunk=index, **classify(error))
+            emit_progress('chapters', 'failed', chunk=index, chunks=len(chunks), **classify(error))
             raise ChapterError('Chapter generation failed; check API/model access, quota, and connectivity. Raw transcript and review report are retained.') from None
-        emit_progress('chapters', 'complete', chunk=index)
+        emit_progress('chapters', 'complete', chunk=index, chunks=len(chunks))
         passages.extend(parts)
         omissions.extend(missing)
     if cache:

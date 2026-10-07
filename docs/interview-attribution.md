@@ -1,8 +1,10 @@
 # Additive interview speaker attribution
 
+For a first run, start with [getting started](getting-started.md); the [pipeline guide](pipeline-guide.md) explains steps, outputs, and technical terms.
+
 For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
 
-`voice-transcribe --workflow --interview` keeps the current output family and
+`voice-transcribe --author-workflow --separate-speakers` keeps the current output family and
 adds a separate attributed family. It uses actual provider speaker segments at
 transcription time; it does not ask a text editor to invent dialogue turns.
 Names alone cannot identify a voice. Initially, voices appear as scoped speaker
@@ -11,34 +13,34 @@ interviewer/interviewee names. Mapping identifies a user-confirmed claim; it doe
 not establish biometric identity or verify the provider's diarization.
 
 ```bash
-voice-transcribe --workflow --interview --input private/input/session.wav \
-  --output-folder private/output/session --stages raw \
+voice-transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+  --output-folder private/output/session --steps raw \
   --interviewer-name "Example Host" --interviewee-name "Example Guest"
 
 # After listening and identifying the provider's A and B voices in request 1:
-voice-transcribe --workflow --interview --input private/input/session.wav \
-  --output-folder private/output/session --stages raw --resume \
+voice-transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+  --output-folder private/output/session --steps raw --resume \
   --interviewer-name "Example Host" --interviewee-name "Example Guest" \
   --speaker-map 1:1:A=interviewer --speaker-map 1:1:B=interviewee
 
 # Select the same additional stages for both output families:
-voice-transcribe --workflow --interview --input private/input/session.wav \
-  --output-folder private/output/session --stages raw,polish,review --chapters both --resume \
+voice-transcribe --author-workflow --separate-speakers --input private/input/session.wav \
+  --output-folder private/output/session --steps raw,polish,review --chapter-style both --resume \
   --interviewer-name "Example Host" --interviewee-name "Example Guest" \
   --speaker-map 1:1:A=interviewer --speaker-map 1:1:B=interviewee
 
 # Ordered recordings from one interview are also supported:
-voice-transcribe --workflow --interview --interview-manifest private/input/interview.json \
-  --output-folder private/output/ordered-session --stages raw,review \
+voice-transcribe --author-workflow --separate-speakers --recordings-list private/input/interview.json \
+  --output-folder private/output/ordered-session --steps raw,review \
   --interviewer-name "Example Host" --interviewee-name "Example Guest"
 ```
 
 See [ordered recording inputs](ordered-interviews.md) for the manifest contract.
-`--interview` requires `--workflow` and both distinct, nonempty names. Names are
+`--separate-speakers` requires `--author-workflow` and both distinct, nonempty names. Names are
 local display metadata and are not sent as voice hints to the provider. Name and
-mapping flags without `--interview`, duplicate or malformed mappings, unsupported
+mapping flags without `--separate-speakers`, duplicate or malformed mappings, unsupported
 models, extraction mode, and multiple language hints fail before provider setup.
-`voice-batch run --interview` also supports a private per-entry speaker configuration
+`voice-batch run --separate-speakers` also supports a private per-entry speaker configuration
 and unidentified voices when names are absent. The direct `voice-transcribe` CLI
 still requires both names. See [batch media and attribution](batch-media-attribution.md)
 for batch opt-in, configuration and independent human-review gates.
@@ -143,7 +145,7 @@ interview chapter banners retain their unassigned-role wording. Inspect JSON for
 precise source spans; chapter layout remains a human-review draft.
 
 Raw always remains available. The same selected stages run independently for both
-families; without `--interview` there are no extra diarization or author calls.
+families; without `--separate-speakers` there are no extra diarization or author calls.
 A complete attributed review never approves an original review, or vice versa.
 Both retain the complete-review and unresolved-high gates described in the
 [author workflow](author-workflow.md). `--draft-with-unresolved-high` remains an
@@ -182,7 +184,7 @@ Enabling this mode sends a **second audio transcription pass**. Selected polish
 and author review run again for the attributed source; narrative chapter
 arrangement can add model calls. Interview chapter excerpts remain deterministic.
 Retries may add charges. Review/chapter gates apply independently, and completed
-original outputs remain available if attribution fails. Start with `--stages raw`
+original outputs remain available if attribution fails. Start with `--steps raw`
 and inspect speaker turns before requesting further stages.
 
 Only media content and supported transcription settings go to the additional
