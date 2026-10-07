@@ -251,7 +251,7 @@ class LogError(RuntimeError):
 
 class Reporter:
     """Thread-safe private JSON logs and selectable sanitized console reporting."""
-    def __init__(self, stream, *, heartbeat=30, output='json'):
+    def __init__(self, stream, *, heartbeat=30, output='json', quiet=False, no_color=False):
         self.stream, self.heartbeat = stream, heartbeat
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.started = time.monotonic()
@@ -271,15 +271,19 @@ class Reporter:
         self.thread = None
         self.run = uuid.uuid4().hex
         self.output = None
+        self.quiet = quiet
+        self.no_color = no_color
         self._renderer = None
         self.set_output(output)
 
-    def set_output(self, mode):
+    def set_output(self, mode, *, quiet=None, no_color=None):
         """Use JSON by default; CLI auto mode opts capable terminals into live status."""
         if mode not in {'auto', 'plain', 'json'}:
             raise ValueError('Progress output must be auto, plain or json.')
         with self.lock:
-            if mode == self.output:
+            quiet = self.quiet if quiet is None else quiet
+            no_color = self.no_color if no_color is None else no_color
+            if mode == self.output and quiet == self.quiet and no_color == self.no_color:
                 return
             if self._renderer is not None:
                 try:
@@ -287,9 +291,10 @@ class Reporter:
                 except (OSError, ValueError):
                     pass
             self.output = mode
+            self.quiet, self.no_color = quiet, no_color
             live = mode == 'auto' and live_capable(self.stream)
-            self._renderer = (TerminalProgress(self.stream, live=live)
-                              if self.stream is not None and (mode == 'plain' or live) else None)
+            self._renderer = (TerminalProgress(self.stream, live=live, no_color=no_color)
+                              if not quiet and self.stream is not None and (mode == 'plain' or live) else None)
 
     @property
     def context(self):
@@ -465,7 +470,7 @@ class Reporter:
                         except (OSError, ValueError):
                             pass
                     raise LogError('Local execution logging failed; check permissions and free space.') from None
-            if self.stream is not None:
+            if self.stream is not None and not self.quiet:
                 try:
                     if self._renderer is not None:
                         self._renderer.emit(event)

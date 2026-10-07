@@ -96,8 +96,13 @@ def parser(*, studio=False):
     speakers.add_argument('--confirm-speaker-mappings', action='store_true',
                           help='Confirm every supplied voice mapping against the explicitly selected speaker chunks.')
     execution = value.add_argument_group('Progress, logs, and request limits')
-    execution.add_argument('--progress', choices=('auto', 'plain', 'json'), default='auto',
+    display = execution.add_mutually_exclusive_group()
+    display.add_argument('--progress', choices=('auto', 'plain', 'json'), default='auto',
                            metavar='MODE', help='auto: live terminal status, JSON when redirected; plain: readable scrolling lines; json: structured events (default: auto).')
+    display.add_argument('--plain', dest='progress', action='store_const', const='plain',
+                         help='Readable scrolling progress without colors or terminal controls; alias for --progress plain.')
+    execution.add_argument('--quiet', action='store_true', help='Suppress console progress; retain private execution logs and exit status.')
+    execution.add_argument('--no-color', action='store_true', help='Disable colors; also honors NO_COLOR. Live terminal updates remain available.')
     execution.add_argument('--logs-folder', '--log-directory', dest='log_directory', type=Path,
                            metavar='FOLDER', help='Private structured execution logs (default for prepare/verify/run: <batch-folder>/execution-logs).')
     execution.add_argument('--status-interval', '--heartbeat-seconds', dest='heartbeat_seconds', type=_positive_timeout, default=30,
@@ -326,7 +331,8 @@ def execute(args, reporter):
 
 def main(argv=None, *, studio=False):
     args = parser(studio=studio).parse_args(argv)
-    reporter = Reporter(sys.stdout, heartbeat=args.heartbeat_seconds, output=args.progress)
+    reporter = Reporter(sys.stdout, heartbeat=args.heartbeat_seconds, output=args.progress,
+                        quiet=args.quiet, no_color=args.no_color)
     token = CURRENT.set(reporter)
     control_token = CURRENT_CONTROL.set(None)
     try:

@@ -63,11 +63,11 @@ Supported audio: WAV, MP3, M4A. Supported video: MP4, MOV, MKV, WebM, AVI, M4V. 
 
 ## Know what is happening
 
-On a capable interactive terminal, the command keeps a status panel in place while useful milestones and failures remain above it. The panel shows the current step, elapsed time, recording or interview counts, and progress through known recording parts or request sections. Parallel batch interviews have separate active rows.
+On a capable interactive terminal, the command keeps a status panel in place while useful milestones and failures remain above it. The panel shows the current step, elapsed time, recording or interview counts, and progress through known recording parts or request sections. It also shows succeeded, failed, error, blocked, active and queued totals. Parallel batch interviews have separate active rows; the active count counts interviews, so two transcript families within one interview count once.
 
 Bars count completed or verified reused work. A request in progress does not count as completed, and a section bar reaching its end does not mean every later pipeline step has finished. When a total is unknown, the command shows activity without an invented percentage or completion estimate.
 
-`--progress plain` prints readable scrolling messages. `--progress json` prints machine-readable events; default `auto` also preserves JSON when output is redirected or the terminal cannot support the live panel. Private execution logs remain JSONL in every display mode. See [reading progress](docs/pipeline-guide.md#read-the-progress-display).
+`--plain` or `--progress plain` prints readable scrolling messages without colors or terminal controls. `--progress json` prints machine-readable events; default `auto` also preserves JSON when output is redirected or the terminal cannot support the live panel. `--quiet` suppresses console progress while retaining logs and exit status. `--no-color` or the `NO_COLOR` environment variable disables color while keeping live updates. Private execution logs remain JSONL in every display mode. See [reading progress](docs/pipeline-guide.md#read-the-progress-display).
 
 ## Add polish and author review
 

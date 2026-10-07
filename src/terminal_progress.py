@@ -7,6 +7,7 @@ The reporter remains responsible for privacy filtering and durable JSON logging.
 import os
 import shutil
 import textwrap
+from collections import Counter
 
 
 STAGE_LABELS = {
@@ -24,6 +25,15 @@ STAGE_LABELS = {
     'combined_raw': 'Combining transcripts',
     'diarization': 'Separating voices',
     'attribution': 'Adding speaker labels',
+}
+COMPLETED_LABELS = {
+    'prerequisite': 'Checked saved results', 'phase_result': 'Finished this step',
+    'conversion': 'Prepared audio', 'transcription': 'Transcribed audio',
+    'enhancement': 'Created readable text', 'author_review': 'Checked text for author review',
+    'chapters': 'Drafted chapters', 'part_transcription': 'Transcribed recording',
+    'staging': 'Copied recordings', 'preflight': 'Checked inputs',
+    'verification': 'Verified saved recordings', 'combined_raw': 'Combined transcripts',
+    'diarization': 'Separated voices', 'attribution': 'Added speaker labels',
 }
 STATUS_LABELS = {
     'started': 'started', 'progress': 'working', 'running': 'working',
@@ -68,9 +78,10 @@ def _family_stage(event):
 class TerminalProgress:
     """A bounded live panel, or scrolling milestones without control characters."""
 
-    def __init__(self, stream, *, live=False):
+    def __init__(self, stream, *, live=False, no_color=False):
         self.stream = stream
         self.live = live
+        self.color = live and not no_color and 'NO_COLOR' not in os.environ
         self.lines = 0
         self.hidden = False
         self.activities = {}
@@ -84,6 +95,67 @@ class TerminalProgress:
         self.last_guidance = set()
         self.closed = False
         self.summary = None
+        self.outcomes = {}
+        self.errors = set()
+        self.final_counts = None
+
+    def counts(self):
+        outcomes = Counter(self.outcomes.values())
+        if self.final_counts is not None:
+            for status, count in self.final_counts.items():
+                outcomes[status] = count
+        # Ordered direct interviews omit an item number; their None identity is
+        # still one active input, even when both transcript families have rows.
+        active = {item for item, _ in self.activities if item not in self.outcomes}
+        return {
+            'succeeded': sum(outcomes[status] for status in ('complete', 'staged', 'verified')),
+            **{status: outcomes[status] for status in
+               ('failed', 'blocked', 'interrupted', 'incomplete', 'not_attempted')},
+            'errors': len(self.errors), 'active': len(active),
+            'queued': max(0, (self.selected or 0) - sum(outcomes.values()) - len(active)),
+        }
+
+    def _stats(self):
+        counts = self.counts()
+        labels = [('succeeded', 'succeeded'), ('failed', 'failed'), ('errors', 'errors'),
+                  ('blocked', 'blocked'), ('active', 'active'), ('queued', 'queued')]
+        labels.extend((key, label) for key, label in
+                      [('incomplete', 'incomplete'), ('interrupted', 'interrupted'),
+                       ('not_attempted', 'not started')] if counts[key])
+        return ' | '.join(f'{counts[key]} {label}' for key, label in labels)
+
+    def _count_errors(self, event):
+        if event.get('stage_status') == 'failed':
+            item = event.get('item')
+            family, stage = _family_stage(event)
+            if stage == 'phase_result':
+                if not any(key[0] == item and key[1] in {family, None} for key in self.errors):
+                    self.errors.add((item, family, None, None, None))
+                return
+            self.errors.discard((item, None, None, None, None))
+            self.errors.discard((item, family, None, None, None))
+            previous = self.activities.get((item, family), {})
+            part = event.get('part', previous.get('part') if _family_stage(previous)[1] == stage else None)
+            key = item, family, stage, part, event.get('chunk')
+            if 'chunk' in event:
+                self.errors.discard((item, family, stage, part, None))
+                self.errors.add(key)
+            elif not any(existing[:3] == key[:3] and (part is None or existing[3] == part)
+                         for existing in self.errors):
+                self.errors.add(key)
+        elif event.get('status') == 'failed':
+            item, family = event.get('item'), event.get('family')
+            if not any(key[0] == item and (family is None or key[1] in {family, None})
+                       for key in self.errors):
+                self.errors.add((item, family, None, None, None))
+
+    def _styled(self, text, status=None):
+        if not self.color:
+            return text
+        code = ('32' if status in {'complete', 'skipped', 'staged', 'verified'} else
+                '31' if status == 'failed' else
+                '33' if status in {'blocked', 'incomplete', 'interrupted', 'not_attempted'} else '36')
+        return f'\x1b[{code}m{text}\x1b[0m'
 
     def _size(self):
         try:
@@ -188,6 +260,8 @@ class TerminalProgress:
     def _activity(self, event, width, *, panel=False):
         _, stage = _family_stage(event)
         label = STAGE_LABELS.get(stage, 'Processing')
+        if event.get('stage_status') in {'complete', 'skipped'}:
+            label = COMPLETED_LABELS.get(stage, 'Processed')
         state = STATUS_LABELS.get(event.get('stage_status', event.get('status')), 'working')
         if event.get('status') == 'heartbeat':
             state = (('last step ' + state if event.get('stage_status') in TERMINAL | {'skipped'}
@@ -235,8 +309,11 @@ class TerminalProgress:
             return ['Settings checked.']
         if status == 'summary':
             prefix = self._identity(event)
-            return [(prefix + ': ' if prefix else 'Finished: ') + self._summary(event)
-                    + f' | {_elapsed(event.get("elapsed_seconds", 0))} elapsed']
+            lines = [(prefix + ': ' if prefix else 'Finished: ') + self._summary(event)
+                     + f' | {_elapsed(event.get("elapsed_seconds", 0))} elapsed']
+            if 'item' not in event:
+                lines.append(self._stats())
+            return lines
         if stage_status in TERMINAL | {'skipped'}:
             return [self._activity(event, 120)]
         if status in TERMINAL:
@@ -258,6 +335,9 @@ class TerminalProgress:
         if self.selected is not None:
             lines.append(f'{self._bar(self.finished, self.selected)} '
                          f'{self.finished}/{self.selected} {self.input_label} finished')
+        # Wrap totals at narrow widths so errors and active work cannot be truncated.
+        stats = textwrap.wrap(self._stats(), width=max(1, width))
+        lines.extend(stats[:max(0, height - len(lines))])
         available = height - len(lines)
         values = list(self.activities.values())
         for index, event in enumerate(values):
@@ -283,12 +363,15 @@ class TerminalProgress:
         status = event.get('status')
         self.elapsed = event.get('elapsed_seconds', self.elapsed)
         if not historical:
-            if 'selected' in event:
+            nested = (event.get('scope') == 'interview'
+                      and ('batch_position' in event or self.input_label == 'interviews'))
+            if 'selected' in event and not nested:
                 self.selected = event['selected']
                 if event.get('scope') == 'batch' or 'batch_position' in event:
                     self.input_label = 'interviews'
             self._count_sections(event)
             self._count_parts(event)
+            self._count_errors(event)
             # Inner interview summaries can say processed=1 while the batch is still
             # working. Only coordinator rows and item-free summaries finish inputs.
             outer = (event.get('scope') == 'batch' or (status == 'summary' and 'item' not in event)
@@ -306,6 +389,7 @@ class TerminalProgress:
                 self.finished_items.add(event['item'])
                 self.finished = len(self.finished_items)
             if terminal_item or direct_item:
+                self.outcomes[event['item']] = status
                 self.activities = {key: value for key, value in self.activities.items()
                                    if key[0] != event['item']}
             elif event.get('stage') and event.get('stage_status'):
@@ -313,6 +397,15 @@ class TerminalProgress:
             if status == 'summary' and 'item' not in event:
                 self.activities.clear()
                 self.summary = self._summary(event)
+                self.final_counts = {status: event[field] for status, field in
+                    [('complete', 'completed'), ('staged', 'staged'), ('verified', 'verified'),
+                     ('failed', 'failed'), ('blocked', 'blocked'), ('interrupted', 'interrupted'),
+                     ('incomplete', 'incomplete'), ('not_attempted', 'not_attempted')] if field in event}
+            if status == 'interrupted' and 'item' not in event:
+                for item, _ in self.activities:
+                    if item not in self.outcomes:
+                        self.outcomes[item] = 'interrupted'
+                self.activities.clear()
         messages = self._milestones(event)
         guidance = event.get('guidance')
         if guidance and (event.get('item'), guidance) not in self.last_guidance:
@@ -323,13 +416,13 @@ class TerminalProgress:
             self._clear()
         for message in messages:
             for line in textwrap.wrap(message, width=max(1, width), break_long_words=True):
-                self._write(line + '\n')
+                self._write(self._styled(line, event.get('stage_status', status)) + '\n')
         if self.live and not historical and width >= 32 and height >= 3:
             if not self.hidden:
                 self._write('\x1b[?25l')
                 self.hidden = True
             panel = self._panel(width, height)
-            self._write('\n'.join(panel) + '\n')
+            self._write('\n'.join(self._styled(line) for line in panel) + '\n')
             self.lines = len(panel)
         elif self.hidden:
             self.hidden = False

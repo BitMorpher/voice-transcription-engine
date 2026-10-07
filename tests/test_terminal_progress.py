@@ -378,3 +378,173 @@ def test_argument_errors_restore_shared_terminal_before_diagnostics(
     assert guidance in output[diagnostic:]
     assert '\x1b' not in output[diagnostic:]
     assert 'SYNTHETIC_PRIVATE_PATH' not in output
+
+
+def test_parallel_outcome_totals_count_interviews_and_ignore_nested_results(terminal):
+    reporter = Reporter(terminal, output='auto', no_color=True)
+    reporter.context = {'scope': 'batch', 'selected': 4}
+    reporter.emit(status='progress', item=3, stage='preflight', stage_status='running')
+    reporter.emit(status='progress', item=7, stage='preflight', stage_status='running')
+    reporter.context = {'scope': 'interview', 'item': 3, 'batch_position': 1}
+    reporter.emit(status='progress', stage='transcription', stage_status='running', family='original')
+    reporter.emit(status='progress', stage='diarization', stage_status='running', family='attributed')
+    reporter.emit(status='complete')
+    reporter.emit(status='summary', selected=1, processed=1, completed=1, finished=1)
+    view = reporter._renderer
+    assert view.selected == 4 and view.counts()['succeeded'] == 0
+    assert view.counts()['active'] == 2 and view.counts()['queued'] == 2
+    reporter.context = {'scope': 'batch', 'selected': 4}
+    reporter.emit(status='complete', item=3, finished=1, processed=1)
+    reporter.emit(status='blocked', item=7, finished=2, processed=2)
+    assert view.counts()['succeeded'] == 1 and view.counts()['blocked'] == 1
+    assert view.counts()['active'] == 0 and view.counts()['queued'] == 2
+    panel = '\n'.join(view._panel(109, 8))
+    assert '1 succeeded' in panel and '0 errors' in panel and '2 queued' in panel
+    reporter.close()
+
+
+def test_distinct_errors_deduplicate_stage_family_and_item_aggregates(terminal):
+    reporter = Reporter(terminal, output='auto', no_color=True)
+    reporter.context = {'scope': 'batch', 'selected': 1, 'item': 2}
+    for chunk in (1, 2):
+        reporter.emit(status='progress', stage='author_review', stage_status='failed',
+                      chunk=chunk, chunks=3, error_category='validation')
+    reporter.emit(status='progress', stage='author_review', stage_status='failed')
+    reporter.emit(status='progress', stage='phase_result', stage_status='failed')
+    reporter.emit(status='failed')
+    assert reporter._renderer.counts()['errors'] == 2
+    assert reporter._renderer.counts()['failed'] == 0
+    reporter.emit(status='failed', processed=1, finished=1)
+    reporter.emit(status='failed', processed=1, finished=1)
+    assert reporter._renderer.counts()['errors'] == 2
+    assert reporter._renderer.counts()['failed'] == 1
+    reporter.close()
+
+
+def test_errors_are_scoped_to_recording_and_family(terminal):
+    reporter = Reporter(terminal, output='auto')
+    reporter.context = {'scope': 'interview', 'item': 1}
+    for family, part in [('original', 1), ('original', 2), ('attributed', 1)]:
+        reporter.emit(status='progress', family=family, part=part, stage='transcription',
+                      stage_status='failed', chunk=1, chunks=2)
+    assert reporter._renderer.counts()['errors'] == 3
+    reporter.close()
+
+
+def test_final_totals_keep_incomplete_and_unattempted_outcomes_separate(terminal):
+    reporter = Reporter(terminal, output='auto')
+    reporter.context = {'scope': 'batch', 'selected': 6}
+    for item, status in enumerate(('complete', 'failed', 'blocked', 'interrupted',
+                                   'incomplete', 'not_attempted'), 1):
+        reporter.emit(status=status, item=item, processed=item, finished=item)
+    reporter.emit(status='summary', completed=1, failed=1, blocked=1, interrupted=1,
+                  incomplete=1, not_attempted=1, finished=6, processed=5)
+    assert reporter._renderer.counts() == {
+        'succeeded': 1, 'failed': 1, 'blocked': 1, 'interrupted': 1, 'incomplete': 1,
+        'not_attempted': 1, 'errors': 1, 'active': 0, 'queued': 0}
+    reporter.close()
+
+
+@pytest.mark.parametrize('mode', ['auto', 'plain', 'json'])
+def test_quiet_keeps_private_events(tmp_path, terminal, mode):
+    reporter = Reporter(terminal, output=mode, quiet=True)
+    reporter.start(tmp_path / 'logs')
+    reporter.emit(status='failed', error_category='quota')
+    reporter.emit(status='summary', processed=1, failed=1)
+    reporter.close()
+    assert terminal.getvalue() == ''
+    rows = [json.loads(line) for line in next((tmp_path / 'logs').glob('*.jsonl')).read_text().splitlines()]
+    assert [row['status'] for row in rows] == ['started', 'failed', 'summary']
+
+
+@pytest.mark.parametrize('disable', ['flag', 'environment', 'plain'])
+def test_colors_can_be_disabled_without_losing_output(monkeypatch, terminal, disable):
+    if disable == 'environment':
+        monkeypatch.setenv('NO_COLOR', '')
+    else:
+        monkeypatch.delenv('NO_COLOR', raising=False)
+    reporter = Reporter(terminal, output='plain' if disable == 'plain' else 'auto',
+                        no_color=disable == 'flag')
+    reporter.emit(status='progress', stage='transcription', stage_status='running')
+    reporter.emit(status='progress', stage='transcription', stage_status='complete')
+    reporter.close()
+    output = terminal.getvalue()
+    assert 'Transcribed audio' in output
+    assert '\x1b[32m' not in output and '\x1b[36m' not in output
+    if disable == 'plain':
+        assert '\x1b' not in output
+    else:
+        assert output.endswith('\x1b[?25h')
+
+
+def test_terminal_colors_mark_success_and_failure(monkeypatch, terminal):
+    monkeypatch.delenv('NO_COLOR', raising=False)
+    reporter = Reporter(terminal, output='auto')
+    reporter.emit(status='progress', stage='transcription', stage_status='complete')
+    reporter.emit(status='progress', stage='author_review', stage_status='failed')
+    reporter.close()
+    assert '\x1b[32m' in terminal.getvalue() and '\x1b[31m' in terminal.getvalue()
+
+
+def test_heartbeat_does_not_advance_totals(terminal):
+    reporter = Reporter(terminal, output='auto')
+    reporter.context = {'scope': 'batch', 'selected': 3, 'item': 1}
+    reporter.emit(status='progress', stage='transcription', stage_status='running', chunk=2, chunks=4)
+    counts = reporter._renderer.counts().copy()
+    reporter.emit(status='heartbeat', **reporter.active)
+    assert reporter._renderer.counts() == counts
+    reporter.close()
+
+
+def test_switching_to_quiet_clears_live_display(terminal):
+    reporter = Reporter(terminal, output='auto')
+    reporter.emit(status='started')
+    reporter.set_output('auto', quiet=True)
+    previous = terminal.getvalue()
+    reporter.emit(status='complete')
+    reporter.close()
+    assert previous.endswith('\x1b[?25h') and terminal.getvalue() == previous
+
+
+def test_nested_engine_inherits_quiet_and_no_color(monkeypatch, tmp_path, terminal):
+    from src.cli import main
+    from src.progress import CURRENT
+    reporter = Reporter(terminal, output='auto', quiet=True, no_color=True)
+    reporter.context = {'scope': 'batch', 'item': 2, 'batch_position': 1, 'selected': 2}
+    token = CURRENT.set(reporter)
+    def invalid_hints(**kwargs):
+        raise ValueError('Fixed failure.')
+    monkeypatch.setattr('src.cli.load_hints', invalid_hints)
+    try:
+        assert main(['--pipeline', '--input', 'unused', '--output-folder', str(tmp_path / 'output')]) == 1
+        assert reporter.quiet and reporter.no_color and terminal.getvalue() == ''
+        reporter.set_output('auto', quiet=False)
+        assert main(['--pipeline', '--input', 'unused', '--output-folder', str(tmp_path / 'output')]) == 1
+        assert reporter.no_color and not reporter._renderer.color
+    finally:
+        reporter.close()
+        CURRENT.reset(token)
+
+
+def test_ordered_interview_without_item_number_counts_as_one_active_input(terminal):
+    reporter = Reporter(terminal, output='auto')
+    reporter.context = {'scope': 'interview', 'selected': 1}
+    reporter.emit(status='progress', stage='transcription', stage_status='running', part=1, parts=2)
+    reporter.emit(status='progress', stage='diarization', stage_status='running', family='attributed')
+    assert reporter._renderer.counts()['active'] == 1
+    assert reporter._renderer.counts()['queued'] == 0
+    reporter.emit(status='summary', selected=1, finished=1, completed=1, failed=0)
+    assert reporter._renderer.counts()['active'] == 0
+    assert reporter._renderer.counts()['succeeded'] == 1
+    reporter.close()
+
+
+def test_independent_family_failures_count_once_each_before_outer_result(terminal):
+    reporter = Reporter(terminal, output='auto')
+    reporter.context = {'scope': 'batch', 'item': 1, 'selected': 1}
+    for family in ('original', 'attributed'):
+        reporter.emit(status='failed', family=family)
+        reporter.emit(status='progress', family=family, stage='phase_result', stage_status='failed')
+    reporter.emit(status='failed', finished=1, processed=1)
+    assert reporter._renderer.counts()['failed'] == 1 and reporter._renderer.counts()['errors'] == 2
+    reporter.close()

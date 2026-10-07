@@ -241,8 +241,13 @@ def transcription_parser(*, studio=False):
     speakers.add_argument('--speaker-model', '--interview-model', dest='interview_model', default=DIARIZATION_MODEL,
                           metavar='MODEL', help='Voice-separation model (gpt-4o-transcribe-diarize); does not identify people. Original text uses --transcription-model.')
     execution = parser.add_argument_group('Progress, logs, and request limits')
-    execution.add_argument('--progress', choices=('auto', 'plain', 'json'), default='auto',
+    display = execution.add_mutually_exclusive_group()
+    display.add_argument('--progress', choices=('auto', 'plain', 'json'), default='auto',
                            metavar='MODE', help='auto: live terminal status, JSON when redirected; plain: readable scrolling lines; json: structured events (default: auto).')
+    display.add_argument('--plain', dest='progress', action='store_const', const='plain',
+                         help='Readable scrolling progress without colors or terminal controls; alias for --progress plain.')
+    execution.add_argument('--quiet', action='store_true', help='Suppress console progress; retain private execution logs and exit status.')
+    execution.add_argument('--no-color', action='store_true', help='Disable colors; also honors NO_COLOR. Live terminal updates remain available.')
     execution.add_argument('--logs-folder', '--log-directory', dest='log_directory',
                            metavar='FOLDER', help='Private structured execution logs (default: <output-folder>/execution-logs).')
     execution.add_argument('--status-interval', '--heartbeat-seconds', dest='heartbeat_seconds', type=_positive_timeout, default=30,
@@ -278,8 +283,13 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
         parser.usage_error('Speaker naming options require --interview.')
     reporter = CURRENT.get()
     if reporter is not None:
-        if not _in_batch(reporter) or 'progress' in supplied_options:
-            reporter.set_output(args.progress)
+        if not _in_batch(reporter):
+            reporter.set_output(args.progress, quiet=args.quiet, no_color=args.no_color)
+        elif supplied_options & {'progress', 'quiet', 'no_color'}:
+            preferences = {key: getattr(args, key) for key in ('quiet', 'no_color')
+                           if key in supplied_options}
+            reporter.set_output(args.progress if 'progress' in supplied_options else reporter.output,
+                                **preferences)
         reporter.heartbeat = args.heartbeat_seconds
         try:
             reporter.start(args.log_directory or Path(args.output_folder) / 'execution-logs')

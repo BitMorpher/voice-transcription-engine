@@ -7,6 +7,7 @@ import shutil
 import site
 import subprocess
 import sys
+import wave
 import zipfile
 
 import pytest
@@ -74,6 +75,37 @@ def test_wheel_namespace_prompts_and_console_scripts(wheel_environment):
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 0 and command in result.stdout
         assert result.stderr == ''
+
+
+@pytest.mark.parametrize('command', ['interview', 'voice-transcribe'])
+@pytest.mark.parametrize('display', [['--plain'], ['--quiet'], ['--progress', 'json', '--no-color']])
+def test_installed_display_controls_keep_local_extraction_logs(wheel_environment, command, display):
+    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+        pytest.skip('FFmpeg/ffprobe required for installed media smoke.')
+    work, python, environment, _ = wheel_environment
+    source = work / 'synthetic-private-display.wav'
+    if not source.exists():
+        with wave.open(str(source), 'wb') as audio:
+            audio.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+            audio.writeframes(b'\0\0' * 4000)
+    mode = 'plain' if '--plain' in display else 'quiet' if '--quiet' in display else 'json'
+    output = work / f'display-{command}-{mode}'
+    executable = python.parent / (command + '.exe' if os.name == 'nt' else command)
+    arguments = ([str(executable), 'transcribe'] if command == 'interview' else [str(executable)])
+    result = subprocess.run([*arguments, '--prepare-audio', '--input', str(source),
+                             '--output-folder', str(output), *display],
+                            cwd=work, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0 and result.stderr == ''
+    rows = [json.loads(line) for line in next((output / 'execution-logs').glob('*.jsonl')).read_text().splitlines()]
+    assert rows[-1]['completed'] == 1 and rows[-1]['failed'] == 0
+    assert source.name not in result.stdout and str(source) not in result.stdout
+    if mode == 'quiet':
+        assert result.stdout == ''
+    elif mode == 'plain':
+        assert 'Prepared audio' in result.stdout and '1 succeeded' in result.stdout
+        assert '\x1b' not in result.stdout and '\r' not in result.stdout
+    else:
+        assert [json.loads(line) for line in result.stdout.splitlines()] == rows
 
 
 def test_installed_wheel_synthetic_comparison_and_replay(wheel_environment):
