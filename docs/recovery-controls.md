@@ -2,7 +2,7 @@
 
 For current option names, every public parameter, valid combinations and parallel-interview examples, see the [command and parameter guide](cli-reference.md).
 
-A failed long recording can resume from its validated request checkpoints. This applies to original ASR in pipeline/workflow mode and to the separate interview diarization pass. It does not recover successful responses that an older release held only in memory. Legacy audio-only output and editing/review/chapter stages do not gain request checkpoints.
+A failed long recording can resume from its validated request checkpoints. This applies to original ASR in pipeline/workflow mode and to the separate interview diarization pass. It does not recover successful responses that an older release held only in memory. Pipeline/workflow and batch text stages also checkpoint validated polish, author review and model-generated narrative arrangement. Attributed polish checkpoints each scoped speech turn. Deterministic interview excerpts make no model requests. Legacy audio-folder mode has no durable request resume; direct library calls must supply `checkpoint_root` to retain text work.
 
 ## Checkpoints and compatibility
 
@@ -29,12 +29,12 @@ Both installed commands accept:
 | `--max-provider-requests N` | At most N new SDK operation starts across original ASR, diarization, polish, review and chapters, over all selected entries. Cache hits consume zero. |
 | `--max-run-seconds S` | Stop admitting new provider operations after S elapsed seconds from control initialization, including intervening local work. |
 | `--provider-failure-limit N` | Stop after N consecutive provider-operation failures for the same endpoint/model, default 2. A successful operation resets that scope’s streak; successful original ASR does not erase diarization failures. Definite authentication/permission/model/request/quota errors stop admission immediately. |
-| `--provider-retries N` | SDK retries per operation; existing default 2. Request/time limits require explicit zero. |
+| `--provider-retries N` | SDK retries per operation; existing default 2. When greater than zero, eligible local text schema/coverage failures may start one additional application operation. Request/time limits require explicit zero and disable that recovery. |
 | `--provider-timeout S` | Per-I/O SDK timeout, default 120 seconds. With a start deadline it is reduced to the remaining admission window for each new operation. |
 
 The request counter measures application SDK starts, not money or tokens. Zero retries prevents the SDK's automatic retry attempts; redirects, custom transports and provider billing behavior are not dollar guarantees. With retries enabled, one counted operation may include several HTTP attempts before the application observes failure. The circuit breaker observes the final operation result, not each SDK retry.
 
-`voice-batch run --parallel-interviews N` adds explicit overlap across whole interview groups, default 1. Start with 2. All workers share the same request allowance, elapsed admission deadline and per-endpoint/model failure streak; these controls are never multiplied by N. Streaks use response-completion order and a later success cannot reopen stopped admission. Operations admitted before a stop may still finish and save valid responses. There is no automatic requests-per-minute throttle or monetary budget. Parts within each interview remain ordered. Prefer one worker and one selection for a diagnostic aimed at a specific stage; scarce allowances across parallel interviews are assigned by scheduling.
+`voice-batch run --parallel-interviews N` adds explicit overlap across whole interview groups, default 1. Start with 2. All workers share the same request allowance, elapsed admission deadline and per-endpoint/model failure streak; these controls are never multiplied by N. Streaks use response-completion order and a later success cannot reopen stopped admission. Operations admitted before a stop may still finish and save valid responses. A final transient 429 starts a shared cooldown before new operations, followed by 0.25-second spacing. This is reactive pacing, not a configured requests-per-minute or monetary budget. Parts within each interview remain ordered. Prefer one worker and one selection for a diagnostic aimed at a specific stage; scarce allowances across parallel interviews are assigned by scheduling.
 
 The time option is a **start deadline**, not a hard whole-run timeout. It does not cancel an in-flight call, truncate a valid returned response, or stop local media preparation at the deadline. The SDK timeout bounds individual I/O waits, not total processing time; a progressing upload/response can exceed the admission window. A returned valid response is saved, then the next start is denied. Ctrl+C/SIGTERM stops new scheduling and provider admission. Parallel batch cleanup waits for active workers while keeping locks/logs open; local work and already admitted I/O may take time to finish. Returned valid responses are retained before locks are released. Cancellation cannot establish that remote work stopped or was not billed. No background provider worker remains after normal cleanup returns.
 
@@ -71,3 +71,50 @@ New SDK timeout events include a fixed `timeout_phase`: `connect` (connection es
 Review is not a remedy for incomplete raw. Batch review/chapters check each family separately, record unavailable prerequisites as `blocked`, and continue only the eligible families. For example, complete original raw with missing attribution can produce complete original review and blocked attributed review in the same run. The command returns nonzero and preserves both facts. No audio requests are made by a text phase to fill missing prerequisites. To request only original review, omit interview mode and the speaker configuration and select known-ready originals.
 
 Chapter gates also remain independent: a missing review or high findings in one family blocks that family’s chapters without approving it from another family’s report. The other family can proceed only with its own exact reviewed bundle, explicit selection and actual human approval. Blocked gates have fixed `blocked_reason` guidance; they do not consume request allowance or count as provider failures. Saved summaries retain `family_blockers`, stage states and each family’s `phase_result`; status reports this recorded evidence without reading media/transcripts.
+
+## Validated text resumption
+
+Every successful text request is saved under the existing private job's `text-chunks` before requesting the next chunk. A failed/incomplete response is never promoted. On restart, all saved requests for that stage are preflighted before new requests, then revalidated on reuse and before stage publication. Completed old bundles continue to reuse their existing integrity checks; successful text held only in memory by an older version cannot be recovered.
+
+Text identities bind the full source hash, stage and validator contract, settings fingerprint and exact request hashes. Those requests include model, prompt bytes, JSON schema, reasoning effort, output budget, exact source/context boundaries and chunk index. Narrative arrangement additionally binds the exact review JSON digest, including human dispositions. Each family has its own private job root; attributed speech is scoped by turn. Response hashes and strict local validation reject corruption, duplicate JSON keys, source substitutions, missing files and symlinks. Publication remains atomic. As with audio checkpoints, checksums are change detection, not authentication against someone replacing both manifest and response. Keep the private directory access controls intact.
+
+With `--provider-retries 2`, a malformed JSON/schema response or missing exact review coverage may receive **one** additional text request. It uses the same shared admission checks and increments `provider_requests`; it is not an unlimited retry loop. Each operation can independently have up to two SDK retries, so one recovered text chunk can start up to six HTTP attempts. Eligible local validation failures do not increase the provider breaker streak. Source word/excerpt violations, chapter provenance/wording violations, refusals and incomplete completions are not repeated automatically. `--provider-retries 0` disables local recovery as well as SDK retries. Authentication, quota, access and invalid-request failures retain their immediate shared stop.
+
+Safe events and failed review coverage now separate `validation_schema`, `validation_coverage`, `validation_source`, `validation_diarization` and `completion` from provider/transport errors. No exception prose, excerpts, names or headers enter logs. A speaker response rejected locally is not reported as an unknown provider failure. These categories describe evidence; they do not prove the provider's root cause.
+
+After a final SDK 429 classified as transient rate limiting, the run pauses new starts across workers and endpoints. Numeric Retry-After seconds, milliseconds and HTTP dates are read locally; waits are bounded to 1–120 seconds, with a two-second fallback. Starts are then spaced by at least 0.25 seconds for the remainder of that execution. Waiting workers check cancellation, deadline and breaker stops without consuming requests. Already admitted calls and SDK-internal retries cannot be coordinated or recalled through this wrapper. The final failed operation still counts toward the endpoint/model breaker; quota is not treated as transient rate limiting.
+
+## Full runs: omit diagnostic caps
+
+The caps are opt-in diagnostic controls, not defaults or recommended full-run settings. In particular, `--max-run-seconds 1800` also shortens each new request's I/O timeout to the remaining window; it can leave a late review with less than 600 seconds. The limit is not merely admission-only: it constrains the timeout passed to admitted SDK operations, while still not being a hard wall-clock cancellation guarantee.
+
+For deliberate full processing of an already prepared private batch, start with two interviews, timeout 600 and retries 2. **Omit both** `--max-provider-requests` and `--max-run-seconds`:
+
+```bash
+voice-batch run --batch private/batches/demo-001 --phase raw \
+  --interview --speaker-config private/config/speakers.json \
+  --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
+  --parallel-interviews 2 --provider-timeout 600 --provider-retries 2 \
+  --provider-failure-limit 2 --send-to-openai
+
+voice-batch run --batch private/batches/demo-001 --phase review \
+  --interview --speaker-config private/config/speakers.json \
+  --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
+  --parallel-interviews 2 --provider-timeout 600 --provider-retries 2 \
+  --provider-failure-limit 2 --send-to-openai
+```
+
+Repeat matching commands to resume automatically. Keep model, hints, speaker settings and chunk durations consistent across phases; include an experimental speaker duration in both commands if using it. Original and attributed prerequisites remain independent: complete original text can be reviewed while the attributed family stays blocked. Review never purchases missing audio. Invalid checkpoints fail closed; retain them and investigate rather than deleting caches or starting blind bulk retries.
+
+After checking the exact recordings, transcripts and both complete reports, eligible explicitly selected entries can produce chapters:
+
+```bash
+voice-batch run --batch private/batches/demo-001 --phase chapters --select entry-a \
+  --human-reviewed --chapters both --interview \
+  --speaker-config private/config/speakers.json \
+  --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
+  --parallel-interviews 2 --provider-timeout 600 --provider-retries 2 \
+  --provider-failure-limit 2 --send-to-openai
+```
+
+Every high finding still blocks batch chapter drafting. Workbook edits are not imported as approval. Do not modify the machine bundle to bypass this gate. No live interview runs were performed to validate accuracy, quality, latency or price; all implementation tests use invented text/media and offline providers. Increase concurrency only after repeatable successful processing and an account-limit review. See the [shorter speaker-chunk experiment](speaker-chunk-experiment.md) for a focused 120/60-second comparison that keeps ASR at 300 seconds.

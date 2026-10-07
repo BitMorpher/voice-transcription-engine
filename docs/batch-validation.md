@@ -29,7 +29,7 @@ The GitHub Actions workflow runs the complete notebook-extra suite, lock/lint/bu
 
 ## Limits
 
-No actual ASR accuracy, provider response latency, recording verification or publication suitability is established by synthetic tests. SDK request timeout/retry settings preserve existing defaults; they are not a whole-run time limit. Heartbeats establish coordinator liveness only. Validated original ASR and interview speaker-pass chunks are checkpointed; text-stage requests are not, so failed text stages can repeat charges. SIGTERM/keyboard interruption cleans up owned locks; abrupt termination may require manual stale-lock inspection. Logs are sanitized local files, not encrypted storage. Source archives and generated test/build outputs are retained privately and are not published with the PR.
+No actual ASR accuracy, provider response latency, recording verification or publication suitability is established by synthetic tests. SDK request timeout/retry settings preserve existing defaults; they are not a whole-run time limit. Heartbeats establish coordinator liveness only. Validated original ASR, speaker-pass and text-stage requests are checkpointed; failed attempts and retries can still incur charges. SIGTERM/keyboard interruption cleans up owned locks; abrupt termination may require manual stale-lock inspection. Logs are sanitized local files, not encrypted storage. Source archives and generated test/build outputs are retained privately and are not published with the PR.
 
 ## Historical portable-batch validation results
 

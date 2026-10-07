@@ -99,7 +99,7 @@ uv run --locked voice-batch prepare --plan private/config/batch-plan.json \
 uv run --locked voice-batch run --batch private/batches/demo-001 --phase raw --send-to-openai
 # Deliberately overlap two independent interview groups:
 uv run --locked voice-batch run --batch private/batches/demo-001 \
-  --phase raw --parallel-interviews 2 --send-to-openai --provider-retries 0
+  --phase raw --parallel-interviews 2 --send-to-openai --provider-timeout 600 --provider-retries 2
 uv run --locked voice-batch run --batch private/batches/demo-001 --phase review --send-to-openai
 # After separately reviewing recordings and reports:
 uv run --locked voice-batch run --batch private/batches/demo-001 \
@@ -250,3 +250,5 @@ Batch processing accepts explicitly declared extensionless videos through privat
 A completed command is not necessarily completed raw. After a one-request diagnostic, stop if the provider failed; do not launch the full batch or review. Confirm a valid saved response before deliberately expanding recovery. A request-limit exit can be expected, but a timeout is a real failed request. The timeout phase describes recognized transport evidence, not a proven network/provider root cause.
 
 Batch review and chapters check each requested family independently. Complete original raw can be reviewed even when attribution is blocked; an intact attributed family can proceed independently when its shared original parts are valid. Each family still needs its own raw integrity, complete review and chapter approval. Missing prerequisites are `blocked` with fixed per-family next steps. Completed family results remain complete while the command exits nonzero for unresolved work. Original-only review omits `--interview` and `--speaker-config`; select only sessions with complete original raw. See [recovery controls](docs/recovery-controls.md) and the [parameter guide](docs/cli-reference.md).
+
+For full batches, omit diagnostic request/time caps and keep two-interview concurrency initially. See [full-run commands and validated text resumption](docs/recovery-controls.md#full-runs-omit-diagnostic-caps) and the [shorter speaker-chunk experiment](docs/speaker-chunk-experiment.md).

@@ -185,13 +185,13 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
     parser.add_argument('--heartbeat-seconds', type=_positive_timeout, default=30,
                         help='Idle heartbeat interval in seconds (default: 30).')
     parser.add_argument('--provider-timeout', type=_positive_timeout, default=120,
-                        help='SDK request timeout seconds (default: 120; not a whole-run deadline).')
+                        help='Seconds per SDK I/O wait (default: 120); shortened to remaining admission time when capped, not a whole-run deadline.')
     parser.add_argument('--provider-retries', type=int, choices=range(0, 6), default=2,
-                        help='SDK retry limit 0–5 (default: 2). Retried requests may incur charges.')
+                        help='SDK retries per operation, 0–5 (default: 2); nonzero also permits one eligible text validation recovery. Retries may incur charges; use 0 with caps.')
     parser.add_argument('--max-provider-requests', type=int,
                         help='Maximum new SDK operations across all stages; requires --provider-retries 0. One is a bounded diagnostic, not a complete transcript.')
     parser.add_argument('--max-run-seconds', type=_positive_timeout,
-                        help='Stop starting provider calls after this elapsed time; requires zero retries. In-flight I/O is timeout-bounded, not cancelled at this deadline.')
+                        help='Elapsed admission deadline; requires zero retries and shortens new I/O timeouts to remaining time. In-flight work is not cancelled at this deadline; omit for full runs.')
     parser.add_argument('--provider-failure-limit', type=int, default=2,
                         help='Stop admission after consecutive failures per endpoint/model (default: 2); definite account/configuration failures stop immediately.')
     args = parser.parse_args(argv)
