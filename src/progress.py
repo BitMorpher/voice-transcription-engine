@@ -126,9 +126,14 @@ def safe_validation_diagnostics(value):
     if not isinstance(value, dict):
         return {}
     counts = {'source_tokens', 'response_tokens', 'first_mismatch_token', 'group_index',
-              'turn_index', 'piece_index', 'piece_count', 'finding_index'}
+              'turn_index', 'piece_index', 'piece_count', 'finding_index',
+              'chunk_index', 'passage_index', 'omission_index', 'unit_index'}
     return {key: item for key, item in value.items() if (
         key in counts and type(item) is int and item >= 0
+        or key == 'chapter_reason' and isinstance(item, str)
+        and item in {'json_shape', 'item_shape', 'unit_reference', 'unit_order', 'passage_kind',
+                     'omission_reason', 'coverage', 'empty_passage', 'whitespace_invention',
+                     'excerpt_mismatch', 'word_sequence', 'quotation_anchors', 'correction_layout'}
         or key == 'quote_found_elsewhere' and type(item) is bool
         or key == 'mismatch_type' and isinstance(item, str)
         and item in {'omission', 'token_count', 'token_sequence'})}

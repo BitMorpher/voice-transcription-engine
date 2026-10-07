@@ -75,7 +75,7 @@ def completion_content(response):
     return content
 
 
-def validated_chat(client, parameters, validate, *, stage, cache=None, index=1):
+def validated_chat(client, parameters, validate, *, stage, cache=None, index=1, recovery_instruction=None):
     record = cache.layout[index - 1] if cache else None
     if cache:
         saved = cache.get(record)
@@ -116,7 +116,9 @@ def validated_chat(client, parameters, validate, *, stage, cache=None, index=1):
         except ResponseValidationError as error:
             recoverable = (error.category in {'validation_schema', 'validation_coverage'}
                 or stage == 'enhancement' and error.category == 'validation_source'
-                or stage == 'author_review' and error.recovery_validator is not None)
+                or stage == 'author_review' and error.recovery_validator is not None
+                or stage == 'chapters' and error.category == 'validation_source'
+                and error.recovery_validator is not None)
             if not recoverable or attempt >= recoveries:
                 if control:
                     control.validation_failed(stage, parameters.get('model'))
@@ -127,7 +129,7 @@ def validated_chat(client, parameters, validate, *, stage, cache=None, index=1):
             # stays in memory and is never logged or persisted.
             if error.category not in {'validation_schema', 'validation_coverage'}:
                 request = {**parameters, 'messages': [
-                    {'role': 'system', 'content': (
+                    {'role': 'system', 'content': recovery_instruction or (
                         'The previous response failed strict source validation. Correct it once. '
                         'Preserve every source word, repetition, symbol, name and turn boundary. '
                         'For review, retain every finding in order with the same reason code; '
