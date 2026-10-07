@@ -18,10 +18,11 @@ from .speakers import configurations
 from .storage import (lock, read_snapshot, save_snapshot, stage, summaries, verify, write_summary)
 
 
-def parser():
-    value = PrivateArgumentParser(prog='voice-batch', color=False, allow_abbrev=False,
+def parser(*, studio=False):
+    command = 'interview batch' if studio else 'voice-batch'
+    value = PrivateArgumentParser(prog=command, color=False, allow_abbrev=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description='Prepare and process a selected group of independent interviews. Recordings within each interview stay ordered.',
+        description='Interview Studio: prepare and process a selected group of independent interviews. Recordings within each interview stay ordered.',
         epilog='Actions:\n'
                '  inventory  List entries and inspect file metadata without reading recordings.\n'
                '  check      Check the plan and required local tools without reading recordings.\n'
@@ -30,9 +31,9 @@ def parser():
                '  run        Process the saved batch: raw (transcribe), review, or chapters.\n'
                '  status     Show results recorded by previous batch commands.\n\n'
                'Examples:\n'
-               '  voice-batch inventory --batch-plan private/config/batch.json\n'
-               '  voice-batch prepare --batch-plan private/config/batch.json --batch-folder private/batches/demo --copy-local-files\n'
-               '  voice-batch run --batch-folder private/batches/demo --step raw --send-to-openai\n\n'
+               f'  {command} inventory --batch-plan private/config/batch.json\n'
+               f'  {command} prepare --batch-plan private/config/batch.json --batch-folder private/batches/demo --copy-local-files\n'
+               f'  {command} run --batch-folder private/batches/demo --step raw --send-to-openai\n\n'
                'Previous option spellings remain supported. See docs/cli-reference.md for the full pipeline guide.')
     value.add_argument('action', choices=('inventory', 'check', 'prepare', 'verify', 'run', 'status'),
                        metavar='ACTION', help='Choose an action; see the descriptions and examples below.')
@@ -309,8 +310,8 @@ def execute(args, reporter):
     return int(any(row['status'] in {'failed', 'blocked', 'not_attempted', 'interrupted', 'incomplete'} for row in rows))
 
 
-def main(argv=None):
-    args = parser().parse_args(argv)
+def main(argv=None, *, studio=False):
+    args = parser(studio=studio).parse_args(argv)
     reporter = Reporter(sys.stdout, heartbeat=args.heartbeat_seconds, output=args.progress)
     token = CURRENT.set(reporter)
     control_token = CURRENT_CONTROL.set(None)

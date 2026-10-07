@@ -542,6 +542,46 @@ wheels = [
 ]
 
 [[package]]
+name = "interview-studio"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "openai" },
+    { name = "openpyxl" },
+]
+
+[package.optional-dependencies]
+notebook = [
+    { name = "audioop-lts" },
+    { name = "ipykernel" },
+    { name = "jupyterlab" },
+    { name = "pydub" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "audioop-lts", marker = "python_full_version >= '3.13' and extra == 'notebook'", specifier = ">=0.2.2,<0.3" },
+    { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=7.4,<8" },
+    { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.6,<5" },
+    { name = "openai", specifier = ">=3.24,<4" },
+    { name = "openpyxl", specifier = ">=3.1,<4" },
+    { name = "pydub", marker = "extra == 'notebook'", specifier = ">=0.25.1,<0.26" },
+]
+provides-extras = ["notebook"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.1,<10" },
+    { name = "ruff", specifier = ">=0.16,<0.17" },
+]
+
+[[package]]
 name = "ipykernel"
 version = "7.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1765,46 +1805,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e3/05/b17359e1cefb4f909b5e40b1b90a496d987258916dbbf88e842c729f510e/urllib3-2.8.0.tar.gz", hash = "sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63", size = 458972, upload-time = "2026-09-15T19:29:36.253Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl", hash = "sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3", size = 135717, upload-time = "2026-09-15T19:29:34.577Z" },
-]
-
-[[package]]
-name = "voice-transcription-engine"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "openai" },
-    { name = "openpyxl" },
-]
-
-[package.optional-dependencies]
-notebook = [
-    { name = "audioop-lts" },
-    { name = "ipykernel" },
-    { name = "jupyterlab" },
-    { name = "pydub" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "audioop-lts", marker = "python_full_version >= '3.13' and extra == 'notebook'", specifier = ">=0.2.2,<0.3" },
-    { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=7.4,<8" },
-    { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.6,<5" },
-    { name = "openai", specifier = ">=3.24,<4" },
-    { name = "openpyxl", specifier = ">=3.1,<4" },
-    { name = "pydub", marker = "extra == 'notebook'", specifier = ">=0.25.1,<0.26" },
-]
-provides-extras = ["notebook"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.1,<10" },
-    { name = "ruff", specifier = ">=0.16,<0.17" },
 ]
 
 [[package]]

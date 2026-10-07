@@ -35,7 +35,7 @@ COUNTERS = {'item', 'part', 'parts', 'chunk', 'chunks', 'processed', 'failed', '
             'completed', 'blocked', 'staged', 'verified', 'interrupted', 'not_attempted', 'provider_requests', 'incomplete', 'active_sessions', 'validation_retries', 'finished', 'batch_position'}
 GUIDANCE = ('Check local input permissions, media validity, output space and cache integrity; '
             'for provider stages check OPENAI_API_KEY, model access, quota and connectivity. '
-            'Completed caches are retained; repeat voice-batch with matching settings, or use --resume with voice-transcribe. '
+            'Completed caches are retained; repeat interview batch run with matching settings, or use --resume with interview transcribe. '
             'Chapter runs require complete review and explicit human approval.')
 
 SAFE_GUIDANCE = {

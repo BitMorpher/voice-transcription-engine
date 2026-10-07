@@ -47,19 +47,30 @@ def test_wheel_namespace_prompts_and_console_scripts(wheel_environment):
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         assert 'voice_transcription_engine/cli.py' in names
+        assert 'voice_transcription_engine/studio_cli.py' in names
         assert 'voice_transcription_engine/batch/runner.py' in names
         assert 'voice_transcription_engine/batch/concurrency.py' in names
         assert any(name.startswith('voice_transcription_engine/prompts/') and name.endswith('.txt') for name in names)
         assert 'cli.py' not in names
         assert not any('private/' in name or '.env' in name or 'batch-plan' in name for name in names)
+        metadata = archive.read('interview_studio-0.1.0.dist-info/METADATA').decode()
+        assert 'Name: interview-studio\n' in metadata
+        assert 'https://github.com/BitMorpher/interview-studio' in metadata
+        scripts = archive.read('interview_studio-0.1.0.dist-info/entry_points.txt').decode()
+        for declaration in ('interview = voice_transcription_engine.studio_cli:main',
+                            'voice-transcribe = voice_transcription_engine.cli:entrypoint',
+                            'voice-batch = voice_transcription_engine.batch.cli:main'):
+            assert declaration in scripts
     result = subprocess.run([str(python), '-c',
         'import voice_transcription_engine.cli as c; print(c.__file__)'],
         cwd=work, env=environment, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0
     assert str(work / 'runtime') in result.stdout
-    for command in ('voice-transcribe', 'voice-batch'):
+    for command, arguments in (('voice-transcribe', []), ('voice-batch', []),
+                               ('interview', []), ('interview', ['transcribe']),
+                               ('interview', ['batch'])):
         executable = python.parent / (command + '.exe' if os.name == 'nt' else command)
-        result = subprocess.run([str(executable), '--help'], cwd=work, env=environment,
+        result = subprocess.run([str(executable), *arguments, '--help'], cwd=work, env=environment,
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 0 and command in result.stdout
         assert result.stderr == ''
@@ -77,6 +88,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 import voice_transcription_engine.cli as engine
 from voice_transcription_engine.batch.cli import main as batch
+from voice_transcription_engine.studio_cli import main as interview
 from voice_transcription_engine.transcriber import Transcriber
 from importlib.resources import files
 
@@ -118,9 +130,10 @@ for phase in ('raw', 'review', 'chapters'):
         args += ['--select', 'entry-a', '--human-reviewed']
     assert batch(args) == 0
 calls = client.chat.completions.create.call_count
-assert batch(args) == 0
+assert interview(['batch', *args]) == 0
 assert client.chat.completions.create.call_count == calls
 assert client.audio.transcriptions.create.call_count == 1
+assert interview(['batch', 'verify', '--batch', 'batch']) == 0
 assert sum(call.kwargs['response_format']['json_schema']['name'] == 'source_grounded_author_review'
            for call in client.chat.completions.create.call_args_list) == 1
 assert {path.read_bytes() for path in Path('batch').rglob('review_report.json')} == reviewed_reports
@@ -214,6 +227,7 @@ from unittest.mock import MagicMock
 import voice_transcription_engine.cli as engine
 from voice_transcription_engine.transcriber import Transcriber
 from voice_transcription_engine.interview_attribution import DIARIZATION_MODEL
+from voice_transcription_engine.studio_cli import main as interview
 
 def blocked(*a, **kw):
     raise AssertionError('No real network allowed.')
@@ -261,7 +275,7 @@ assert len(list(out.rglob('derivative_readability.txt'))) == 2
 original = next(path for path in out.iterdir() if (path / 'transcription.txt').is_file())
 before = (original / 'transcription.txt').read_bytes()
 calls = client.audio.transcriptions.create.call_count, client.chat.completions.create.call_count
-assert engine.entrypoint(args + ['--resume']) == 0
+assert interview(['transcribe', *args, '--resume']) == 0
 assert calls == (client.audio.transcriptions.create.call_count, client.chat.completions.create.call_count)
 assert before == (original / 'transcription.txt').read_bytes()
 ''')
@@ -398,6 +412,7 @@ import voice_transcription_engine.cli as engine
 import voice_transcription_engine.pipeline as pipeline
 from voice_transcription_engine.transcriber import Transcriber
 from voice_transcription_engine.provider_control import CURRENT_CONTROL
+from voice_transcription_engine.studio_cli import main as interview
 
 def blocked(*args, **kwargs):
     raise AssertionError('No external provider calls allowed.')
@@ -421,7 +436,7 @@ assert len(list(output.rglob('response.json'))) == 1
 assert not list(output.rglob('transcription.txt'))
 assert CURRENT_CONTROL.get() is None
 args[-1] = '2'
-assert engine.entrypoint(args + ['--resume']) == 0
+assert interview(['transcribe', *args, '--resume']) == 0
 assert provider.audio.transcriptions.create.call_count == 3
 assert len(list(output.rglob('transcription.txt'))) == 1
 logs = ''.join(path.read_text() for path in output.rglob('*.jsonl'))

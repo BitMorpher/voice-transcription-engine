@@ -5,16 +5,19 @@
 - FFmpeg **and ffprobe** available on `PATH`. Check with `ffmpeg -version` and `ffprobe -version`. They are external system prerequisites, not Python packages; install them yourself through your trusted package manager if missing.
 - Your own OpenAI account, API key, quota, and network access for transcription. Hosted API use can incur charges; this project does not run a local Whisper model.
 
+For a new clone, use `git clone https://github.com/BitMorpher/interview-studio.git` and `cd interview-studio`. For existing installations, read the [migration guide](migration.md) before changing environments.
+
 From the checkout root:
 
 ```bash
 uv python install 3.14.8
 uv sync --locked
-uv run --locked voice-transcribe --help
-uv run --locked voice-batch --help
+uv run --locked interview --help
+uv run --locked interview transcribe --help
+uv run --locked interview batch --help
 ```
 
-`uv sync --locked` creates the ignored `.venv`, installs the editable CLI, runtime dependencies and the default `dev` group using committed `uv.lock`. The Python pin selects the standard CPython runtime, not a free-threaded build. Setup may download Python and packages; it never installs FFmpeg or configures credentials. Once synced, use `uv run --locked` for commands without activating the environment. For a runtime-only installation, use `uv sync --locked --no-dev` and `uv run --locked --no-dev voice-transcribe --help` (plain `uv run` would reinstall the default development group).
+`uv sync --locked` creates the ignored `.venv`, installs the editable CLI, runtime dependencies and the default `dev` group using committed `uv.lock`. The Python pin selects the standard CPython runtime, not a free-threaded build. Setup may download Python and packages; it never installs FFmpeg or configures credentials. Once synced, use `uv run --locked` for commands without activating the environment. For a runtime-only installation, use `uv sync --locked --no-dev` and `uv run --locked --no-dev interview transcribe --help` (plain `uv run` would reinstall the default development group).
 
 `pyproject.toml` is the only dependency declaration: `openai` and `openpyxl` are runtime dependencies; `dev` contains pytest and Ruff. OpenPyXL writes the author review workbook. Optional `notebook` contains PyDub, `audioop-lts`, ipykernel and JupyterLab. `uv.lock` records exact versions, public PyPI locations and hashes for all groups/extras. Build-backend versions are pinned separately in `[build-system]`, since uv's project lock does not lock isolated build requirements. FFmpeg is not managed by the lock. The CLI does not need PyDub, local Whisper, Torch, NumPy or SciPy.
 

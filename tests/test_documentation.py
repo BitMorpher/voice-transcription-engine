@@ -26,22 +26,29 @@ def test_documented_cli_options_are_declared():
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'add_argument':
             options.update(arg.value for arg in node.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str))
-    checked = {'voice-transcribe': 0, 'voice-batch': 0}
+    checked = {'transcribe': 0, 'batch': 0}
     for path in DOCS:
         for block in re.findall(r'```bash\n(.*?)```', path.read_text(), re.S):
             for line in block.replace('\\\n', ' ').splitlines():
                 words = shlex.split(line, comments=True)
-                for command in checked:
-                    if command not in words:
+                for index, word in enumerate(words):
+                    if word in {'voice-transcribe', 'voice-batch'}:
+                        command = 'transcribe' if word == 'voice-transcribe' else 'batch'
+                        args = words[index + 1:]
+                    elif (word == 'interview' or word.endswith('/bin/interview')) and len(words) > index + 1:
+                        command = words[index + 1]
+                        if command not in checked:
+                            continue
+                        args = words[index + 2:]
+                    else:
                         continue
-                    args = words[words.index(command) + 1:]
-                    if command == 'voice-batch':
+                    if command == 'batch':
                         if '--help' not in args:
                             parser().parse_args(args)
                     else:
                         assert all(word.split('=', 1)[0] in options for word in args if word.startswith('--')), path.name
                     checked[command] += 1
-    assert checked['voice-batch'] >= 15 and checked['voice-transcribe'] >= 20
+    assert checked['batch'] >= 15 and checked['transcribe'] >= 20
 
 
 def test_parameter_reference_covers_every_public_flag_and_batch_help_is_complete():

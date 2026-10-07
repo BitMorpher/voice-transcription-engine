@@ -148,15 +148,16 @@ def _legacy_process(source, output, transcriber, args):
     return stages
 
 
-def transcription_parser():
+def transcription_parser(*, studio=False):
     """Build grouped help while keeping existing scripts and destination names."""
-    parser = PrivateArgumentParser(prog='voice-transcribe', color=False, allow_abbrev=False,
+    command = 'interview transcribe' if studio else 'voice-transcribe'
+    parser = PrivateArgumentParser(prog=command, color=False, allow_abbrev=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description='Turn local audio or video into a transcript, with optional text polish, review, and chapter drafts.',
+        description='Interview Studio: turn local audio or video into a transcript, with optional text polish, review, and chapter drafts.',
         epilog='Examples:\n'
-               '  voice-transcribe --pipeline --input private/input/example.mp4\n'
-               '  voice-transcribe --prepare-audio --input private/input/example.mp4\n'
-               '  voice-transcribe --author-workflow --recordings-list private/config/interview.json --steps raw,review\n\n'
+               f'  {command} --pipeline --input private/input/example.mp4\n'
+               f'  {command} --prepare-audio --input private/input/example.mp4\n'
+               f'  {command} --author-workflow --recordings-list private/config/interview.json --steps raw,review\n\n'
                'Audio preparation runs locally. Transcription and selected AI text steps send material to OpenAI and can incur charges.\n'
                'Previous option spellings remain supported. See the README and docs/cli-reference.md for the full pipeline guide.')
     files = parser.add_argument_group('Input and output')
@@ -241,8 +242,8 @@ def transcription_parser():
 
 
 def _execute(argv=None, *, approved_review=None, interview_options_override=None,
-         approved_attributed_review=None, attributed_only=False, require_raw=False):
-    parser = transcription_parser()
+         approved_attributed_review=None, attributed_only=False, require_raw=False, studio=False):
+    parser = transcription_parser(studio=studio)
     args = parser.parse_args(argv)
     supplied_options = parser.supplied_options(argv)
     if args.interview and (not args.workflow or args.extract_only):
@@ -441,25 +442,25 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
 
 
 def main(argv=None, *, approved_review=None, interview_options_override=None,
-         approved_attributed_review=None, attributed_only=False, require_raw=False):
+         approved_attributed_review=None, attributed_only=False, require_raw=False, studio=False):
     token = CURRENT_CONTROL.set(CURRENT_CONTROL.get())
     try:
         return _execute(argv, approved_review=approved_review,
             interview_options_override=interview_options_override,
             approved_attributed_review=approved_attributed_review, attributed_only=attributed_only,
-            require_raw=require_raw)
+            require_raw=require_raw, studio=studio)
     finally:
         CURRENT_CONTROL.reset(token)
 
 
-def entrypoint(argv=None):
+def entrypoint(argv=None, *, studio=False):
     reporter = Reporter(sys.stdout, output='auto')
     reporter.context = {'scope': 'interview'}
     token = CURRENT.set(reporter)
     control_token = CURRENT_CONTROL.set(None)
     try:
         with interruptions():
-            code = main(argv)
+            code = main(argv, studio=studio)
     except KeyboardInterrupt:
         reporter.emit(status='interrupted')
         code = 130

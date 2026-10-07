@@ -4,7 +4,9 @@ For a first run, follow [getting started](getting-started.md). For an explanatio
 
 Start with [choosing an operation](#choose-an-operation), then use the [batch options](#batch-specific-parameters), [shared processing options](#parameters-shared-by-processing-commands), or [direct transcription options](#direct-transcription-parameters). [Older option spellings](#older-option-spellings) map to the same settings.
 
-Use `voice-transcribe` for one recording, a folder of independent recordings, or one interview whose parts have a declared order. Use `voice-batch` for a private plan containing several independent interviews, including interviews with multiple parts. A **session** here means one batch entry and its complete ordered interview. Parallel workers never turn the parts of one interview into separate sessions.
+Run `interview --help` for the command overview. Existing `voice-transcribe` and `voice-batch` entrypoints retain the same options; see [migration](migration.md).
+
+Use `interview transcribe` for one recording, a folder of independent recordings, or one interview whose parts have a declared order. Use `interview batch` for a private plan containing several independent interviews, including interviews with multiple parts. A **session** here means one batch entry and its complete ordered interview. Parallel workers never turn the parts of one interview into separate sessions.
 
 The [setup guide](setup.md) explains Python, uv, FFmpeg/ffprobe, dependencies and credentials. Keep recordings, recordings lists, batch plans, hints and outputs in private storage. Commands that transcribe or edit send audio/text to the hosted provider and can incur charges. Audio preparation, inventory, check, batch preparation, verify and status do not call OpenAI. Batch prepare reads and copies media; verify reads staged media to check hashes. Inventory/check/status do not read media content.
 
@@ -16,17 +18,17 @@ All examples use invented filenames and IDs. Replace them with your own private 
 
 | Command or mode | Purpose and prerequisites |
 | --- | --- |
-| `voice-transcribe --input-folder ...` | Compatibility audio-folder mode: independent WAV/MP3/M4A files, scanned nonrecursively, with flat output filenames. No stage-based resume. |
-| `voice-transcribe --pipeline --input ...` | Normalize audio/video and retain original transcription in a private job directory. Also accepts a folder through `--input` or `--input-folder`. |
-| `voice-transcribe --prepare-audio --input ...` | Normalize audio/video locally without a key or provider request. Pipeline-style outputs and resume are available. |
-| `voice-transcribe --author-workflow --input ...` | Raw transcription, optional polish, author review and optional chapter drafts for each independent file. Default stages: raw, polish, review. |
-| `voice-transcribe --author-workflow --recordings-list ...` | Process one interview's ordered parts, then combine exact raw text and run interview-wide stages. |
-| `voice-batch inventory --batch-plan ...` | Read plan/manifest JSON and source metadata; show selected readiness. |
-| `voice-batch check --batch-plan ...` | Inventory checks plus FFmpeg/ffprobe availability. This does not decode media or prove codec validity. |
-| `voice-batch prepare --batch-plan ... --batch-folder ... --copy-local-files` | Create fresh private staging and an immutable plan snapshot; copy/hash sources. Never reuse an existing batch directory for prepare. |
-| `voice-batch verify --batch-folder ...` | Verify the saved snapshot, staging ledgers and copies. Does not need the original source files. |
-| `voice-batch run --batch-folder ... --send-to-openai` | Process existing staged interviews. Default phase: raw. Resume is automatic. |
-| `voice-batch status --batch-folder ...` | Read retained summaries, show chronological executions and latest recorded stages by item/family/phase. Does not freshly verify output contents. |
+| `interview transcribe --input-folder ...` | Compatibility audio-folder mode: independent WAV/MP3/M4A files, scanned nonrecursively, with flat output filenames. No stage-based resume. |
+| `interview transcribe --pipeline --input ...` | Normalize audio/video and retain original transcription in a private job directory. Also accepts a folder through `--input` or `--input-folder`. |
+| `interview transcribe --prepare-audio --input ...` | Normalize audio/video locally without a key or provider request. Pipeline-style outputs and resume are available. |
+| `interview transcribe --author-workflow --input ...` | Raw transcription, optional polish, author review and optional chapter drafts for each independent file. Default stages: raw, polish, review. |
+| `interview transcribe --author-workflow --recordings-list ...` | Process one interview's ordered parts, then combine exact raw text and run interview-wide stages. |
+| `interview batch inventory --batch-plan ...` | Read plan/manifest JSON and source metadata; show selected readiness. |
+| `interview batch check --batch-plan ...` | Inventory checks plus FFmpeg/ffprobe availability. This does not decode media or prove codec validity. |
+| `interview batch prepare --batch-plan ... --batch-folder ... --copy-local-files` | Create fresh private staging and an immutable plan snapshot; copy/hash sources. Never reuse an existing batch directory for prepare. |
+| `interview batch verify --batch-folder ...` | Verify the saved snapshot, staging ledgers and copies. Does not need the original source files. |
+| `interview batch run --batch-folder ... --send-to-openai` | Process existing staged interviews. Default phase: raw. Resume is automatic. |
+| `interview batch status --batch-folder ...` | Read retained summaries, show chronological executions and latest recorded stages by item/family/phase. Does not freshly verify output contents. |
 
 The workflow guides provide the [ordered manifest](ordered-interviews.md), [batch plan and staging](batch-orchestration.md), [review rubric](author-workflow.md) and [speaker configuration](batch-media-attribution.md) schemas.
 
@@ -54,7 +56,7 @@ Options for copying/hydration, phases, chapters and human approval are meaningfu
 
 ## Parameters shared by processing commands
 
-For `voice-batch`, audio/model/hint/provider options below apply to `run`; `--media-timeout` also applies to prepare. Logging options apply to any batch action. For `voice-transcribe`, supply transcription/provider options when actually transcribing; local extraction has no provider requests.
+For `interview batch`, audio/model/hint/provider options below apply to `run`; `--media-timeout` also applies to prepare. Logging options apply to any batch action. For `interview transcribe`, supply transcription/provider options when actually transcribing; local extraction has no provider requests.
 
 | Parameter | Default, purpose, values and interactions |
 | --- | --- |
@@ -88,7 +90,7 @@ For `voice-batch`, audio/model/hint/provider options below apply to `run`; `--me
 | `--output-folder PATH` | Default `private/output`. Private destination: pipeline jobs, ordered parts/generations or compatibility flat files. The older `--output_folder` spelling remains supported. Existing conflicting outputs are not silently overwritten. Repository-local content must be under ignored private/data directories. |
 | `--pipeline` | Enable normalized media and manifest/checksum-based job outputs. Workflow already includes preparation; combining pipeline with workflow is accepted but redundant. |
 | `--prepare-audio` | Local normalized WAV and manifest only; no provider/key needed. Conflicts with workflow, interview, enhancement and transcription hints. Can use resume and media timeout; pipeline is redundant. |
-| `--resume` | Pipeline/extraction/workflow only. Verify source/settings/artifact hashes and reuse completed matching stages/checkpoints. Compatibility flat audio mode rejects it. Not an option on voice-batch, which always resumes. |
+| `--resume` | Pipeline/extraction/workflow only. Verify source/settings/artifact hashes and reuse completed matching stages/checkpoints. Compatibility flat audio mode rejects it. Not an option on interview batch, which always resumes. |
 | `--polish-text` | Explicit paid faithful layout derivative in compatibility/pipeline mode; workflow also selects polish even if omitted from stages. Keeps original raw unchanged. `--enhance_for_reading` is a deprecated spelling. Not permitted with extraction. |
 | `--format-as-interview` | Compatibility audio-folder mode only: legacy faithful layout output with the saved interview-layout filename. It assigns no speaker identities and is unavailable in pipeline/workflow/extraction. `--format_as_interview` is deprecated. Prefer enhancement for new commands. Combining both layout flags in compatibility mode writes both legacy derivatives and can repeat editing requests. |
 | `--author-workflow` | Select raw, optional polish, review and optional chapters. Default stages are raw,polish,review; no chapters by default. Cannot be combined with extraction. |
@@ -109,17 +111,17 @@ For value options that accept compatibility spellings, choose one spelling in a 
 Prepare once, process two independent sessions together, then inspect retained state:
 
 ```bash
-uv run --locked voice-batch prepare --batch-plan private/config/batch-plan.json \
+uv run --locked interview batch prepare --batch-plan private/config/batch-plan.json \
   --batch-folder private/batches/demo-001 --copy-local-files
-uv run --locked voice-batch run --batch-folder private/batches/demo-001 \
+uv run --locked interview batch run --batch-folder private/batches/demo-001 \
   --step raw --parallel-interviews 2 --send-to-openai --request-retries 0
-uv run --locked voice-batch status --batch-folder private/batches/demo-001
+uv run --locked interview batch status --batch-folder private/batches/demo-001
 ```
 
 Resume both original and attributed raw with one shared allowance. Values below are examples to choose deliberately, not recommended account limits:
 
 ```bash
-voice-batch run --batch-folder private/batches/demo-001 --step raw \
+interview batch run --batch-folder private/batches/demo-001 --step raw \
   --separate-speakers --parallel-interviews 2 --send-to-openai \
   --transcription-model gpt-transcribe --speaker-model gpt-4o-transcribe-diarize \
   --audio-chunk-seconds 300 --speaker-chunk-seconds 60 \
@@ -130,9 +132,9 @@ voice-batch run --batch-folder private/batches/demo-001 --step raw \
 Preserve matching ASR/hints/durations on subsequent phases. Run review in parallel only after complete raw. Read the generated reports and listen to the recordings before the separately approved chapter command:
 
 ```bash
-voice-batch run --batch-folder private/batches/demo-001 --step review \
+interview batch run --batch-folder private/batches/demo-001 --step review \
   --parallel-interviews 2 --send-to-openai
-voice-batch run --batch-folder private/batches/demo-001 --step chapters \
+interview batch run --batch-folder private/batches/demo-001 --step chapters \
   --select entry-a --select entry-b --human-reviewed --chapter-style both \
   --parallel-interviews 2 --send-to-openai
 ```
@@ -142,7 +144,7 @@ If raw enabled attribution, add interview mode and the same speaker configuratio
 Use one selected session and one worker for at most one new provider operation:
 
 ```bash
-voice-batch run --batch-folder private/batches/demo-001 --select entry-a --step raw \
+interview batch run --batch-folder private/batches/demo-001 --select entry-a --step raw \
   --parallel-interviews 1 --send-to-openai --request-retries 0 \
   --max-requests 1 --max-run-seconds 180
 ```
@@ -152,18 +154,18 @@ The first uncached stage uses the allowance. A long interview usually remains in
 Extract locally; later transcribe without rewriting raw; or request review from an ordered interview:
 
 ```bash
-voice-transcribe --prepare-audio --input private/input/synthetic.mp4 \
+interview transcribe --prepare-audio --input private/input/synthetic.mp4 \
   --output-folder private/output --media-timeout 600
-voice-transcribe --pipeline --input private/input/synthetic.mp4 \
+interview transcribe --pipeline --input private/input/synthetic.mp4 \
   --output-folder private/output --resume --transcription-model gpt-transcribe
-voice-transcribe --author-workflow --recordings-list private/config/session-a.json \
+interview transcribe --author-workflow --recordings-list private/config/session-a.json \
   --output-folder private/ordered-output --steps raw,review --resume
 ```
 
 Use supported multilingual hints without interview diarization, which accepts at most one two-letter hint:
 
 ```bash
-voice-transcribe --author-workflow --input private/input/synthetic.wav --steps raw \
+interview transcribe --author-workflow --input private/input/synthetic.wav --steps raw \
   --transcription-model gpt-transcribe --context-file private/hints/context.txt \
   --glossary-file private/hints/glossary.txt --language en --language hi \
   --output-folder private/multilingual
@@ -189,14 +191,14 @@ These pairs are interchangeable. Prefer the left column for new commands; existi
 
 | Preferred option | Older spelling | Available on |
 | --- | --- | --- |
-| `--recordings-list` | `--interview-manifest` | `voice-transcribe` |
-| `--author-workflow` | `--workflow` | `voice-transcribe` |
-| `--prepare-audio` | `--extract-only` | `voice-transcribe` |
-| `--polish-text` | `--enhance-for-reading`, `--enhance_for_reading` | `voice-transcribe` |
+| `--recordings-list` | `--interview-manifest` | `interview transcribe` |
+| `--author-workflow` | `--workflow` | `interview transcribe` |
+| `--prepare-audio` | `--extract-only` | `interview transcribe` |
+| `--polish-text` | `--enhance-for-reading`, `--enhance_for_reading` | `interview transcribe` |
 | `--separate-speakers` | `--interview` | Both commands |
 | `--speaker-chunk-seconds` | `--diarization-chunk-seconds` | Both commands |
-| `--steps` | `--stages` | `voice-transcribe` |
-| `--step` | `--phase` | `voice-batch` |
+| `--steps` | `--stages` | `interview transcribe` |
+| `--step` | `--phase` | `interview batch` |
 | `--chapter-style` | `--chapters` | Both commands; direct default `none`, batch chapter default `both`. |
 | `--review-model` | `--author-model` | Both commands |
 | `--request-timeout` | `--provider-timeout` | Both commands |
@@ -205,18 +207,18 @@ These pairs are interchangeable. Prefer the left column for new commands; existi
 | `--failure-limit` | `--provider-failure-limit` | Both commands |
 | `--status-interval` | `--heartbeat-seconds` | Both commands |
 | `--logs-folder` | `--log-directory` | Both commands |
-| `--batch-plan` | `--plan` | `voice-batch` |
-| `--batch-folder` | `--batch` | `voice-batch` |
-| `--download-cloud-files` | `--allow-hydration` | `voice-batch prepare` |
+| `--batch-plan` | `--plan` | `interview batch` |
+| `--batch-folder` | `--batch` | `interview batch` |
+| `--download-cloud-files` | `--allow-hydration` | `interview batch prepare` |
 | `--transcription-model` | `--model` | Both commands |
 | `--speaker-model` | `--interview-model` | Both commands |
-| `--input-folder` | `--input_folder` | `voice-transcribe` |
-| `--output-folder` | `--output_folder` | `voice-transcribe` |
+| `--input-folder` | `--input_folder` | `interview transcribe` |
+| `--output-folder` | `--output_folder` | `interview transcribe` |
 | `--format-as-interview` | `--format_as_interview` | Direct legacy audio-folder mode; layout only, no voice identities. |
 
 ## Multiple sessions at once
 
-`voice-batch run --parallel-interviews N` sets the maximum number of interviews running together. `N` must be a positive integer; the default is `1`, preserving serial processing. Start with `2` when you deliberately want overlap. There is no automatic increase or hardware-based choice. The active pool is capped by the selected entry count, and only that many entries are submitted at a time. Large values can increase local memory, temporary WAV storage, FFmpeg load and provider traffic.
+`interview batch run --parallel-interviews N` sets the maximum number of interviews running together. `N` must be a positive integer; the default is `1`, preserving serial processing. Start with `2` when you deliberately want overlap. There is no automatic increase or hardware-based choice. The active pool is capped by the selected entry count, and only that many entries are submitted at a time. Large values can increase local memory, temporary WAV storage, FFmpeg load and provider traffic.
 
 Each worker completes the existing interview workflow. Parts, chunks and stage dependencies within an interview retain their order. Original and attributed families keep separate files, bindings and gates within that entry's output directory. Workers do not share transcript text or speaker mappings. A local validation/media failure affects its interview; other independent entries continue. A provider stop is shared across every worker and every stage.
 

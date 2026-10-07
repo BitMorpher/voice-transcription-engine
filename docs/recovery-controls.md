@@ -34,7 +34,7 @@ Both installed commands accept:
 
 The request counter measures application SDK starts, not money or tokens. Zero retries prevents the SDK's automatic retry attempts; redirects, custom transports and provider billing behavior are not dollar guarantees. With retries enabled, one counted operation may include several HTTP attempts before the application observes failure. The circuit breaker observes the final operation result, not each SDK retry.
 
-`voice-batch run --parallel-interviews N` adds explicit overlap across whole interview groups, default 1. Start with 2. All workers share the same request allowance, elapsed admission deadline and per-endpoint/model failure streak; these controls are never multiplied by N. Streaks use response-completion order and a later success cannot reopen stopped admission. Operations admitted before a stop may still finish and save valid responses. A final transient 429 starts a shared cooldown before new operations, followed by 0.25-second spacing. This is reactive pacing, not a configured requests-per-minute or monetary budget. Parts within each interview remain ordered. Prefer one worker and one selection for a diagnostic aimed at a specific stage; scarce allowances across parallel interviews are assigned by scheduling.
+`interview batch run --parallel-interviews N` adds explicit overlap across whole interview groups, default 1. Start with 2. All workers share the same request allowance, elapsed admission deadline and per-endpoint/model failure streak; these controls are never multiplied by N. Streaks use response-completion order and a later success cannot reopen stopped admission. Operations admitted before a stop may still finish and save valid responses. A final transient 429 starts a shared cooldown before new operations, followed by 0.25-second spacing. This is reactive pacing, not a configured requests-per-minute or monetary budget. Parts within each interview remain ordered. Prefer one worker and one selection for a diagnostic aimed at a specific stage; scarce allowances across parallel interviews are assigned by scheduling.
 
 The time option is a **start deadline**, not a hard whole-run timeout. It does not cancel an in-flight call, truncate a valid returned response, or stop local media preparation at the deadline. The SDK timeout bounds individual I/O waits, not total processing time; a progressing upload/response can exceed the admission window. A returned valid response is saved, then the next start is denied. Ctrl+C/SIGTERM stops new scheduling and provider admission. Parallel batch cleanup waits for active workers while keeping locks/logs open; local work and already admitted I/O may take time to finish. Returned valid responses are retained before locks are released. Cancellation cannot establish that remote work stopped or was not billed. No background provider worker remains after normal cleanup returns.
 
@@ -45,7 +45,7 @@ Provider failures stop at the configured threshold; local validation/media failu
 This example is a command for a future explicitly authorized paid test. It is not executed by tests or installation. An existing staged session with verified original ASR reaches the speaker pass without repeating ASR:
 
 ```bash
-voice-batch run --batch-folder private/batches/demo-001 --select entry-a \
+interview batch run --batch-folder private/batches/demo-001 --select entry-a \
   --step raw --separate-speakers --speaker-config private/config/speakers.json \
   --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
   --speaker-chunk-seconds 60 --request-timeout 120 --request-retries 0 \
@@ -54,13 +54,13 @@ voice-batch run --batch-folder private/batches/demo-001 --select entry-a \
 
 The first uncached provider operation consumes the allowance, regardless of stage. If original ASR is incomplete, that operation may be ASR instead of diarization. It may also complete a sufficiently short session or use no allowance when all selected work is cached. For longer sessions a nonzero incomplete result is expected, with the completed chunk checkpoint retained. This is not a one-chunk quality assessment for a full interview and does not produce a full transcript automatically.
 
-**Stop after a diagnostic provider failure.** A timeout/connection/account failure is not the expected request-limit stop and is not evidence of a saved chunk. Do not proceed to all sessions or enlarge the allowance until that failure is investigated. Only after confirming a valid returned response/checkpoint and deliberately authorizing further paid processing should you repeat with a larger allowance. Preserve the ASR model/hints/chunk setting and independent diarization duration to reuse checkpoints. Do not blindly launch every interview after repeated failures. `voice-batch` resumes automatically; **it has no `--resume` option**. Direct `voice-transcribe` pipeline/workflow recovery uses `--resume`.
+**Stop after a diagnostic provider failure.** A timeout/connection/account failure is not the expected request-limit stop and is not evidence of a saved chunk. Do not proceed to all sessions or enlarge the allowance until that failure is investigated. Only after confirming a valid returned response/checkpoint and deliberately authorizing further paid processing should you repeat with a larger allowance. Preserve the ASR model/hints/chunk setting and independent diarization duration to reuse checkpoints. Do not blindly launch every interview after repeated failures. `interview batch` resumes automatically; **it has no `--resume` option**. Direct `interview transcribe` pipeline/workflow recovery uses `--resume`.
 
 ## Safe status and configuration
 
 Every new run records allowlisted effective model enums, chunk durations, provider timeout/retries, admission limits, failure threshold, interview-enabled flag, hint-presence booleans and language-hint count. It records no supplied names, mappings, hint content, source/output paths, plan IDs, keys, endpoints, request IDs or provider payloads. Per-call events show admitted operation count and effective I/O timeout. Full responses belong only in private checkpoint files.
 
-`voice-batch status --batch-folder ...` presents chronological history with the original `historical_run` and `started_at`, then the latest **recorded** stages per item, family and phase, with `latest_run`. Original completion remains visible when attribution fails, and original-only review does not replace attributed history. Latest stage sets come from one run rather than combining different settings/generations. The envelope `run` is the status command's identity; the explicit historical/latest fields identify the earlier execution. Legacy summaries use their filesystem modification time when no timestamp exists and do not acquire inferred family success. Status does not read transcripts/media or freshly verify artifact checksums; use the existing verification/gates before processing.
+`interview batch status --batch-folder ...` presents chronological history with the original `historical_run` and `started_at`, then the latest **recorded** stages per item, family and phase, with `latest_run`. Original completion remains visible when attribution fails, and original-only review does not replace attributed history. Latest stage sets come from one run rather than combining different settings/generations. The envelope `run` is the status command's identity; the explicit historical/latest fields identify the earlier execution. Legacy summaries use their filesystem modification time when no timestamp exists and do not acquire inferred family success. Status does not read transcripts/media or freshly verify artifact checksums; use the existing verification/gates before processing.
 
 Offline regressions cover later-chunk failures, restart reuse, corrupt/rebound checkpoints, old completed cache reuse, the synthetic 43/47 recovery case, independent chunk scopes, SDK mock-transport timeout/retry behavior, cross-stage limits, failure streaks, signals and mixed-family chronology. They validate software contracts, not live provider accuracy, latency or cost.
 
@@ -91,13 +91,13 @@ The caps are opt-in diagnostic controls, not defaults or recommended full-run se
 For deliberate full processing of an already prepared private batch, start with two interviews, timeout 600 and retries 2. **Omit both** `--max-requests` and `--max-run-seconds`:
 
 ```bash
-voice-batch run --batch-folder private/batches/demo-001 --step raw \
+interview batch run --batch-folder private/batches/demo-001 --step raw \
   --separate-speakers --speaker-config private/config/speakers.json \
   --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
   --parallel-interviews 2 --request-timeout 600 --request-retries 2 \
   --failure-limit 2 --send-to-openai
 
-voice-batch run --batch-folder private/batches/demo-001 --step review \
+interview batch run --batch-folder private/batches/demo-001 --step review \
   --separate-speakers --speaker-config private/config/speakers.json \
   --transcription-model gpt-transcribe --audio-chunk-seconds 300 \
   --parallel-interviews 2 --request-timeout 600 --request-retries 2 \
@@ -109,7 +109,7 @@ Repeat matching commands to resume automatically. Keep model, hints, speaker set
 After checking the exact recordings, transcripts and both complete reports, eligible explicitly selected entries can produce chapters:
 
 ```bash
-voice-batch run --batch-folder private/batches/demo-001 --step chapters --select entry-a \
+interview batch run --batch-folder private/batches/demo-001 --step chapters --select entry-a \
   --human-reviewed --chapter-style both --separate-speakers \
   --speaker-config private/config/speakers.json \
   --transcription-model gpt-transcribe --audio-chunk-seconds 300 \

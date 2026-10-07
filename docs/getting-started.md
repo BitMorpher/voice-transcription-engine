@@ -13,7 +13,7 @@ uv python install 3.14.8
 uv sync --locked
 ffmpeg -version
 ffprobe -version
-uv run --locked voice-transcribe --help
+uv run --locked interview transcribe --help
 ```
 
 `uv sync --locked` creates the project's `.venv` and installs the exact dependencies in `uv.lock`. `uv run --locked` runs a command inside that environment; you do not need to activate it. It may download Python/packages during setup. It does not install FFmpeg or set up an API account. See [setup details](setup.md) for runtime-only installation and notebooks.
@@ -23,7 +23,7 @@ Store your recording under ignored `private/input/`, such as `private/input/exam
 ## Prepare one recording locally
 
 ```bash
-uv run --locked voice-transcribe --prepare-audio \
+uv run --locked interview transcribe --prepare-audio \
   --input private/input/example.mp4 --output-folder private/output
 ```
 
@@ -45,7 +45,7 @@ Enter the key when prompted; input is hidden in bash/zsh. `.env` files are not a
 Continue the local job with the same input and output:
 
 ```bash
-uv run --locked voice-transcribe --pipeline \
+uv run --locked interview transcribe --pipeline \
   --input private/input/example.mp4 --output-folder private/output --resume
 ```
 
@@ -79,7 +79,7 @@ Open the returned file locally in your editor. `manifest.json` records saved sta
 The author workflow selects steps by name. Here it adds a layout polish and a report while reusing matching raw work:
 
 ```bash
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --input private/input/example.mp4 --output-folder private/output \
   --steps raw,polish,review --resume
 ```
@@ -100,7 +100,7 @@ To review without a polished derivative, select `--steps raw,review`. To request
 **A folder of independent recordings.** Each supported file becomes a separate job, sorted by filename. Subfolders are not scanned, and files are not combined:
 
 ```bash
-uv run --locked voice-transcribe --pipeline \
+uv run --locked interview transcribe --pipeline \
   --input-folder private/input --output-folder private/folder-output
 ```
 
@@ -120,7 +120,7 @@ uv run --locked voice-transcribe --pipeline \
 The paths are relative to this JSON file. The array order is the interview order, irrespective of filenames. `id` is a stable reference, not a sorting key. Replace the paths with existing media before running:
 
 ```bash
-uv run --locked voice-transcribe --author-workflow \
+uv run --locked interview transcribe --author-workflow \
   --recordings-list private/config/interview-a.json --steps raw \
   --output-folder private/interview-output
 ```
@@ -158,11 +158,11 @@ Then create `private/config/batch-plan.json`:
 Check the JSON and source metadata, then copy selected recordings into a **fresh** batch folder:
 
 ```bash
-uv run --locked voice-batch inventory --batch-plan private/config/batch-plan.json
-uv run --locked voice-batch check --batch-plan private/config/batch-plan.json
-uv run --locked voice-batch prepare --batch-plan private/config/batch-plan.json \
+uv run --locked interview batch inventory --batch-plan private/config/batch-plan.json
+uv run --locked interview batch check --batch-plan private/config/batch-plan.json
+uv run --locked interview batch prepare --batch-plan private/config/batch-plan.json \
   --batch-folder private/batches/example --copy-local-files
-uv run --locked voice-batch verify --batch-folder private/batches/example
+uv run --locked interview batch verify --batch-folder private/batches/example
 ```
 
 Inventory/check do not read media content or call OpenAI. Check also confirms FFmpeg/ffprobe availability. Prepare reads, copies, and hashes sources; verify reads the staged copies and compares their saved checksums. Preparation does not make provider calls. If macOS files are cloud placeholders, preparation requires `--download-cloud-files` to allow their download; otherwise download them yourself before preparing.
@@ -170,16 +170,16 @@ Inventory/check do not read media content or call OpenAI. Check also confirms FF
 Request transcripts, then text review once raw is complete:
 
 ```bash
-uv run --locked voice-batch run --batch-folder private/batches/example \
+uv run --locked interview batch run --batch-folder private/batches/example \
   --step raw --send-to-openai
-uv run --locked voice-batch run --batch-folder private/batches/example \
+uv run --locked interview batch run --batch-folder private/batches/example \
   --step review --send-to-openai
-uv run --locked voice-batch status --batch-folder private/batches/example
+uv run --locked interview batch status --batch-folder private/batches/example
 ```
 
 Batch `review` includes polish and review for each ready requested output family. It does not retranscribe missing audio to fix a prerequisite. Run starts one interview at a time by default; add `--parallel-interviews 2` when you deliberately want two independent interviews to overlap. Parts inside each interview stay ordered.
 
-Repeat a matching batch run command to resume automatically; `voice-batch` has no `--resume` option. `status` shows saved history, without freshly checking output integrity. See [batch orchestration](batch-orchestration.md) for selections, blockers, parallelism, and explicit chapter approval.
+Repeat a matching batch run command to resume automatically; `interview batch` has no `--resume` option. `status` shows saved history, without freshly checking output integrity. See [batch orchestration](batch-orchestration.md) for selections, blockers, parallelism, and explicit chapter approval.
 
 ## If a command stops
 
