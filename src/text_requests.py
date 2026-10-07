@@ -5,13 +5,17 @@ import hashlib
 if __package__:
     from .chunk_cache import ChunkCache
     from .model_config import _fingerprint
-    from .provider_control import CURRENT_CONTROL
-    from .progress import emit_progress
+    from .provider_control import CURRENT_CONTROL, ControlledClient
+    from .progress import (TEXT_VALIDATION_RETRY, call_text_operation, current_text_metrics,
+                           emit_progress, collect_text_metrics as collect_text_metrics,
+                           TextMetrics as TextMetrics)
 else:
     from chunk_cache import ChunkCache
     from model_config import _fingerprint
-    from provider_control import CURRENT_CONTROL
-    from progress import emit_progress
+    from provider_control import CURRENT_CONTROL, ControlledClient
+    from progress import (TEXT_VALIDATION_RETRY, call_text_operation, current_text_metrics,
+                          emit_progress, collect_text_metrics as collect_text_metrics,
+                          TextMetrics as TextMetrics)
 
 
 VALIDATION_CATEGORIES = {'validation_schema', 'validation_coverage', 'validation_source',
@@ -73,8 +77,12 @@ def validated_chat(client, parameters, validate, *, stage, cache=None, index=1):
     if cache:
         saved = cache.get(record)
         if saved is not None:
+            result = validate(saved['content'])
+            metrics = current_text_metrics()
+            if metrics is not None:
+                metrics.cache_hit()
             emit_progress(stage, 'skipped', chunk=index)
-            return validate(saved['content'])
+            return result
     control = CURRENT_CONTROL.get()
     # At most one additional application operation; diagnostics with retries=0
     # never repeat. SDK retries still apply independently to each operation.
@@ -82,11 +90,17 @@ def validated_chat(client, parameters, validate, *, stage, cache=None, index=1):
     for attempt in range(recoveries + 1):
         if control:
             control.check()
+        token = TEXT_VALIDATION_RETRY.set(attempt > 0)
         try:
-            response = client.chat.completions.create(**parameters)
-        except ResponseValidationError:
-            # A provider/injected client cannot supply trusted local error prose.
-            raise RuntimeError('Provider text request failed.') from None
+            try:
+                method = client.chat.completions.create
+                response = (method(**parameters) if isinstance(client, ControlledClient)
+                            else call_text_operation(method, parameters))
+            except ResponseValidationError:
+                # A provider/injected client cannot supply trusted local error prose.
+                raise RuntimeError('Provider text request failed.') from None
+        finally:
+            TEXT_VALIDATION_RETRY.reset(token)
         try:
             content = completion_content(response)
             result = validate(content)

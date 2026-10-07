@@ -168,9 +168,14 @@ does not report successful attribution as failed, and does not publish a chapter
 Names/mapping changes create a new attributed family and can reuse verified
 diarization responses with `--resume`; those display changes do not require
 another audio request. Stages and editorial models are bound independently to
-the exact source and provenance. Tampered, missing, symlinked, or conflicting
-completed artifacts fail without overwriting; changed provider/chunk settings
-require fresh output where an existing family conflicts. Validated speaker-pass responses are privately checkpointed, so matching retries
+the exact source and provenance. Text model/effort changes retain the same verified
+attributed raw/audio job and select a separate derivative configuration. The first
+polish keeps `derivative_readability.txt`; subsequent configurations use recorded
+`enhancement_<hash>/derivative_readability.txt` paths. Manifest
+`derivative_versions` retains prior stage records and selects the requested
+configuration without overwriting its artifacts. Review/chapter bundles retain
+their unique directories and exact review gates. Tampered, missing, symlinked, or
+conflicting completed artifacts fail without overwriting. Validated speaker-pass responses are privately checkpointed, so matching retries
 reuse successful earlier requests within a failed recording. Failed or never-saved
 requests can repeat charges. Completed whole-recording caches remain reusable.
 See [recovery controls](recovery-controls.md) for binding and reconfirmation details. Locks and atomic directory publication keep
@@ -186,6 +191,27 @@ arrangement can add model calls. Interview chapter excerpts remain deterministic
 Retries may add charges. Review/chapter gates apply independently, and completed
 original outputs remain available if attribution fails. Start with `--steps raw`
 and inspect speaker turns before requesting further stages.
+
+Attributed polish groups at most 32 speech pieces and 6000 UTF-8 speech bytes per
+request by default, instead of requesting every nonempty turn separately. Long
+turns split at exact character boundaries and retain stable turn IDs and piece
+indices. The response must contain every piece exactly once in source order;
+local validation checks each piece's words and symbols. Empty and short turns,
+speaker identity, headers and part separators remain present. Headers come from
+the verified raw source and are restored locally, so grouping cannot merge voices
+or assign a new name. An all-empty group needs no model request. Each validated
+group is checkpointed independently; one failed group does not repeat earlier
+successful groups. Sanskrit spellings and personal names are never silently
+corrected into different words, and no memories or testimony may be invented.
+
+Matching legacy per-turn polish may be retained only after its source/configuration
+hashes, exact headers/separators and per-turn word fidelity pass validation. Old
+files remain intact; missing bindings or corruption block reuse. Model/effort
+changes select a new text version while preserving raw and audio caches. Use the
+explicit `--text-profile balanced` for Sol 6.1/low editing and the Sol 6.1/medium
+review candidate, or override the review model/effort to retain Astra. Assess subtle
+review decisions through [the isolated comparison](text-comparison.md); grouped
+request reduction is not evidence of better editorial judgment or a dollar saving.
 
 Only media content and supported transcription settings go to the additional
 ASR pass. Generic `audio.wav` upload names conceal local filenames. Names may be

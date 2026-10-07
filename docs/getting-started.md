@@ -95,6 +95,14 @@ Polish and review send transcript text to OpenAI and can incur additional charge
 
 To review without a polished derivative, select `--steps raw,review`. To request only the raw transcript through this workflow, select `--steps raw`.
 
+Polish and review keep Astra/high defaults. `--text-profile balanced` is an explicit
+comparison candidate: Sol 6.1/low polish and Sol 6.1/medium review. Override either model
+or effort separately when needed, for example retaining Astra review with
+`--review-model gpt-6-astra --review-reasoning-effort high`. Review settings also apply to
+narrative chapter arrangement. Begin with the offline [text comparison](text-comparison.md);
+only a deliberately scoped paid comparison can establish real latency, usage and nuanced
+review quality for your material.
+
 ## Choose the right input
 
 **A folder of independent recordings.** Each supported file becomes a separate job, sorted by filename. Subfolders are not scanned, and files are not combined:
@@ -185,6 +193,6 @@ Repeat a matching batch run command to resume automatically; `interview batch` h
 
 Read the fixed failure message and next action. Earlier validated artifacts and request checkpoints remain available. Keep source paths, models, hints, and section durations the same when resuming. A failed transcription can reuse saved successful sections; a failed review can reuse validated text requests.
 
-If completed output was changed or no longer matches its recorded configuration, the tool refuses to trust or overwrite it. Retain it and use a fresh output folder for a deliberate new run. A failed batch preparation also needs a fresh batch folder. Starting again may repeat paid requests; do not use a fresh folder as an automatic response to a timeout.
+If completed output was changed or no longer matches its recorded configuration, the tool refuses to trust or overwrite it. Retain it and use a fresh output folder for a deliberate new run. Changing only editing/review model or effort selects a retained text version in the same output folder and preserves matching raw/audio; review-only changes can reuse validated polish. The default remains Astra/high; the explicit `--text-profile balanced` selects Sol 6.1/low polish and Sol 6.1/medium review candidate. Compare it using the [isolated text guide](text-comparison.md) before full paid processing. A failed batch preparation still needs a fresh batch folder. Starting again may repeat paid requests; do not use a fresh folder as an automatic response to a timeout.
 
 Use `--progress plain` for readable scrolling messages or `--progress json` for scripts. See [progress and recovery](pipeline-guide.md#read-the-progress-display) for the meaning of bars, interruption, and blocked work.

@@ -44,6 +44,9 @@ def interview_provider():
         name = parameters['response_format']['json_schema']['name']
         if name == 'faithful_transcript_edit':
             body = dict(chunk_index=supplied['chunk_index'], text=supplied['text'], speaker_uncertain=False)
+        elif name == 'faithful_turn_group_edit':
+            body = dict(group_index=supplied['group_index'], edits=[
+                {**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
         elif name == 'source_grounded_author_review':
             findings = []
             if client.high:
@@ -339,14 +342,21 @@ def test_missing_cache_is_a_conflict_before_new_calls(monkeypatch, synthetic_med
     assert interview_provider.audio.transcriptions.create.call_count == 2
 
 
-def test_changed_editing_configuration_refuses_before_provider(monkeypatch, synthetic_media, tmp_path, interview_provider):
+def test_changed_review_configuration_preserves_and_reselects_versions(monkeypatch, synthetic_media, tmp_path, interview_provider):
     source, output = synthetic_media(), tmp_path / 'out'
     monkeypatch.setattr('src.cli.Transcriber', lambda **kw: Transcriber(client=interview_provider, **kw))
     argv = args(source, output, '--stages', 'raw,review')
     assert main(argv) == 0
     calls = interview_provider.chat.completions.create.call_count
-    assert main([*argv, '--resume', '--author-model', 'gpt-6.1-sol']) == 1
-    assert interview_provider.chat.completions.create.call_count == calls
+    audio_calls = interview_provider.audio.transcriptions.create.call_count
+    preserved = {path: path.read_bytes() for name in ('transcription.txt', 'review_report.json', 'review_report.xlsx')
+                 for path in output.rglob(name)}
+    assert main([*argv, '--resume', '--author-model', 'gpt-6.1-sol']) == 0
+    assert interview_provider.chat.completions.create.call_count == calls + 2
+    assert interview_provider.audio.transcriptions.create.call_count == audio_calls
+    assert all(path.read_bytes() == body for path, body in preserved.items())
+    assert main([*argv, '--resume']) == 0
+    assert interview_provider.chat.completions.create.call_count == calls + 2
 
 
 def test_partial_request_failure_preserves_original_and_no_complete_cache(monkeypatch, tmp_path, interview_provider):
@@ -543,7 +553,7 @@ def test_failure_summaries_preserve_completed_attributed_stages(synthetic_media,
             name = kw['response_format']['json_schema']['name']
             attributed = 'user_confirmed_mapping' in body.get('text', '') or 'unidentified' in body.get('text', '')
             if (failure == 'review' and attributed and name == 'source_grounded_author_review'
-                    or failure == 'polish' and body.get('text') == 'A question?'):
+                    or failure == 'polish' and any(t['text'] == 'A question?' for t in body.get('turns', []))):
                 raise RuntimeError('PRIVATE_PROVIDER_DETAILS')
             return chat(**kw)
         interview_provider.chat.completions.create.side_effect = broken_chat

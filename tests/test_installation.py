@@ -68,12 +68,29 @@ def test_wheel_namespace_prompts_and_console_scripts(wheel_environment):
     assert str(work / 'runtime') in result.stdout
     for command, arguments in (('voice-transcribe', []), ('voice-batch', []),
                                ('interview', []), ('interview', ['transcribe']),
-                               ('interview', ['batch'])):
+                               ('interview', ['batch']), ('interview', ['compare-text'])):
         executable = python.parent / (command + '.exe' if os.name == 'nt' else command)
         result = subprocess.run([str(executable), *arguments, '--help'], cwd=work, env=environment,
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 0 and command in result.stdout
         assert result.stderr == ''
+
+
+def test_installed_wheel_synthetic_comparison_and_replay(wheel_environment):
+    work, python, environment, _ = wheel_environment
+    executable = python.parent / ('interview.exe' if os.name == 'nt' else 'interview')
+    output = work / 'synthetic-comparison'
+    arguments = [str(executable), 'compare-text', '--output-dir', str(output)]
+    first = subprocess.run(arguments, cwd=work, env=environment,
+                           capture_output=True, text=True, timeout=30)
+    assert first.returncode == 0, first.stderr
+    results = list(output.rglob('completed.json'))
+    assert results
+    snapshots = {path: path.read_bytes() for path in results}
+    replay = subprocess.run([*arguments, '--resume'], cwd=work, env=environment,
+                            capture_output=True, text=True, timeout=30)
+    assert replay.returncode == 0, replay.stderr
+    assert all(path.read_bytes() == data for path, data in snapshots.items())
 
 
 def test_wheel_synthetic_pipeline_and_resume(wheel_environment):
@@ -107,6 +124,8 @@ def response(**kwargs):
     name = kwargs['response_format']['json_schema']['name']
     if name == 'faithful_transcript_edit':
         body = dict(chunk_index=p['chunk_index'], text=p['text'], speaker_uncertain=False)
+    elif name == 'faithful_turn_group_edit':
+        body = dict(group_index=p['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in p['turns']])
     elif name == 'source_grounded_author_review':
         body = dict(chunk_index=p['chunk_index'], fully_reviewed=True, reviewed_start=p['core_start'],
                     reviewed_end=p['core_end'], findings=[])
@@ -249,6 +268,8 @@ def chat(**kw):
     name = kw['response_format']['json_schema']['name']
     if name == 'faithful_transcript_edit':
         body = dict(chunk_index=supplied['chunk_index'], text=supplied['text'], speaker_uncertain=False)
+    elif name == 'faithful_turn_group_edit':
+        body = dict(group_index=supplied['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
     elif name == 'source_grounded_author_review':
         body = dict(chunk_index=supplied['chunk_index'], fully_reviewed=True,
                     reviewed_start=supplied['core_start'], reviewed_end=supplied['core_end'], findings=[])
@@ -340,6 +361,8 @@ def chat(**kw):
     name = kw['response_format']['json_schema']['name']
     if name == 'faithful_transcript_edit':
         body = dict(chunk_index=p['chunk_index'], text=p['text'], speaker_uncertain=False)
+    elif name == 'faithful_turn_group_edit':
+        body = dict(group_index=p['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in p['turns']])
     elif name == 'source_grounded_author_review':
         body = dict(chunk_index=p['chunk_index'], fully_reviewed=True,
             reviewed_start=p['core_start'], reviewed_end=p['core_end'], findings=[])

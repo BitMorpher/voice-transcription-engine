@@ -22,7 +22,7 @@ Polish and review are separate uses of the raw transcript. Review does not rely 
 
 The default `--pipeline` command prepares and transcribes only. `--author-workflow` defaults to raw, polish, review. Use `--steps` to choose its optional steps. Their execution order follows dependencies, irrespective of the order written in the list. Chapters require a `--chapter-style` selection.
 
-The default transcription model is `gpt-transcribe`; polish and review default to `gpt-6-astra`. These are configured defaults, not a benchmark on your recordings. Use `--transcription-model`, `--editing-model`, and `--review-model` to make a supported choice explicitly. The [option reference](cli-reference.md) lists allowed models and hint restrictions.
+The default transcription model is `gpt-transcribe`; polish and review retain `gpt-6-astra` with high reasoning. These are configured defaults, not a benchmark on your recordings. The explicit `--text-profile balanced` selects Sol 6.1/low polish and Sol 6.1/medium review candidate. `--editing-model`, `--editing-reasoning-effort`, `--review-model`, and `--review-reasoning-effort` override each setting separately; review settings also apply to narrative chapters. The [option reference](cli-reference.md) lists allowed combinations, and the [text comparison guide](text-comparison.md) explains how to assess review quality before a full run.
 
 ## Group recordings correctly
 
@@ -122,7 +122,7 @@ uv run --locked interview batch run --batch-folder private/batches/example \
 
 Validated audio, speaker-pass, polish, review, and narrative requests are checkpointed in pipeline/workflow and batch processing. A checkpoint is a saved valid response bound to its exact input/settings. It is not a completed transcript or report by itself. Every required section must pass before a complete output is published. Responses held only in memory by older versions cannot be recovered.
 
-**Restart in a fresh folder** when you deliberately want a changed completed configuration or when existing artifacts conflict with their records. Preserve the earlier folder to investigate or compare it. A new folder can repeat paid work; it is not the routine remedy for a network failure. Batch preparation always requires a new destination, including after partial preparation.
+**Choose a new text configuration in the same folder** when changing editing/review model or effort: separate retained versions preserve verified raw/audio and earlier text artifacts. Review-only changes reuse matching validated polish. Keep ASR, speaker settings and source paths unchanged to reuse raw work, and keep human approval tied to the exact selected review. **Restart in a fresh folder** when completed artifacts conflict with their records or when deliberately changing raw processing. Preserve the earlier folder to investigate or compare it. A new folder can repeat paid work; it is not the routine remedy for a network failure. Batch preparation always requires a new destination, including after partial preparation.
 
 **Interrupted work** retains completed artifacts and valid responses. Ctrl+C/SIGTERM stops new scheduling; already admitted requests/local work may take time to finish during cleanup. A returned valid response is saved. Cancellation cannot prove that remote work stopped or avoided a charge. Do not remove a lock until you have verified that the old process has stopped.
 

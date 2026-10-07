@@ -9,6 +9,7 @@ import sys
 
 from ..ordered_interview import _local
 from ..cli import PrivateArgumentParser, _positive_timeout
+from ..model_config import REASONING_EFFORTS, TEXT_PROFILES
 from ..provider_control import CURRENT_CONTROL, ProviderControl
 from ..progress import CURRENT, Reporter, emit_progress, interruptions, LogError
 from .plan import BatchError, load_plan, require, select
@@ -70,6 +71,13 @@ def parser(*, studio=False):
                                metavar='MODEL', help='Punctuation and layout polish model (default: gpt-6-astra); also accepts gpt-6.1-sol.')
     transcription.add_argument('--review-model', '--author-model', dest='author_model', default='gpt-6-astra',
                                metavar='MODEL', help='Review and chapter arrangement model (default: gpt-6-astra); also accepts gpt-6.1-sol.')
+    transcription.add_argument('--editing-reasoning-effort', choices=REASONING_EFFORTS, default='high',
+                               metavar='EFFORT', help='Polish reasoning: low, medium, or high (default: high; balanced profile: low).')
+    transcription.add_argument('--review-reasoning-effort', '--author-reasoning-effort', dest='review_reasoning_effort',
+                               choices=REASONING_EFFORTS, default='high', metavar='EFFORT',
+                               help='Review and narrative chapter reasoning: low, medium, or high (default: high; balanced profile: medium).')
+    transcription.add_argument('--text-profile', choices=TEXT_PROFILES, default='legacy', metavar='PROFILE',
+                               help='legacy: keep Astra/high defaults; balanced: Sol 6.1/low polish and Sol 6.1/medium review candidate. Explicit model/effort flags override each setting.')
     transcription.add_argument('--audio-chunk-seconds', type=_positive_timeout, default=300,
                                metavar='SECONDS', help='Maximum audio seconds per transcription request, 1–600 (default: 300); keep unchanged to reuse completed transcription.')
     transcription.add_argument('--context-file', metavar='FILE', help='Private UTF-8 text file explaining the recording; sent with supported transcription requests.')
@@ -170,6 +178,8 @@ def execute(args, reporter):
         CURRENT_CONTROL.set(control)
         reporter.emit(status='configuration', configuration={
             'asr_model': args.model, 'editing_model': args.editing_model, 'author_model': args.author_model,
+            'text_profile': args.text_profile, 'editing_reasoning_effort': args.editing_reasoning_effort,
+            'review_reasoning_effort': args.review_reasoning_effort,
             'diarization_model': args.interview_model or 'gpt-4o-transcribe-diarize',
             'audio_chunk_seconds': args.audio_chunk_seconds,
             'diarization_chunk_seconds': args.diarization_chunk_seconds or args.audio_chunk_seconds,

@@ -16,6 +16,7 @@ def parser():
         epilog='Commands:\n'
                '  transcribe  One recording, independent files, or ordered parts of one interview.\n'
                '  batch       Prepare and process several independent interviews.\n\n'
+               '  compare-text  Compare text settings on isolated synthetic fixtures.\n\n'
                'Examples:\n'
                '  interview transcribe --help\n'
                '  interview transcribe --prepare-audio --input private/input/example.mp4\n'
@@ -24,8 +25,8 @@ def parser():
                'Audio preparation is local. Hosted OpenAI processing can incur charges.\n'
                'voice-transcribe and voice-batch remain supported compatibility commands.\n'
                'See docs/cli-reference.md and docs/migration.md.')
-    return_value.add_argument('command', choices=('transcribe', 'batch'), metavar='COMMAND',
-                             help='Choose transcribe or batch; each command has its own --help.')
+    return_value.add_argument('command', choices=('transcribe', 'batch', 'compare-text'), metavar='COMMAND',
+                             help='Choose transcribe, batch, or compare-text; each command has its own --help.')
     return return_value
 
 
@@ -40,6 +41,9 @@ def main(argv=None):
     command = command_parser.parse_args(arguments[:1]).command
     if command == 'transcribe':
         return cli.entrypoint(arguments[1:], studio=True)
+    if command == 'compare-text':
+        from .text_comparison import main as comparison_main
+        return comparison_main(arguments[1:])
     return batch_cli.main(arguments[1:], studio=True)
 
 

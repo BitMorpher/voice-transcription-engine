@@ -84,6 +84,16 @@ uv run --locked interview transcribe --author-workflow \
 
 Polish changes punctuation, capitalization, and layout in a separate file. Review reads the raw text and produces JSON and an Excel workbook. It flags questions for a person to investigate; it does not verify facts or automatically approve publication. Chapter drafting requires a complete review, with additional gates described in the [author workflow guide](docs/author-workflow.md).
 
+Existing commands keep `gpt-6-astra` with high reasoning for polish and review. For the recommended starting point when comparing quality and cost, explicitly select `--text-profile balanced`: `gpt-6.1-sol` with low reasoning for polish and medium reasoning for review. The review setting is a candidate to assess against Astra, not a proven quality or speed improvement. Separate flags let you retain Astra review while using Sol polish:
+
+```bash
+uv run --locked interview transcribe --author-workflow \
+  --recordings-list private/config/session-a.json --output-folder private/author-output \
+  --resume --text-profile balanced --review-model gpt-6-astra --review-reasoning-effort high
+```
+
+Explicit model/effort flags override the profile regardless of flag order. `--review-model` and `--review-reasoning-effort` also configure narrative chapter arrangement; interview chapter excerpts use no model request. Start with the isolated [text comparison](docs/text-comparison.md) before another full paid run. Its offline synthetic mode makes no provider calls.
+
 ## Process independent interviews
 
 Prepare a fresh private batch folder once, then run one step at a time. Copying sources and sending material to OpenAI each require their named opt-in flags:

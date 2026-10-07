@@ -311,6 +311,8 @@ def complete_provider(provider):
         name = kwargs['response_format']['json_schema']['name']
         if name == 'faithful_transcript_edit':
             body = {'chunk_index': supplied['chunk_index'], 'text': supplied['text'], 'speaker_uncertain': False}
+        elif name == 'faithful_turn_group_edit':
+            body = dict(group_index=supplied['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
         elif name == 'source_grounded_author_review':
             body = {'chunk_index': supplied['chunk_index'], 'fully_reviewed': True,
                     'reviewed_start': supplied['core_start'], 'reviewed_end': supplied['core_end'], 'findings': []}

@@ -12,6 +12,8 @@ DEFAULT_ASR_MODEL = 'gpt-transcribe'
 DEFAULT_EDITING_MODEL = 'gpt-6-astra'
 ASR_MODELS = (DEFAULT_ASR_MODEL, 'whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe')
 EDITING_MODELS = (DEFAULT_EDITING_MODEL, 'gpt-6.1-sol')
+REASONING_EFFORTS = ('low', 'medium', 'high')
+TEXT_PROFILES = ('legacy', 'balanced')
 
 
 class ModelConfigurationError(ValueError):
@@ -21,6 +23,21 @@ class ModelConfigurationError(ValueError):
 def _fingerprint(value):
     encoded = json.dumps(value, sort_keys=True, ensure_ascii=False).encode('utf-8')
     return hashlib.sha256(encoded).hexdigest()
+
+
+def text_profile_settings(profile='legacy'):
+    """CLI shorthand only; cache bindings use the resulting models and efforts.
+
+    The balanced review setting is a comparison candidate, not a measured quality
+    result. Keeping the legacy default avoids changing existing paid workflows.
+    """
+    if profile not in TEXT_PROFILES:
+        raise ModelConfigurationError('Text profile must be legacy or balanced.')
+    if profile == 'balanced':
+        return {'editing_model': 'gpt-6.1-sol', 'editing_reasoning_effort': 'low',
+                'author_model': 'gpt-6.1-sol', 'review_reasoning_effort': 'medium'}
+    return {'editing_model': DEFAULT_EDITING_MODEL, 'editing_reasoning_effort': 'high',
+            'author_model': DEFAULT_EDITING_MODEL, 'review_reasoning_effort': 'high'}
 
 
 @dataclass(frozen=True)
@@ -87,7 +104,7 @@ class EditingOptions:
             raise ModelConfigurationError('Unsupported editing model; use gpt-6-astra or gpt-6.1-sol.')
         if not isinstance(self.chunk_bytes, int) or not 64 <= self.chunk_bytes <= 6000:
             raise ModelConfigurationError('Editing chunks must be between 64 and 6000 UTF-8 bytes.')
-        if self.reasoning_effort not in ('low', 'medium', 'high'):
+        if self.reasoning_effort not in REASONING_EFFORTS:
             raise ModelConfigurationError('Editing reasoning effort must be low, medium, or high.')
 
     @property

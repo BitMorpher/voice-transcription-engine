@@ -210,9 +210,10 @@ def test_editing_model_change_cannot_overwrite_derivative(synthetic_media, tmp_p
     derivative = output / identity / 'derivative_readability.txt'
     before = derivative.read_bytes()
     editor = EditingOptions(model='gpt-6.1-sol')
-    with pytest.raises(PipelineError, match='Unverified output'):
-        Pipeline(output, resume=True, editing_options=editor).process(
-            source, transcriber=Transcriber(client=provider, editing_options=editor), enhance=True)
+    _, stages = Pipeline(output, resume=True, editing_options=editor).process(
+        source, transcriber=Transcriber(client=provider, editing_options=editor), enhance=True)
+    assert stages['enhancement'] == 'complete'
+    assert len(list((output / identity).rglob('derivative_readability.txt'))) == 2
     assert derivative.read_bytes() == before
     assert provider.audio.transcriptions.create.call_count == 1
 

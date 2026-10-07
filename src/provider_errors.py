@@ -93,6 +93,12 @@ def classify(error):
         if isinstance(error, ResponseValidationError):
             category = error.category
             return {'error_category': category if isinstance(category, str) and category in CATEGORIES else 'validation'}
+        if __package__:
+            from .transcriber import TranscriptionError
+        else:
+            from transcriber import TranscriptionError
+        if type(error) is TranscriptionError and error.validation_category in CATEGORIES:
+            return {'error_category': error.validation_category}
         import openai
         if not isinstance(error, openai.APIError):
             return {'error_category': category}

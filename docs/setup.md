@@ -15,9 +15,20 @@ uv sync --locked
 uv run --locked interview --help
 uv run --locked interview transcribe --help
 uv run --locked interview batch --help
+uv run --locked interview compare-text --help
 ```
 
 `uv sync --locked` creates the ignored `.venv`, installs the editable CLI, runtime dependencies and the default `dev` group using committed `uv.lock`. The Python pin selects the standard CPython runtime, not a free-threaded build. Setup may download Python and packages; it never installs FFmpeg or configures credentials. Once synced, use `uv run --locked` for commands without activating the environment. For a runtime-only installation, use `uv sync --locked --no-dev` and `uv run --locked --no-dev interview transcribe --help` (plain `uv run` would reinstall the default development group).
+
+The text optimization needs no dependency upgrade. Existing commands retain Astra/high
+polish and review settings; explicitly select `--text-profile balanced` to try Sol 6.1/low
+polish and Sol 6.1/medium review candidate. Separate `--editing-reasoning-effort` and
+`--review-reasoning-effort` flags accept low, medium or high. Explicit model/effort choices
+override the profile, and review choices also configure narrative chapters. See the
+[option reference](cli-reference.md) for combinations and the [isolated text comparison](text-comparison.md)
+for offline checks and a scoped quality assessment before full paid processing. Install a
+reviewed wheel into a fresh runtime, preserving environments with active runs; keep the
+same source paths and ASR/speaker settings to reuse verified raw work.
 
 `pyproject.toml` is the only dependency declaration: `openai` and `openpyxl` are runtime dependencies; `dev` contains pytest and Ruff. OpenPyXL writes the author review workbook. Optional `notebook` contains PyDub, `audioop-lts`, ipykernel and JupyterLab. `uv.lock` records exact versions, public PyPI locations and hashes for all groups/extras. Build-backend versions are pinned separately in `[build-system]`, since uv's project lock does not lock isolated build requirements. FFmpeg is not managed by the lock. The CLI does not need PyDub, local Whisper, Torch, NumPy or SciPy.
 

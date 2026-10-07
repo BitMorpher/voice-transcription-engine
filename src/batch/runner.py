@@ -98,7 +98,8 @@ def gate_attribution(root, item, phase, options, author_options, interview_optio
     reason = 'raw_prerequisite'
     try:
         directory = target(root, item)
-        editing = EditingOptions(model=args.editing_model)
+        editing = EditingOptions(model=args.editing_model,
+                                 reasoning_effort=getattr(args, 'editing_reasoning_effort', 'high'))
         ordered = OrderedInterview(directory / 'input/interview.json', directory / 'output',
             options=options, editing_options=editing, author_options=author_options, resume=True)
         ordered.preflight(original=False, require_raw=True)
@@ -109,7 +110,8 @@ def gate_attribution(root, item, phase, options, author_options, interview_optio
         if phase == 'chapters':
             styles = ('interview', 'narrative') if args.chapters == 'both' else (args.chapters,)
             selected_author = replace(author_options, chapter_options=ChapterOptions(
-                model=args.author_model, styles=styles, person=args.narrative_person))
+                model=args.author_model, styles=styles, person=args.narrative_person,
+                reasoning_effort=getattr(args, 'review_reasoning_effort', 'high')))
         family = AttributedInterview(directory / 'output', inputs, interview_options,
             resume=True, enhance=True, author_options=selected_author)
         state, provenance = family.verified_raw(SimpleNamespace(options=options, editing_options=editing,
@@ -156,12 +158,16 @@ def run_one(root, item, args):
     context, keywords = load_hints(context_file=args.context_file, glossary_file=args.glossary_file)
     options = TranscriptionOptions(model=args.model, context=context, keywords=keywords,
                                    languages=tuple(args.language), chunk_seconds=args.audio_chunk_seconds)
-    author_options = AuthorOptions(review=True, review_options=ReviewOptions(model=args.author_model))
+    author_options = AuthorOptions(review=True, review_options=ReviewOptions(model=args.author_model,
+        reasoning_effort=getattr(args, 'review_reasoning_effort', 'high')))
     command = ['--workflow', '--interview-manifest', str(directory / 'input/interview.json'),
                '--output-folder', str(directory / 'output'), '--resume', '--stages',
                'raw' if args.phase == 'raw' else 'raw,polish,review',
                '--model', args.model, '--editing-model', args.editing_model,
                '--author-model', args.author_model, '--audio-chunk-seconds', str(args.audio_chunk_seconds),
+               '--editing-reasoning-effort', getattr(args, 'editing_reasoning_effort', 'high'),
+               '--review-reasoning-effort', getattr(args, 'review_reasoning_effort', 'high'),
+               '--text-profile', getattr(args, 'text_profile', 'legacy'),
                '--media-timeout', str(args.media_timeout),
                '--provider-timeout', str(args.provider_timeout), '--provider-retries', str(args.provider_retries)]
     for flag, value in (('--context-file', args.context_file), ('--glossary-file', args.glossary_file)):
