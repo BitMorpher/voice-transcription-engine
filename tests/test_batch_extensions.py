@@ -197,6 +197,8 @@ def interview_client():
         name = kw['response_format']['json_schema']['name']
         if name == 'faithful_transcript_edit':
             body = dict(chunk_index=supplied['chunk_index'], text=supplied['text'], speaker_uncertain=False)
+        elif name == 'faithful_turn_group_edit':
+            body = dict(group_index=supplied['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in supplied['turns']])
         elif name == 'source_grounded_author_review':
             attributed = 'unidentified' in supplied['text'] or 'user_confirmed_mapping' in supplied['text']
             high = client.high_family == ('attributed' if attributed else 'original')
@@ -523,9 +525,10 @@ def test_changed_complete_attributed_chapter_settings_preserve_its_existing_draf
     assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--chapters', 'interview') == 0
     calls = interview_client.chat.completions.create.call_count
     before = {p: p.read_bytes() for p in (root / 'item-0001/output/attributed').rglob('*') if p.is_file()}
-    assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--chapters', 'narrative') == 1
+    assert run(root, 'chapters', '--select', 'entry-1', '--human-reviewed', '--chapters', 'narrative') == 0
     assert interview_client.chat.completions.create.call_count > calls  # eligible original generation
-    assert all(p.read_bytes() == content for p, content in before.items())
+    assert all(p.read_bytes() == content for p, content in before.items() if p.name != 'manifest.json')
+    assert len(list((root / 'item-0001/output/attributed').rglob('chapter_drafts.json'))) == 2
 
 
 def test_original_approval_cannot_be_substituted_for_attributed_family(interview_batch, interview_client, monkeypatch):

@@ -15,7 +15,7 @@ if __package__:
     from .provider_errors import classify, SYSTEMIC
     from .progress import emit_progress
     from . import prompts
-    from .model_config import EDITING_MODELS
+    from .model_config import EDITING_MODELS, REASONING_EFFORTS
     from .text_editing import split_text
     from .transcriber import _suppress_provider_logging
 else:
@@ -24,7 +24,7 @@ else:
     from provider_errors import classify, SYSTEMIC
     from progress import emit_progress
     import prompts
-    from model_config import EDITING_MODELS
+    from model_config import EDITING_MODELS, REASONING_EFFORTS
     from text_editing import split_text
     from transcriber import _suppress_provider_logging
 
@@ -132,7 +132,7 @@ class ReviewOptions:
             raise ReviewError('Unsupported author-review model; use a documented editing model.')
         if type(self.chunk_bytes) is not int or not 64 <= self.chunk_bytes <= 6000:
             raise ReviewError('Author-review chunks must be between 64 and 6000 UTF-8 bytes.')
-        if self.reasoning_effort not in ('low', 'medium', 'high'):
+        if self.reasoning_effort not in REASONING_EFFORTS:
             raise ReviewError('Author-review reasoning effort must be low, medium, or high.')
 
     @property
@@ -245,6 +245,7 @@ def validate_review_report(raw, report, options=None):
                 or report['prompt_version'] != PROMPT_VERSION
                 or report['prompt_sha256'] != _hash(_prompt())
                 or report['model'] not in EDITING_MODELS
+                or ('reasoning_effort' in report and report['reasoning_effort'] not in REASONING_EFFORTS)
                 or not isinstance(report['findings'], list)):
             raise ValueError()
         coverage = report['coverage']
@@ -270,6 +271,7 @@ def validate_review_report(raw, report, options=None):
             raise ValueError()
         if options is not None:
             if (report['model'] != options.model
+                    or ('reasoning_effort' in report and report['reasoning_effort'] != options.reasoning_effort)
                     or report['settings_fingerprint'] != options.fingerprint
                     or coverage['chunks'] != [{**chunk, 'status': 'complete'}
                                                for chunk in _chunks(raw, options.chunk_bytes)]):
@@ -387,6 +389,7 @@ def review_transcript(raw, client, options=None, *, checkpoint_root=None):
         })
     return {
         'status': status, 'raw_sha256': raw_hash, 'model': options.model,
+        'reasoning_effort': options.reasoning_effort,
         'prompt_version': PROMPT_VERSION, 'prompt_sha256': _hash(prompt),
         'schema_version': REVIEW_CONTRACT, 'settings_fingerprint': options.fingerprint,
         'offset_unit': 'Unicode characters; zero-based; end exclusive',

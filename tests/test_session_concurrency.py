@@ -98,6 +98,8 @@ class FakeProvider:
         name = parameters['response_format']['json_schema']['name']
         if name == 'faithful_transcript_edit':
             result = dict(chunk_index=body['chunk_index'], text=body['text'], speaker_uncertain=False)
+        elif name == 'faithful_turn_group_edit':
+            result = dict(group_index=body['group_index'], edits=[{**turn, 'speaker_uncertain': False} for turn in body['turns']])
         elif name == 'source_grounded_author_review':
             result = dict(chunk_index=body['chunk_index'], fully_reviewed=True,
                           reviewed_start=body['core_start'], reviewed_end=body['core_end'], findings=[])

@@ -24,6 +24,14 @@ else:
     from terminal_progress import TerminalProgress, live_capable
 
 CURRENT = ContextVar('execution_reporter', default=None)
+CURRENT_TEXT_METRICS = ContextVar('text_metrics', default=None)
+TEXT_VALIDATION_RETRY = ContextVar('text_validation_retry', default=False)
+TEXT_TOKEN_FIELDS = {'prompt_tokens', 'completion_tokens', 'total_tokens',
+                     'reasoning_tokens', 'cached_prompt_tokens'}
+TEXT_METRIC_COUNTS = {'sdk_operations_started', 'sdk_operations_completed',
+    'sdk_operations_failed', 'cache_hits', 'validation_retries', 'usage_responses',
+    'usage_missing', 'latency_observations'} | TEXT_TOKEN_FIELDS | {
+        field + '_reported_operations' for field in TEXT_TOKEN_FIELDS}
 STAGES = {'prerequisite', 'phase_result', 'conversion', 'transcription', 'enhancement', 'author_review', 'chapters',
           'part_transcription', 'staging', 'preflight', 'verification', 'combined_raw'}
 STAGES |= {'diarization', 'attribution', 'attributed_attribution', 'attributed_enhancement',
@@ -88,9 +96,131 @@ def safe_configuration(value):
             result[key] = data
         elif key in flags and type(data) is bool:
             result[key] = data
+        elif key == 'text_profile' and isinstance(data, str) and data in {'legacy', 'balanced'}:
+            result[key] = data
+        elif key in {'editing_reasoning_effort', 'review_reasoning_effort'} and isinstance(data, str) and data in {'low', 'medium', 'high'}:
+            result[key] = data
         elif key in {'max_run_seconds', 'max_provider_requests'} and data is None:
             result[key] = None
     return result
+
+
+def safe_text_metrics(value):
+    """Keep known numeric aggregates; never accept free-form provider metadata."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key, data in value.items():
+        if key in TEXT_METRIC_COUNTS and type(data) is int and data >= 0:
+            result[key] = data
+        elif key == 'latency_seconds' and type(data) in (int, float) and math.isfinite(data) and data >= 0:
+            result[key] = data
+        elif key in {'usage_complete', 'sdk_internal_retries_observed'} and type(data) is bool:
+            result[key] = data
+    return result
+
+
+def _usage_value(container, key):
+    try:
+        return container.get(key) if isinstance(container, dict) else getattr(container, key, None)
+    except Exception:
+        return None
+
+
+def _usage_count(container, key):
+    value = _usage_value(container, key)
+    return value if type(value) is int and value >= 0 else None
+
+
+class TextMetrics:
+    """Thread-safe observed text SDK operations, never a billing estimate.
+
+    Token totals include only values reported by returned SDK responses, before
+    validation. Reasoning tokens are a subset of completion tokens; cached input
+    is a subset of prompt tokens. Missing fields have separate observation
+    counts, so zero known tokens never implies zero provider spend. Internal SDK
+    retries and usage from failed operations are not observable here.
+    """
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._counts = dict.fromkeys(TEXT_METRIC_COUNTS, 0)
+        self._latency = 0.0
+
+    def cache_hit(self):
+        with self._lock:
+            self._counts['cache_hits'] += 1
+
+    def operation_started(self):
+        with self._lock:
+            self._counts['sdk_operations_started'] += 1
+            if TEXT_VALIDATION_RETRY.get():
+                self._counts['validation_retries'] += 1
+
+    def operation_finished(self, response, elapsed, *, failed=False):
+        usage = _usage_value(response, 'usage') if not failed else None
+        values = {key: _usage_count(usage, key)
+                  for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')}
+        values['reasoning_tokens'] = _usage_count(
+            _usage_value(usage, 'completion_tokens_details'), 'reasoning_tokens')
+        values['cached_prompt_tokens'] = _usage_count(
+            _usage_value(usage, 'prompt_tokens_details'), 'cached_tokens')
+        with self._lock:
+            self._counts['sdk_operations_failed' if failed else 'sdk_operations_completed'] += 1
+            complete = values['prompt_tokens'] is not None and values['completion_tokens'] is not None
+            self._counts['usage_responses' if complete else 'usage_missing'] += 1
+            for key, value in values.items():
+                if value is not None:
+                    self._counts[key] += value
+                    self._counts[key + '_reported_operations'] += 1
+            if type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0:
+                self._latency += elapsed
+                self._counts['latency_observations'] += 1
+
+    def snapshot(self):
+        """Return an independent allowlisted cumulative snapshot for this run.
+
+        Latency is summed wall time inside each SDK call, including its hidden
+        retries; parallel calls can make this exceed the run's elapsed time.
+        """
+        with self._lock:
+            return {**self._counts, 'latency_seconds': round(self._latency, 6),
+                    'usage_complete': self._counts['sdk_operations_started'] == self._counts['usage_responses'],
+                    'sdk_internal_retries_observed': False}
+
+
+@contextmanager
+def collect_text_metrics(metrics=None):
+    """Isolate a comparison case; propagate context explicitly to new threads."""
+    collector = metrics if metrics is not None else TextMetrics()
+    token = CURRENT_TEXT_METRICS.set(collector)
+    try:
+        yield collector
+    finally:
+        CURRENT_TEXT_METRICS.reset(token)
+
+
+def current_text_metrics():
+    metrics = CURRENT_TEXT_METRICS.get()
+    if metrics is not None:
+        return metrics
+    reporter = CURRENT.get()
+    return reporter.text_metrics if reporter is not None else None
+
+
+def call_text_operation(method, parameters):
+    """Measure one actual text SDK invocation, after any admission or pacing."""
+    metrics = current_text_metrics()
+    if metrics is None:
+        return method(**parameters)
+    metrics.operation_started()
+    started = time.monotonic()
+    try:
+        response = method(**parameters)
+    except BaseException:
+        metrics.operation_finished(None, time.monotonic() - started, failed=True)
+        raise
+    metrics.operation_finished(response, time.monotonic() - started)
+    return response
 
 
 def safe_families(value):
@@ -131,6 +261,7 @@ class Reporter:
         self.item_stages = {}
         self.item_blockers = {}
         self.configuration = {}
+        self.text_metrics = TextMetrics()
         self.active = {}
         self.sessions = {}
         self.log = None
@@ -211,6 +342,9 @@ class Reporter:
             now = time.monotonic()
             event = {'run': self.run, 'sequence': self.sequence + 1,
                      'elapsed_seconds': round(now - self.started, 3)}
+            metrics = self.text_metrics.snapshot()
+            if metrics['sdk_operations_started'] or metrics['cache_hits']:
+                event['text_metrics'] = metrics
             for key, value in (self.context | details).items():
                 if key in COUNTERS and type(value) is int and value >= 0:
                     event[key] = value
@@ -250,6 +384,8 @@ class Reporter:
                     event[key] = safe_configuration(value)
                     if details.get('status') == 'configuration':
                         self.configuration = event[key]
+                elif key == 'text_metrics':
+                    event[key] = safe_text_metrics(value)
                 elif key == 'families':
                     event[key] = safe_families(value)
                 elif key == 'recorded_status' and isinstance(value, str) and value in STATUSES:

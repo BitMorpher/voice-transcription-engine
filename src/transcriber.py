@@ -9,6 +9,8 @@ import wave
 from pathlib import Path
 
 if __package__:
+    from .attributed_editing import (GROUP_CONTRACT, GROUP_INSTRUCTION, editing_fingerprint,
+                                    grouped_turns, group_schema, validate_group, reassemble)
     from .text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from .chunk_cache import ChunkCache, descriptor, layout_for
     from .private_output import digest
@@ -26,6 +28,8 @@ if __package__:
         words,
     )
 else:
+    from attributed_editing import (GROUP_CONTRACT, GROUP_INSTRUCTION, editing_fingerprint,
+                                   grouped_turns, group_schema, validate_group, reassemble)
     from text_requests import ResponseValidationError, TextRequestCache, text_binding, validated_chat
     from chunk_cache import ChunkCache, descriptor, layout_for
     from private_output import digest
@@ -46,6 +50,12 @@ else:
 
 class TranscriptionError(RuntimeError):
     """Safe transcription failure without provider payloads or source information."""
+
+    def __init__(self, message, *, category=None):
+        super().__init__(message)
+        self.validation_category = category if category in {
+            'validation_schema', 'validation_coverage', 'validation_source',
+            'validation_diarization', 'completion'} else None
 
 
 class ConfigurationError(EnvironmentError):
@@ -224,7 +234,8 @@ class Transcriber:
             raise TranscriptionError('Editing input must be valid UTF-8 transcript text.') from None
         parameters, validators = [], []
         for index, source in enumerate(sources, 1):
-            budget = min(32768, max(16384, len(source.encode('utf-8')) * 3 + 8192))
+            floor = {'low': 8192, 'medium': 12288, 'high': 16384}[self.editing_options.reasoning_effort]
+            budget = min(32768, max(floor, len(source.encode('utf-8')) * 3 + 8192))
             parameters.append(dict(
                 model=self.editing_options.model,
                 messages=[{'role': 'system', 'content': FAITHFUL_INSTRUCTION},
@@ -261,7 +272,7 @@ class Transcriber:
             return combined
         except ResponseValidationError as error:
             emit_progress('enhancement', 'failed', **classify(error))
-            raise TranscriptionError(str(error)) from None
+            raise TranscriptionError(str(error), category=error.category) from None
         except Exception as error:
             emit_progress('enhancement', 'failed', **classify(error))
             raise TranscriptionError('Optional editing failed; check API/model access, quota, and network connectivity. The original transcript is retained.') from None
@@ -269,6 +280,54 @@ class Transcriber:
     def enhance_transcription(self, transcription: str, *, checkpoint_root=None) -> str:
         """Opt-in punctuation/layout derivative with verified word preservation."""
         return self._enhance(transcription, checkpoint_root=checkpoint_root)
+
+    @property
+    def attributed_editing_fingerprint(self):
+        return editing_fingerprint(self.editing_options)
+
+    def enhance_attributed(self, raw, turns, *, checkpoint_root=None):
+        """Edit bounded groups; preserve all source metadata and empty turns locally."""
+        try:
+            groups = grouped_turns(raw, turns, self.editing_options.chunk_bytes)
+            parameters, validators = [], []
+            for index, group in enumerate(groups, 1):
+                payload = json.dumps({'group_index': index, 'turns': group}, ensure_ascii=False)
+                # Full escaped schema output plus generous reasoning headroom. This
+                # is a ceiling, not a spending estimate. Truncation fails closed.
+                floor = {'low': 8192, 'medium': 12288, 'high': 16384}[self.editing_options.reasoning_effort]
+                budget = min(65536, max(floor, len(payload.encode()) * 3 + 8192))
+                parameters.append(dict(model=self.editing_options.model,
+                    messages=[{'role': 'system', 'content': GROUP_INSTRUCTION},
+                              {'role': 'user', 'content': payload}],
+                    response_format=group_schema(index), extra_body={
+                        'reasoning_effort': self.editing_options.reasoning_effort,
+                        'max_completion_tokens': budget, 'store': False}))
+                validators.append(lambda content, group=group, index=index:
+                                  validate_group(content, group, index))
+            cache = TextRequestCache(checkpoint_root,
+                text_binding('attributed-polish', raw, self.attributed_editing_fingerprint,
+                             validator_contract=GROUP_CONTRACT), parameters, validators) if checkpoint_root else None
+            edits = []
+            for index, group in enumerate(groups, 1):
+                if not any(piece['text'].strip() for piece in group):
+                    edits.extend({**piece, 'speaker_uncertain': False} for piece in group)
+                    continue
+                emit_progress('enhancement', 'running', chunk=index, chunks=len(groups))
+                _suppress_provider_logging()
+                edits.extend(validated_chat(self.client, parameters[index - 1], validators[index - 1],
+                             stage='enhancement', cache=cache, index=index))
+                emit_progress('enhancement', 'complete', chunk=index, chunks=len(groups))
+            if cache:
+                cache.verify()
+            return reassemble(raw, turns, edits)
+        except ProviderStopped:
+            raise
+        except ResponseValidationError as error:
+            emit_progress('enhancement', 'failed', **classify(error))
+            raise TranscriptionError(str(error), category=error.category) from None
+        except Exception as error:
+            emit_progress('enhancement', 'failed', **classify(error))
+            raise TranscriptionError('Attributed editing failed; validated groups are retained for resume.') from None
 
     def enhance_as_interview(self, transcription: str) -> str:
         """Legacy alias for faithful layout only; never generate interviewer turns."""

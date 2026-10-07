@@ -63,11 +63,25 @@ environment path when another tool owns that command. This check is not trademar
 
 ## Existing work and local checkouts
 
-No cache or output migration is required. Job identities, stage fingerprints, manifests,
-batch snapshots, prompt versions, provenance fields, schema identifiers, artifact paths,
-and saved pipelines retain their existing contracts. Supply the same input paths, output
-folders, and settings when resuming. Human annotations and historic artifacts are not
-rewritten. New review workbooks identify their creator as Interview Studio.
+No destructive cache or output migration is required. Existing raw/audio identities,
+batch snapshots and ASR fingerprints remain compatible, including omitted speaker
+duration using the original audio duration. Supply the same input paths, output folders
+and ASR/speaker settings when resuming. Text versions now bind editing/review settings
+independently: review-only changes reuse matching validated polish, and changing a text
+model/effort preserves earlier artifacts. Manifests retain per-configuration derivative
+records and record the selected artifact paths. Compatible legacy outputs require exact
+source/settings hashes and fidelity validation before reuse; altered, missing or unbound
+artifacts fail closed. No old files are moved or deleted. Human notes and historical
+bundles are not rewritten.
+
+Defaults remain Astra/high for polish and review. The explicit `--text-profile balanced`
+opts into Sol 6.1/low polish and Sol 6.1/medium review candidate; individual model and
+effort flags override it. This opt-in prevents an upgrade from silently switching existing
+model settings or selecting different caches. Review model/effort also apply to narrative
+chapters and must match their reviewed prerequisite. See the [option reference](cli-reference.md)
+and [text comparison guide](text-comparison.md) before another paid run. Use a new dedicated
+runtime for the reviewed release, keeping running processes and existing runtime environments
+intact.
 
 GitHub redirects old repository links. For an existing clone, verify the canonical
 repository before changing only its remote URL:

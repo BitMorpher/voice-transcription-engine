@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
+    from .derivative_versions import enhancement_path, next_enhancement_path, select_version, remember_version
     from .text_requests import ResponseValidationError
     from .chunk_cache import ChunkCache, descriptor, layout_for
     from .provider_control import ProviderStopped
@@ -31,6 +32,7 @@ if __package__:
     from .text_editing import words
     from .transcriber import TranscriptionError, _suppress_provider_logging
 else:
+    from derivative_versions import enhancement_path, next_enhancement_path, select_version, remember_version
     from text_requests import ResponseValidationError
     from chunk_cache import ChunkCache, descriptor, layout_for
     from provider_control import ProviderStopped
@@ -263,6 +265,7 @@ class AttributedInterview:
         self.resume, self.enhance, self.author_options = resume, enhance, author_options
         self.progress = progress or (lambda stage, status: None)
         self.cache_snapshots = {}
+        self.raw_snapshots = {}
         self.source_binding = _fingerprint([{**{k: part[k] for k in ('order', 'source_sha256', 'audio_sha256', 'original_raw_sha256')},
                                             'original_job_id': part.get('original_job_id', part['original_raw_sha256'])}
                                            for part in inputs])
@@ -288,6 +291,7 @@ class AttributedInterview:
         for name, checksum in state['raw_artifacts'].items():
             if (self.job / name).is_symlink() or digest(self.job / name) != checksum:
                 raise ValueError()
+            self.raw_snapshots[self.job / name] = checksum
         payloads = []
         for part in self.inputs:
             cache = _fingerprint({'source': part['source_sha256'], 'audio': part['audio_sha256'],
@@ -314,7 +318,7 @@ class AttributedInterview:
                 path = Path(part[key])
                 if path.is_symlink() or digest(path) != part[hash_key]:
                     raise ValueError()
-        for path, expected in self.cache_snapshots.items():
+        for path, expected in {**self.cache_snapshots, **self.raw_snapshots}.items():
             if path.is_symlink() or digest(path) != expected:
                 raise ValueError()
 
@@ -462,28 +466,44 @@ class AttributedInterview:
         raw = (self.job / 'transcription.txt').read_bytes().decode('utf-8')
         raw_hash = state['stages']['transcription']['sha256']
         if self.enhance:
-            target = self.job / 'derivative_readability.txt'
-            record = state['stages'].get('enhancement', {})
+            config = self._editing_configuration(transcriber, provenance)
+            previous = state['stages'].get('enhancement', {})
+            if previous.get('status') == 'complete' and 'transcription_sha256' not in previous:
+                # HEAD-era attributed records bind provenance in the config hash
+                # but lack an explicit raw hash. Verify saved bytes and every turn
+                # against this already verified raw before adding an in-memory
+                # source binding, regardless of the newly requested model.
+                path = enhancement_path(self.job, previous)
+                if path.is_symlink() or previous.get('sha256') != digest(path):
+                    raise ValueError()
+                self._restore_legacy_polish(path.read_bytes().decode('utf-8'), raw, provenance)
+                previous['transcription_sha256'] = raw_hash
+                previous['legacy_turn_layout'] = True
+            record = select_version(self.job, state, 'enhancement', config, raw_hash) or {}
+            target = enhancement_path(self.job, record)
+            if not record:
+                target = next_enhancement_path(self.job, config)
             if os.path.lexists(target) or record.get('status') == 'complete':
-                config = _fingerprint({'contract': 1, 'provenance': provenance,
-                                       'editing': transcriber.editing_options.fingerprint})
                 if (target.is_symlink() or record.get('status') != 'complete'
                         or record.get('sha256') != digest(target)
                         or record.get('configuration_sha256') != config):
                     raise ValueError()
+                self._validate_polish(target.read_bytes().decode('utf-8'), raw, provenance)
         if self.author_options is None:
             return
         review_hash = None
         for stage in ('author_review', 'chapters'):
             requested = (self.author_options.review if stage == 'author_review'
                          else self.author_options.chapter_options is not None)
-            record = state['stages'].get(stage, {})
-            if not requested or record.get('status') != 'complete':
+            if not requested:
                 continue
             names = ({'review_report.json', 'review_report.xlsx'} if stage == 'author_review'
                      else {'chapter_drafts.json', *(f'chapter_{style}.txt'
                           for style in self.author_options.chapter_options.styles)})
             config = author_binding(self.author_options.fingerprint(stage, raw_hash, review_hash), provenance)
+            record = select_version(self.job, state, stage, config, raw_hash) or {}
+            if record.get('status') != 'complete':
+                continue
             if not _verified_bundle(self.job, record, config, raw_hash, names):
                 raise ValueError()
             if stage == 'author_review':
@@ -492,6 +512,118 @@ class AttributedInterview:
             else:
                 path = next(self.job / name for name in record['artifacts'] if name.endswith('/chapter_drafts.json'))
                 validate_chapter_binding(_read_json(path), provenance)
+
+    @staticmethod
+    def _editing_configuration(transcriber, provenance):
+        grouped = getattr(transcriber, 'attributed_editing_fingerprint', None)
+        if not isinstance(grouped, str):
+            if __package__:
+                from .attributed_editing import editing_fingerprint
+            else:
+                from attributed_editing import editing_fingerprint
+            grouped = editing_fingerprint(transcriber.editing_options)
+        return _fingerprint({'contract': 2, 'provenance': provenance, 'editing': grouped})
+
+    @staticmethod
+    def _legacy_speech(text, source):
+        if not text.endswith('\n\n'):
+            raise ValueError()
+        speech = text[:-2]
+        if words(speech) != words(source) and speech.startswith('[Speaker attribution uncertain in chunks: '):
+            match = re.match(r'\[Speaker attribution uncertain in chunks: ([1-9][0-9]*(?:, [1-9][0-9]*)*)\]\n\n', speech)
+            if match is None:
+                raise ValueError()
+            indexes = [int(value) for value in match[1].split(', ')]
+            if indexes != sorted(set(indexes)) or indexes[-1] > len(source):
+                raise ValueError()
+            speech = speech[match.end():]
+        if words(speech) != words(source) or not source.strip() and speech != source:
+            raise ValueError()
+        return speech
+
+    @staticmethod
+    def _restore_legacy_polish(text, raw, provenance):
+        """Validate the old per-turn writer and restore only local boundaries.
+
+        Legacy polishing omitted the extra separator between recording parts.
+        It also attached an explicit local uncertainty banner to individual
+        speech. Neither piece is provider-generated speech or voice evidence.
+        The old artifact is retained; only the additive selected copy is repaired.
+        """
+        prefix = NOTICE + '\n'
+        if not text.startswith(prefix):
+            raise ValueError()
+        body, cursor, previous_end, pieces = text[len(prefix):], 0, 0, []
+        turns = provenance['attribution']['turns']
+        for index, turn in enumerate(turns):
+            header = raw[turn['start']:turn['speech_start']]
+            if not body.startswith(header, cursor):
+                raise ValueError()
+            cursor += len(header)
+            if index + 1 < len(turns):
+                following = turns[index + 1]
+                next_header = raw[following['start']:following['speech_start']]
+                end = body.find(next_header, cursor)
+                if end < 0:
+                    raise ValueError()
+            else:
+                end = len(body)
+            source = raw[turn['speech_start']:turn['speech_end']]
+            while True:
+                try:
+                    speech = AttributedInterview._legacy_speech(body[cursor:end], source)
+                    break
+                except ValueError:
+                    if index + 1 >= len(turns):
+                        raise
+                    end = body.find(next_header, end + 1)
+                    if end < 0:
+                        raise ValueError() from None
+            pieces.extend((raw[previous_end:turn['speech_start']], speech))
+            previous_end, cursor = turn['speech_end'], end
+        if cursor != len(body):
+            raise ValueError()
+        pieces.append(raw[previous_end:])
+        restored = prefix + ''.join(pieces)
+        AttributedInterview._validate_polish(restored, raw, provenance)
+        return restored
+
+    @staticmethod
+    def _validate_polish(text, raw, provenance):
+        """Recheck per-turn words and exact labels before any cached reuse."""
+        prefix = NOTICE + '\n'
+        if not text.startswith(prefix):
+            raise ValueError()
+        edited = text[len(prefix):]
+        turns = provenance['attribution']['turns']
+        cursor = 0
+        previous_end = 0
+        for index, turn in enumerate(turns):
+            leading = raw[previous_end:turn['speech_start']]
+            if not edited.startswith(leading, cursor):
+                raise ValueError()
+            cursor += len(leading)
+            if index + 1 < len(turns):
+                following = turns[index + 1]
+                boundary = raw[turn['speech_end']:following['speech_start']]
+                end = edited.find(boundary, cursor)
+                source = raw[turn['speech_start']:turn['speech_end']]
+                while end >= 0 and words(edited[cursor:end]) != words(source):
+                    end = edited.find(boundary, end + 1)
+                if end < 0:
+                    raise ValueError()
+            else:
+                boundary = raw[turn['speech_end']:]
+                if not edited.endswith(boundary):
+                    raise ValueError()
+                end = len(edited) - len(boundary)
+            source = raw[turn['speech_start']:turn['speech_end']]
+            if words(edited[cursor:end]) != words(source) or not source.strip() and edited[cursor:end] != source:
+                raise ValueError()
+            cursor = end
+            previous_end = turn['speech_end']
+        if edited[cursor:] != raw[previous_end:]:
+            raise ValueError()
 
     def process(self, transcriber, *, approved_review=None, require_raw=False):
         summary = {'attribution': 'pending'}
@@ -532,6 +664,7 @@ class AttributedInterview:
                         raise ValueError()
                     if (self.job / name).is_symlink() or digest(self.job / name) != expected:
                         raise ValueError()
+                    self.raw_snapshots[self.job / name] = expected
                 if (set(state['raw_artifacts']) != raw_names
                         or self.options.allow_unnamed and state.get('provenance_sha256')
                         != digest(self.job / 'provenance.json')):
@@ -565,6 +698,7 @@ class AttributedInterview:
                              name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()},
                          'stages': {'transcription': {'status': 'complete', 'sha256': provenance['raw_sha256']}}}
                 _publish(self.job, {**files, 'manifest.json': _json(state)})
+                self.raw_snapshots.update({self.job / name: checksum for name, checksum in state['raw_artifacts'].items()})
                 summary['attribution'] = 'complete'
             else:
                 if (_read_json(self.job / 'provenance.json') != provenance
@@ -581,29 +715,41 @@ class AttributedInterview:
             if self.enhance:
                 active_stage = 'enhancement'
                 summary['enhancement'] = 'pending'
-                config = _fingerprint({'contract': 1, 'provenance': provenance,
-                                       'editing': transcriber.editing_options.fingerprint})
-                target = self.job / 'derivative_readability.txt'
+                config = self._editing_configuration(transcriber, provenance)
+                select_version(self.job, state, 'enhancement', config, provenance['raw_sha256'])
                 record = state['stages'].get('enhancement', {})
+                target = enhancement_path(self.job, record) if record else next_enhancement_path(self.job, config)
                 if os.path.lexists(target):
                     if (not self.resume or target.is_symlink() or record.get('sha256') != digest(target)
                             or record.get('configuration_sha256') != config):
                         raise ValueError()
                     summary['enhancement'] = 'skipped'
                 else:
-                    edited = []
-                    # Edit speech alone, then restore exact labels and boundaries.
-                    for turn in provenance['attribution']['turns']:
-                        speech = raw[turn['speech_start']:turn['speech_end']]
-                        result = transcriber.enhance_transcription(speech,
-                            checkpoint_root=self.job / 'text-chunks' / f'turn-{turn["start"]}') if speech.strip() else speech
-                        if words(result) != words(speech):
-                            raise TranscriptionError('Attributed polishing changed source words; no derivative was saved.')
-                        edited.append(raw[turn['start']:turn['speech_start']] + result + '\n\n')
+                    legacy_config = _fingerprint({'contract': 1, 'provenance': provenance,
+                                                 'editing': transcriber.editing_options.fingerprint})
+                    legacy = state.get('derivative_versions', {}).get('enhancement', {}).get(legacy_config)
+                    if legacy is not None and legacy.get('status') == 'complete':
+                        legacy_path = enhancement_path(self.job, legacy)
+                        snapshot = legacy_path.read_bytes()
+                        if legacy_path.is_symlink() or hashlib.sha256(snapshot).hexdigest() != legacy['sha256']:
+                            raise ValueError()
+                        payload = self._restore_legacy_polish(snapshot.decode('utf-8'), raw, provenance)
+                    else:
+                        edited = transcriber.enhance_attributed(raw, provenance['attribution']['turns'],
+                            checkpoint_root=self.job / 'text-chunks' / f'attributed-editing-{config}')
+                        payload = NOTICE + '\n' + edited
+                        self._validate_polish(payload, raw, provenance)
                     self._sources_unchanged()
-                    write_private(target, NOTICE + '\n' + ''.join(edited))
+                    output_directory(target.parent)
+                    write_private(target, payload)
+                    if legacy is not None and legacy.get('status') == 'complete' and digest(legacy_path) != legacy['sha256']:
+                        raise ValueError()
+                    self._sources_unchanged()
                     state['stages']['enhancement'] = {'status': 'complete', 'sha256': digest(target),
-                                                     'configuration_sha256': config}
+                        'configuration_sha256': config, 'transcription_sha256': provenance['raw_sha256'],
+                        'artifact': str(target.relative_to(self.job)), 'model': transcriber.editing_options.model,
+                        'reasoning_effort': transcriber.editing_options.reasoning_effort}
+                    remember_version(state, 'enhancement')
                     save()
                     summary['enhancement'] = 'complete'
                 self.progress('enhancement', summary['enhancement'])

@@ -179,6 +179,13 @@ def test_resume_changed_artifacts_or_settings_refuses_without_overwrite(
         target.write_bytes(target.read_bytes() + b' ')
     before = report.read_bytes()
     calls = author_provider.chat.completions.create.call_count
+    if changed == 'settings':
+        _, stages = Pipeline(output, resume=True, author_options=options).process(source, transcriber=transcriber)
+        assert stages['author_review'] == 'complete'
+        assert len(list(job.glob('author_review_*'))) == 2
+        assert report.read_bytes() == before
+        assert author_provider.chat.completions.create.call_count > calls
+        return
     with pytest.raises(PipelineError):
         Pipeline(output, resume=True, author_options=options).process(source, transcriber=transcriber)
     assert report.read_bytes() == before

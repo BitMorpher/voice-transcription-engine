@@ -7,11 +7,13 @@ import os
 from pathlib import Path
 
 if __package__:
+    from .derivative_versions import select_version, remember_version
     from .author_workflow import (AuthorWorkflowError, _load_bound_report, _publish_bundle,
                                  _raw_snapshot, _unique_object, _verified_bundle)
     from .private_output import digest
     from .source_provenance import author_binding
 else:
+    from derivative_versions import select_version, remember_version
     from author_workflow import (AuthorWorkflowError, _load_bound_report, _publish_bundle,
                                 _raw_snapshot, _unique_object, _verified_bundle)
     from private_output import digest
@@ -65,8 +67,8 @@ def validate_approved_review(approval, options, *, attributed=None):
         if attributed is not None and ('attribution' in provenance) != attributed:
             raise ValueError()
         raw = _raw_snapshot(source, approval.raw_sha256)
-        record = state['stages']['author_review']
         configuration = author_binding(options.fingerprint('author_review', approval.raw_sha256), provenance)
+        record = select_version(source, state, 'author_review', configuration, approval.raw_sha256)
         if (state['provenance_sha256'] != approval.provenance_sha256
                 or digest(source / 'provenance.json') != approval.provenance_sha256
                 or _fingerprint(record) != approval.record_sha256
@@ -98,10 +100,10 @@ def reuse_approved_review(approval, job, state, options, provenance, save):
         if digest(source / 'manifest.json') != approval.manifest_sha256:
             raise ValueError()
         original = _read(source / 'manifest.json')
-        record = original['stages']['author_review']
         raw_hash = state['stages']['transcription']['sha256']
         raw = _raw_snapshot(job, raw_hash)
         configuration = author_binding(options.fingerprint('author_review', raw_hash), provenance)
+        record = select_version(source, original, 'author_review', configuration, raw_hash)
         if (raw_hash != approval.raw_sha256
                 or _raw_snapshot(source, raw_hash) != raw
                 or original['provenance_sha256'] != approval.provenance_sha256
@@ -119,7 +121,12 @@ def reuse_approved_review(approval, job, state, options, provenance, save):
         if any(hashlib.sha256(payloads[Path(name).name]).hexdigest() != checksum
                for name, checksum in record['artifacts'].items()):
             raise ValueError()
-        existing = state['stages'].get('author_review')
+        # An active unapproved attempt is a gate conflict even if an archived
+        # approved version exists. Do not silently restore across that boundary.
+        current = state['stages'].get('author_review')
+        if current is not None and current.get('configuration_sha256') != configuration:
+            raise ValueError()
+        existing = select_version(job, state, 'author_review', configuration, raw_hash)
         if existing is not None:
             # Even an incomplete/newly regenerated review must not replace what
             # the caller approved. Any conflict needs a separate human decision.
@@ -137,6 +144,7 @@ def reuse_approved_review(approval, job, state, options, provenance, save):
                         os.fsync(stream.fileno())
             artifacts = _publish_bundle(job, 'author_review', writer)
             state['stages']['author_review'] = {**record, 'artifacts': artifacts}
+            remember_version(state, 'author_review')
         # Catch edits during transfer before accepting the seeded review.
         if (digest(source / 'manifest.json') != approval.manifest_sha256
                 or not _verified_bundle(source, record, configuration, raw_hash, set(payloads))

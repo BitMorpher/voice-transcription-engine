@@ -10,7 +10,7 @@ Use `interview transcribe` for one recording, a folder of independent recordings
 
 The [setup guide](setup.md) explains Python, uv, FFmpeg/ffprobe, dependencies and credentials. Keep recordings, recordings lists, batch plans, hints and outputs in private storage. Commands that transcribe or edit send audio/text to the hosted provider and can incur charges. Audio preparation, inventory, check, batch preparation, verify and status do not call OpenAI. Batch prepare reads and copies media; verify reads staged media to check hashes. Inventory/check/status do not read media content.
 
-ASR in existing manifests means automatic speech recognition: the original speech-to-text pass. Diarization means separating voices within a request. It does not establish who those people are. Choosing another supported model can change output, latency and provider pricing; this repository has no live benchmark proving a faster or cheaper choice. Check your account's current model access/pricing/rate limits before deliberate paid work.
+ASR in existing manifests means automatic speech recognition: the original speech-to-text pass. Diarization means separating voices within a request. It does not establish who those people are. Choosing another supported model or reasoning effort can change output, latency and provider usage; this repository has no real-transcript benchmark proving the best quality/cost balance. Check your account's current model access/pricing/rate limits before deliberate paid work. Use [the isolated text comparison](text-comparison.md) to assess the candidate without processing audio again.
 
 All examples use invented filenames and IDs. Replace them with your own private inputs. Run from the checkout with `uv run --locked`; installed commands also work elsewhere. Both commands support `-h` and `--help`, which print usage without processing files. Flags cannot be abbreviated. Quote paths containing spaces. An input is a local path, never a media URL.
 
@@ -29,6 +29,7 @@ All examples use invented filenames and IDs. Replace them with your own private 
 | `interview batch verify --batch-folder ...` | Verify the saved snapshot, staging ledgers and copies. Does not need the original source files. |
 | `interview batch run --batch-folder ... --send-to-openai` | Process existing staged interviews. Default phase: raw. Resume is automatic. |
 | `interview batch status --batch-folder ...` | Read retained summaries, show chronological executions and latest recorded stages by item/family/phase. Does not freshly verify output contents. |
+| `interview compare-text ...` | Compare text settings in separate private output/checkpoint directories. Default offline mode uses synthetic fixtures and no network. See [the comparison guide](text-comparison.md) before explicitly allowing paid text calls. |
 
 The workflow guides provide the [ordered manifest](ordered-interviews.md), [batch plan and staging](batch-orchestration.md), [review rubric](author-workflow.md) and [speaker configuration](batch-media-attribution.md) schemas.
 
@@ -61,8 +62,11 @@ For `interview batch`, audio/model/hint/provider options below apply to `run`; `
 | Parameter | Default, purpose, values and interactions |
 | --- | --- |
 | `--transcription-model MODEL` | Original speech-to-text model; default `gpt-transcribe`. This CLI also accepts `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` for compatibility. It does not silently fall back if a model is inaccessible. `--model` is the existing compatibility alias. Preserve model/hints/chunk settings for raw cache reuse. |
-| `--editing-model MODEL` | Separate faithful punctuation/capitalization/layout polish; `gpt-6-astra` (default) or `gpt-6.1-sol`. Direct pipeline/legacy mode needs enhancement opt-in; workflow's polish stage and batch review/chapters select it. A model change can create a new generation or conflict with an existing completed derivative; retain old output and follow the workflow's cache guidance. |
-| `--review-model MODEL` | Review and narrative chapter model; `gpt-6-astra` (default) or `gpt-6.1-sol`. Direct use requires workflow. Changing it changes review/chapter bindings; approval must match the exact generated review. Raw-only runs make no author request. With batch review/chapters, each family’s prerequisites and results are independent. |
+| `--editing-model MODEL` | Separate faithful punctuation/capitalization/layout polish; `gpt-6-astra` (default) or `gpt-6.1-sol`. Direct pipeline/legacy mode needs enhancement opt-in; workflow's polish stage and batch review/chapters select it. A model change selects a retained text version while keeping verified raw/audio; old artifacts remain intact. Legacy flat audio-folder outputs still require a fresh destination. |
+| `--review-model MODEL` | Review and narrative chapter model; `gpt-6-astra` (default) or `gpt-6.1-sol`. Direct use requires workflow. Also accepted as `--author-model`. Changing it changes review/chapter bindings; approval must match the exact generated review. Raw-only runs make no author request. With batch review/chapters, each family’s prerequisites and results are independent. Interview chapter excerpts are deterministic. |
+| `--editing-reasoning-effort low\|medium\|high` | Reasoning effort for punctuation/layout polish, default `high`. It changes the editing fingerprint. This is separate from the review setting and does not change ASR. |
+| `--review-reasoning-effort low\|medium\|high` | Reasoning effort for review and narrative chapter arrangement, default `high`. Direct use requires workflow; `--author-reasoning-effort` is an alias. It changes review/chapter fingerprints and their exact approval requirements. |
+| `--text-profile legacy\|balanced` | Default `legacy` preserves Astra/high for both text operations. Explicit `balanced` selects Sol 6.1/low polish and Sol 6.1/medium review as a comparison candidate. Explicit model/effort flags override each preset setting, regardless of flag order. A profile selects settings; it does not select stages or authorize provider calls. Equivalent explicit settings use the same cache fingerprints. |
 | `--context-file PATH` | Optional local regular UTF-8 text, stripped at its edges, up to 8192 UTF-8 bytes of context. Sent with original ASR requests; applies to every selected recording. Hint-file reads have a 64 KiB safety limit. Paths and contents are not written to execution logs. |
 | `--glossary-file PATH` | Optional UTF-8 expected terms, one per line, stripped with blank/duplicate terms removed. Maximum 100 terms, each at most 256 UTF-8 bytes. Supported only for `gpt-transcribe`; other ASR choices reject nonempty glossaries. Terms are hints, not proof of what was spoken. |
 | `--language CODE` | Repeat for expected lowercase two/three-letter codes; at most 16 for `gpt-transcribe`. Compatibility ASR models and interview diarization allow at most one two-letter code. Omit for automatic detection. This is a hint, not translation. |
@@ -141,6 +145,16 @@ interview batch run --batch-folder private/batches/demo-001 --step chapters \
 
 If raw enabled attribution, add interview mode and the same speaker configuration/duration to these phases when requesting that family too. The example immediately above uses original-only families and default ASR settings. Approval applies only to explicitly selected families/entries and cannot be borrowed from another configuration.
 
+Select the balanced candidate explicitly for a ready batch text phase:
+
+```bash
+interview batch run --batch-folder private/batches/demo-001 --step review \
+  --text-profile balanced --parallel-interviews 4 --send-to-openai \
+  --request-timeout 600 --request-retries 2 --failure-limit 2
+```
+
+This command omits total-request and admission-time caps; timeout, retries and the failure breaker remain bounded. Four workers are a deliberate example, not an account-limit recommendation. To keep Astra review while testing Sol polish, append `--review-model gpt-6-astra --review-reasoning-effort high`. Preserve the chosen review model/effort in a later approved chapter command, along with matching ASR and speaker settings. Model selection does not count as human review approval.
+
 Use one selected session and one worker for at most one new provider operation:
 
 ```bash
@@ -181,7 +195,7 @@ Batch processing keeps the chosen progress format through each nested interview 
 
 Exit codes: `0` for all selected work successful, `1` for failed/blocked/incomplete/unattempted work or runtime configuration errors, `2` for argument syntax errors, `130` for keyboard/SIGTERM interruption. A batch can contain a complete original phase and blocked attributed phase. Missing, mismatched or altered prerequisites produce `blocked` with a fixed `blocked_reason`, never a provider error. An entry with any blocked requested family is counted as blocked unless a processing failure or admission limit takes precedence; its completed family remains complete. Inspect `families`, `family_blockers` and `phase_result`, not just the overall entry status. Status reports history, not a fresh integrity check.
 
-Parallelism changes when requests happen, not which stages are selected. Attribution adds a second audio pass and selected downstream work. Smaller chunks add boundaries/requests. SDK retries and bounded local text recovery can repeat remote work. Validated ASR, speaker-pass, polish, review and narrative request checkpoints are reused on matching pipeline/workflow or batch resume. Legacy audio-folder mode has no durable request resume. There is no live latency/accuracy/cost guarantee, token budget or automatic requests-per-minute throttle. See [recovery controls](recovery-controls.md) for the exact checkpoint and admission guarantees.
+Parallelism changes when requests happen, not which stages are selected. Attribution adds a second audio pass and selected downstream work. Smaller chunks add boundaries/requests; grouped attributed polish reduces starts by retaining several short turns per validated request. SDK retries and bounded local text recovery can repeat remote work. Validated ASR, speaker-pass, polish, review and narrative request checkpoints are reused on matching pipeline/workflow or batch resume. Legacy audio-folder mode has no durable request resume. Text events expose actual SDK-operation/latency counters and available provider token usage with missing-usage markers; these are not HTTP-attempt counts or a bill. Per-request completion allowances remain bounded, but there is no whole-run token/dollar budget, live latency/accuracy/cost guarantee or configured requests-per-minute throttle. See [recovery controls](recovery-controls.md) for exact metric, checkpoint and admission semantics.
 
 New examples use the clearer names listed below. Older spellings keep the same setting values, defaults, cache identities and saved output naming. Underscore spellings and the legacy interview-layout operation are deprecated for new scripts; no removal release is scheduled. The other aliases remain supported. No runtime upgrade or dependency change is needed for these aliases or the terminal display.
 
@@ -201,6 +215,7 @@ These pairs are interchangeable. Prefer the left column for new commands; existi
 | `--step` | `--phase` | `interview batch` |
 | `--chapter-style` | `--chapters` | Both commands; direct default `none`, batch chapter default `both`. |
 | `--review-model` | `--author-model` | Both commands |
+| `--review-reasoning-effort` | `--author-reasoning-effort` | Both commands |
 | `--request-timeout` | `--provider-timeout` | Both commands |
 | `--request-retries` | `--provider-retries` | Both commands |
 | `--max-requests` | `--max-provider-requests` | Both commands |

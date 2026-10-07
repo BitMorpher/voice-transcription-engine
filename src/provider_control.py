@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 if __package__:
     from .provider_errors import classify, SYSTEMIC
-    from .progress import CURRENT
+    from .progress import CURRENT, call_text_operation
 else:
     from provider_errors import classify, SYSTEMIC
-    from progress import CURRENT
+    from progress import CURRENT, call_text_operation
 
 CURRENT_CONTROL = ContextVar('provider_control', default=None)
 STOP_REASONS = {'request_limit', 'start_deadline', 'provider_failures', 'systemic_provider', 'interrupted'}
@@ -105,7 +105,8 @@ class ProviderControl:
         model = parameters.get('model')
         scope = (path, model if isinstance(model, str) else None)
         try:
-            response = method(**parameters)
+            response = (call_text_operation(method, parameters)
+                        if path == ('chat', 'completions', 'create') else method(**parameters))
         except Exception as error:
             category = classify(error)['error_category']
             with self.lock:
@@ -182,7 +183,8 @@ class ControlledClient:
         method = self.raw
         for name in path:
             method = getattr(method, name)
-        return method(**parameters)
+        return (call_text_operation(method, parameters)
+                if path == ('chat', 'completions', 'create') else method(**parameters))
 
     def _audio(self, **parameters):
         return self._call(('audio', 'transcriptions', 'create'), parameters)

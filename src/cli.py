@@ -21,6 +21,9 @@ if __package__:
         ModelConfigurationError,
         TranscriptionOptions,
         load_hints,
+        REASONING_EFFORTS,
+        TEXT_PROFILES,
+        text_profile_settings,
     )
     from .pipeline import Pipeline, PipelineError
     from .ordered_interview import OrderedInterview
@@ -41,6 +44,9 @@ else:
         ModelConfigurationError,
         TranscriptionOptions,
         load_hints,
+        REASONING_EFFORTS,
+        TEXT_PROFILES,
+        text_profile_settings,
     )
     from pipeline import Pipeline, PipelineError
     from ordered_interview import OrderedInterview
@@ -71,6 +77,17 @@ def _report(**details):
 
 
 class PrivateArgumentParser(argparse.ArgumentParser):
+    def parse_args(self, args=None, namespace=None):
+        # Resolve presets after all flags: each explicit model/effort wins even
+        # when the preset comes later. Both public entrypoints share this rule.
+        result = super().parse_args(args, namespace)
+        if hasattr(result, 'text_profile'):
+            supplied = self.supplied_options(args)
+            for name, value in text_profile_settings(result.text_profile).items():
+                if name not in supplied:
+                    setattr(result, name, value)
+        return result
+
     def supplied_options(self, argv=None):
         """Resolve every declared spelling to its destination before mode checks."""
         arguments = sys.argv[1:] if argv is None else argv
@@ -197,6 +214,13 @@ def transcription_parser(*, studio=False):
                                metavar='MODEL', help='Model for optional punctuation and layout polish (default: gpt-6-astra).')
     transcription.add_argument('--review-model', '--author-model', dest='author_model', default=DEFAULT_EDITING_MODEL,
                                metavar='MODEL', help='Model for review and chapter arrangement (default: gpt-6-astra).')
+    transcription.add_argument('--editing-reasoning-effort', choices=REASONING_EFFORTS, default='high',
+                               metavar='EFFORT', help='Polish reasoning: low, medium, or high (default: high; balanced profile: low).')
+    transcription.add_argument('--review-reasoning-effort', '--author-reasoning-effort', dest='review_reasoning_effort',
+                               choices=REASONING_EFFORTS, default='high', metavar='EFFORT',
+                               help='Review and narrative chapter reasoning: low, medium, or high (default: high; balanced profile: medium).')
+    transcription.add_argument('--text-profile', choices=TEXT_PROFILES, default='legacy', metavar='PROFILE',
+                               help='legacy: keep Astra/high defaults; balanced: Sol 6.1/low polish and Sol 6.1/medium review candidate. Explicit model/effort flags override each setting.')
     transcription.add_argument('--context-file', metavar='FILE', help='Private UTF-8 text file explaining the actual recording; sent to OpenAI.')
     transcription.add_argument('--glossary-file', metavar='FILE', help='Private UTF-8 list of expected terms, one per line; gpt-transcribe only.')
     transcription.add_argument('--language', action='append', default=[],
@@ -279,7 +303,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
         if args.draft_with_unresolved_high and not styles:
             parser.usage_error('--draft-with-unresolved-high requires a chapter selection.')
     else:
-        author_options_supplied = {'media_type', 'stages', 'chapters', 'narrative_person', 'author_model',
+        author_options_supplied = {'media_type', 'stages', 'chapters', 'narrative_person', 'author_model', 'review_reasoning_effort',
                                    'draft_with_unresolved_high'}
         if supplied_options & author_options_supplied:
             parser.usage_error('Author options require --workflow.')
@@ -324,6 +348,8 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
         if reporter is not None and not reporter.configuration:
             reporter.emit(status='configuration', configuration={
                 'asr_model': options.model, 'editing_model': args.editing_model, 'author_model': args.author_model,
+                'text_profile': args.text_profile, 'editing_reasoning_effort': args.editing_reasoning_effort,
+                'review_reasoning_effort': args.review_reasoning_effort,
                 'diarization_model': interview_options.model if interview_options else DIARIZATION_MODEL,
                 'audio_chunk_seconds': options.chunk_seconds,
                 'diarization_chunk_seconds': (interview_options.diarization_chunk_seconds if interview_options else None) or options.chunk_seconds,
@@ -334,13 +360,14 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                 'language_hint_count': len(options.languages)})
         if interview_options and (len(args.language) > 1 or any(len(code) != 2 for code in args.language)):
             raise ModelConfigurationError('Additional interview diarization accepts at most one ISO 639-1 language hint; omit hints for automatic detection.')
-        editing_options = EditingOptions(model=args.editing_model)
+        editing_options = EditingOptions(model=args.editing_model, reasoning_effort=args.editing_reasoning_effort)
         if args.workflow:
             author_options = AuthorOptions(
                 review='review' in requested or bool(styles),
-                review_options=ReviewOptions(model=args.author_model),
+                review_options=ReviewOptions(model=args.author_model, reasoning_effort=args.review_reasoning_effort),
                 chapter_options=ChapterOptions(model=args.author_model, styles=styles,
-                                               person=args.narrative_person) if styles else None,
+                                               person=args.narrative_person,
+                                               reasoning_effort=args.review_reasoning_effort) if styles else None,
                 allow_unresolved_high=args.draft_with_unresolved_high,
             )
         if args.interview_manifest is not None:
