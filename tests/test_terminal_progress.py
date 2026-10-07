@@ -354,3 +354,27 @@ def test_terminal_size_uses_the_output_stream(monkeypatch, terminal):
     reporter.emit(status='started')
     assert observed == [123] and reporter._renderer._size() == (51, 8)
     reporter.close()
+
+
+@pytest.mark.parametrize('arguments, guidance', [
+    (['--prepare-audio', '--polish-text'], '--extract-only cannot request enhancement.'),
+    (['--author-workflow', '--steps', 'invalid'], '--stages must be a comma-separated selection'),
+    (['--pipeline', '--chapter-style', 'both'], 'Author options require --workflow.'),
+])
+def test_argument_errors_restore_shared_terminal_before_diagnostics(
+        monkeypatch, terminal, tmp_path, arguments, guidance):
+    from src.cli import entrypoint
+
+    # stdout and stderr share one terminal cursor in an actual interactive CLI.
+    monkeypatch.setattr('sys.stdout', terminal)
+    monkeypatch.setattr('sys.stderr', terminal)
+    with pytest.raises(SystemExit) as error:
+        entrypoint(arguments + ['--input', 'SYNTHETIC_PRIVATE_PATH',
+                               '--logs-folder', str(tmp_path / 'logs')])
+    assert error.value.code == 2
+    output = terminal.getvalue()
+    diagnostic = output.index('usage: voice-transcribe')
+    assert '\x1b[?25h' in output[:diagnostic]
+    assert guidance in output[diagnostic:]
+    assert '\x1b' not in output[diagnostic:]
+    assert 'SYNTHETIC_PRIVATE_PATH' not in output

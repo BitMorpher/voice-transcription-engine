@@ -12,6 +12,72 @@ from src.cli import entrypoint
 from src.transcriber import Transcriber
 
 
+@pytest.mark.parametrize('phase', ['raw', 'review', 'chapters'])
+@pytest.mark.parametrize('mode', ['auto', 'plain', 'json'])
+@pytest.mark.parametrize('workers', [1, 2])
+def test_nested_engine_preserves_batch_display_and_totals(
+        staged, monkeypatch, phase, mode, workers):
+    import io
+    from src import cli
+    from src.progress import CURRENT
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    root, _ = staged
+    stream = Terminal()
+    monkeypatch.setenv('TERM', 'xterm-256color')
+    monkeypatch.setenv('COLUMNS', '110')
+    monkeypatch.setenv('LINES', '24')
+    monkeypatch.setattr('sys.stdout', stream)
+    monkeypatch.setattr(cli, 'require_ffmpeg', lambda: None)
+    monkeypatch.setattr(cli, 'Transcriber', lambda **kwargs: object())
+    # Exercise the real coordinator -> run_one -> engine chain. Only provider
+    # work and the text prerequisites are replaced with synthetic results.
+    monkeypatch.setattr('src.batch.runner.gate', lambda *args: None)
+    monkeypatch.setattr('src.batch.runner.validate_approved_review', lambda *args, **kwargs: None)
+
+    observed = []
+    class Interview:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def preflight(self, **kwargs):
+            pass
+
+        def process(self, **kwargs):
+            reporter = CURRENT.get()
+            observed.append((reporter.output, reporter.context.copy()))
+            cli._report(status='progress', stage='transcription', stage_status='running')
+            return 'a' * 32, {'transcription': 'complete'}
+
+    monkeypatch.setattr(cli, 'OrderedInterview', Interview)
+    flags = (['--human-reviewed', '--select', 'entry-1', '--select', 'entry-3',
+              '--chapter-style', 'interview'] if phase == 'chapters' else
+             ['--select', 'entry-1', '--select', 'entry-3'])
+    assert main(['run', '--batch', str(root), '--phase', phase, '--send-to-openai',
+                 '--progress', mode, '--parallel-interviews', str(workers), *flags]) == 0
+    assert len(observed) == 2
+    assert all(output == mode and context['selected'] == 2 for output, context in observed)
+    assert {context['item'] for _, context in observed} == {1, 3}
+    assert {context['batch_position'] for _, context in observed} == {1, 2}
+    rows = [json.loads(line) for line in next((root / 'execution-logs').glob('*.jsonl'))
+            .read_text().splitlines()]
+    assert all(row['selected'] == 2 for row in rows if 'selected' in row)
+    inner = [row for row in rows if row['status'] == 'summary' and 'batch_position' in row]
+    assert len(inner) == 2 and all('finished' not in row for row in inner)
+    assert rows[-1]['selected'] == rows[-1]['finished'] == rows[-1]['completed'] == 2
+    output = stream.getvalue()
+    if mode == 'json':
+        assert '\x1b' not in output
+        assert [json.loads(line) for line in output.splitlines()] == rows
+    elif mode == 'plain':
+        assert '\x1b' not in output and 'Interview 2 of 2 (plan item 3)' in output
+    else:
+        assert '2/2 interviews finished' in output
+
+
 @pytest.fixture
 def plan_file(tmp_path):
     entries = []

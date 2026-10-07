@@ -48,6 +48,12 @@ else:
     from transcriber import ConfigurationError, Transcriber, TranscriptionError
 
 
+def _in_batch(reporter):
+    """Nested interview calls retain the coordinator's batch position marker."""
+    return reporter is not None and (reporter.context.get('scope') == 'batch'
+                                    or 'batch_position' in reporter.context)
+
+
 def _report(**details):
     # Only fixed messages, item indices, opaque IDs, counts, and stage statuses.
     reporter = CURRENT.get()
@@ -55,7 +61,7 @@ def _report(**details):
         # Batch context uses original plan positions; the inner interview is one item.
         if 'item' in reporter.context:
             details.pop('item', None)
-            if reporter.context.get('scope') == 'batch':
+            if _in_batch(reporter):
                 # Inner interview results must not advance the outer batch bar.
                 details.pop('finished', None)
                 details.pop('selected', None)
@@ -93,10 +99,15 @@ class PrivateArgumentParser(argparse.ArgumentParser):
             else:
                 guidance = f'Invalid or conflicting use of option {name}; see --help.'
             break
-        super().error(guidance)
+        self.usage_error(guidance)
 
     def usage_error(self, message):
         """Report only fixed application guidance, never argument-derived text."""
+        reporter = CURRENT.get()
+        if reporter is not None:
+            # stdout/stderr may share a cursor. Stop heartbeats and clear the
+            # live panel before argparse moves it to print usage and diagnostics.
+            reporter.close()
         super().error(message)
 
 
@@ -240,7 +251,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
         parser.usage_error('Speaker naming options require --interview.')
     reporter = CURRENT.get()
     if reporter is not None:
-        if reporter.context.get('scope') != 'batch' or 'progress' in supplied_options:
+        if not _in_batch(reporter) or 'progress' in supplied_options:
             reporter.set_output(args.progress)
         reporter.heartbeat = args.heartbeat_seconds
         try:
@@ -332,7 +343,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                 allow_unresolved_high=args.draft_with_unresolved_high,
             )
         if args.interview_manifest is not None:
-            if reporter is not None and reporter.context.get('scope') != 'batch':
+            if reporter is not None and not _in_batch(reporter):
                 reporter.context = {**reporter.context, 'selected': 1}
             interview = OrderedInterview(args.interview_manifest, args.output_folder,
                 options=options, editing_options=editing_options, author_options=author_options,
@@ -366,7 +377,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
             raise PipelineError('Unsupported input type or extension.')
         if not files:
             raise PipelineError('No supported media files were found (folders are scanned nonrecursively).')
-        if reporter is not None and reporter.context.get('scope') != 'batch':
+        if reporter is not None and not _in_batch(reporter):
             reporter.context = {**reporter.context, 'selected': len(files)}
         if args.workflow and args.media_type != 'auto':
             allowed = AUDIO_EXTENSIONS if args.media_type == 'audio' else MEDIA_EXTENSIONS - AUDIO_EXTENSIONS
@@ -394,7 +405,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
 
     failures = unattempted = incomplete = 0
     for index, item in enumerate(files, start=1):
-        if reporter is not None and reporter.context.get('scope') != 'batch':
+        if reporter is not None and not _in_batch(reporter):
             reporter.context = {**reporter.context, 'item': index}
         control = CURRENT_CONTROL.get()
         if control is not None and control.reason:
@@ -421,7 +432,7 @@ def _execute(argv=None, *, approved_review=None, interview_options_override=None
                     finished=index,
                     stop_reason=control.reason if control else None,
                     stages=error.stages if type(error) is PipelineError else {})
-    if reporter is not None and reporter.context.get('scope') != 'batch':
+    if reporter is not None and not _in_batch(reporter):
         reporter.context = {key: value for key, value in reporter.context.items() if key != 'item'}
     _report(status='summary', processed=len(files) - unattempted, failed=failures - incomplete - unattempted,
             completed=len(files) - failures, incomplete=incomplete, not_attempted=unattempted,
